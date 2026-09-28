@@ -1,8 +1,12 @@
+name: WePomodoro
+
 services:
-    backend:
-      build: ./backend
-      ports:
-        - "3000:3000"
-      volumes:
-        - ./backend:/app
-        - /app/node_modules
+  backend:
+    build: ./backend
+    container_name: backend
+    image: backend:WePomodoro
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./backend:/app
+      - /app/node_modules

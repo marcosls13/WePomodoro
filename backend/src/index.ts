@@ -1,16 +1,16 @@
 import express, { type Express, type Request, type Response } from 'express';
 
+import { runUsers } from './users/users.js';
+
 const app: Express = express();
 const port = 3000;
 
-let counter: number = 0;
-
 app.get('/', (req: Request, res: Response) => {
-  counter++;
-  res.send(`Hello World! You are ${counter}`);
-  console.log(`${counter} number of requests`);
+  res.send('Hello World!);
 });
 
 app.listen(port, () => {
   console.log(`Example app listening on port ${port}`);
 });
+
+runUsers(app);

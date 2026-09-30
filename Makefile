@@ -1,6 +1,6 @@
 COMPOSE_FILE = ./docker-compose.yml
 COMPOSE      = docker compose -p $(PROJECT) -f $(COMPOSE_FILE)
-PROJECT      = WePomodoro
+PROJECT      = wepomodoro
 
 all: build up
 

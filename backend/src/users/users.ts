@@ -1,10 +1,9 @@
-import { type Express, type Request, type Response } from 'express';
-import { User } from './User.js';
+import { type Express, type Request, type Response } from "express";
+import { User } from "./User.js";
 
 export function runUsers(app: Express) {
-  app.get('/users/', usersMain);
+  app.get("/users/", usersMain);
 }
-
 
 function usersMain(req: Request, res: Response): void {
   const users: User[] = createUsers();
@@ -13,7 +12,13 @@ function usersMain(req: Request, res: Response): void {
 }
 
 function createUsers(): User[] {
-  const usernames: string[] = ["Marcos", "Ignacio", "Fernando", "Manuel", "Rober"];
+  const usernames: string[] = [
+    "Marcos",
+    "Ignacio",
+    "Fernando",
+    "Manuel",
+    "Rober",
+  ];
   const emails: string[] = [];
 
   for (const username of usernames) {

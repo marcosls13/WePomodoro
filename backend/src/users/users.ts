@@ -6,7 +6,7 @@ export function runUsers(app: Express) {
 }
 
 
-export function usersMain(req: Request, res: Response): void {
+function usersMain(req: Request, res: Response): void {
   const users: Array<User> = createUsers();
   res.send(users);
   console.log(users);

@@ -1,21 +1,23 @@
 COMPOSE_FILE = ./docker-compose.yml
+COMPOSE      = docker compose -p $(PROJECT) -f $(COMPOSE_FILE)
+PROJECT      = wepomodoro
 
 all: build up
 
 build:
-	docker compose -f $(COMPOSE_FILE) build
+	$(COMPOSE) build
 
 up:
-	docker compose -f $(COMPOSE_FILE) up -d
+	$(COMPOSE) up -d
 
 down:
-	docker compose -f $(COMPOSE_FILE) down
+	$(COMPOSE) down
 
-clean: down
-	docker system prune -af
+clean:
+	$(COMPOSE) down --rmi all --remove-orphans
 
-fclean: clean
-	docker volume prune -f
+fclean:
+	$(COMPOSE) down --rmi all --volumes --remove-orphans
 
 re: fclean all
 

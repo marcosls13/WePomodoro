@@ -2,4 +2,5 @@ CLAUDE.md
 .env
 node_modules/
 dist/
+.claude
 backend/src/generated/prisma/

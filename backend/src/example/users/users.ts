@@ -16,7 +16,7 @@ async function usersMain(req: Request, res: Response): Promise<void> {
   saveUsers(users);
 }
 
-function createUsers(): User[] {
+export function createUsers(): User[] {
   const usernames: string[] = [
     "Marcos",
     "Ignacio",

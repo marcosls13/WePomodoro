@@ -10,3 +10,13 @@ services:
     volumes:
       - ./backend:/app
       - /app/node_modules
+
+  frontend:
+    build: ./frontend
+    container_name: frontend
+    image: frontend:WePomodoro
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules

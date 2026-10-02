@@ -3,10 +3,10 @@ import { User } from "./User.js";
 import { writeFileSync } from "fs";
 import { readFile } from "fs/promises";
 
-const DB_PATH = "src/users/users.json";
+const DB_PATH = "src/example/users/users.json";
 
 export function runUsers(app: Express) {
-  app.get("/users/", usersMain);
+  app.get("/example/users/", usersMain);
 }
 
 async function usersMain(req: Request, res: Response): Promise<void> {

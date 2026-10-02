@@ -5,7 +5,13 @@ import { defineConfig } from "eslint/config";
 import tseslint from "typescript-eslint";
 
 export default defineConfig({
-  ignores: ["eslint.config.js", "dist/**", "node_modules/**"],
+  ignores: [
+    "eslint.config.js",
+    "prisma7.config.ts",
+    "dist/**",
+    "node_modules/**",
+    "src/generated/**",
+  ],
   files: ["**/*.{js,cjs,mjs,jsx,ts,cts,mts,tsx}"],
   extends: [
     js.configs.recommended,

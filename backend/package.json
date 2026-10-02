@@ -11,6 +11,7 @@
     "format:check": "prettier --check ."
   },
   "dependencies": {
+    "@prisma/client": "7.10.0",
     "express": "^5.2.1"
   },
   "devDependencies": {
@@ -19,6 +20,7 @@
     "@types/node": "^26.6.3",
     "eslint": "^10.11.0",
     "prettier": "3.9.9",
+    "prisma": "7.10.0",
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.71.0"

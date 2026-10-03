@@ -1,6 +1,6 @@
 import express, { type Express, type Request, type Response } from "express";
 
-import { runUsers } from "./users/users.js";
+import { runUsers } from "./example/users/users.js";
 
 const app: Express = express();
 const port = 3000;

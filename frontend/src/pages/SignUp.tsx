@@ -27,7 +27,7 @@ export default function SignUp() {
     <main className="flex min-h-screen items-center justify-center bg-gray-100">
       <div className="w-full max-w-sm rounded-lg bg-white p-6 shadow">
         <h1 className="mb-6 text-2xl font-bold">Create your account</h1>
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+        <form onSubmit={() => handleSubmit} className="flex flex-col gap-4">
           <div className="flex flex-col gap-1">
             <label htmlFor="username" className="text-sm font-medium">
               username

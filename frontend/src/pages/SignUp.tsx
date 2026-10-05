@@ -6,14 +6,21 @@ export default function SignUp() {
 
   async function handleSubmit(e: React.SubmitEvent) {
     e.preventDefault();
-    console.log({ username, email });
-    setUsername("");
-    setEmail("");
-    const res = await fetch("/api/users", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, email }),
-    });
+    try {
+      const res = await fetch("/api/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, email }),
+      });
+      if (!res.ok) {
+        // TODO: show an error
+        return;
+      }
+      setUsername("");
+      setEmail("");
+    } catch {
+      // network failure
+    }
   }
 
   return (

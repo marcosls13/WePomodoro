@@ -6,14 +6,29 @@ import { readFile } from "fs/promises";
 const DB_PATH = "src/example/users/users.json";
 
 export function runUsers(app: Express) {
-  app.get("/example/users/", usersMain);
+  app.get("/example/users", async (req, res) => {
+    const users = await loadUsers(DB_PATH);
+    res.send(users);
+  });
+  app.post("/api/users", createUser);
 }
 
-async function usersMain(req: Request, res: Response): Promise<void> {
+async function createUser(req: Request, res: Response) {
+  const body: unknown = req.body;
+  if (typeof body !== "object") {
+    res.status(400).json({ error: "invalid user input" });
+    return;
+  }
+  const { username, email } = body as Record<string, unknown>;
+  if (typeof username !== "string" || typeof email !== "string") {
+    res.status(400).json({ error: "invalid user input" });
+    return;
+  }
   const users = await loadUsers(DB_PATH);
-  res.send(users);
-  console.log(users);
+  const newUser = new User(username, email);
+  users.push(newUser);
   saveUsers(users);
+  res.status(201).json();
 }
 
 export function createUsers(): User[] {

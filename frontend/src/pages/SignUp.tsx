@@ -1,9 +1,26 @@
+import { useState } from "react";
+
 export default function SignUp() {
+  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
+
+  async function handleSubmit(e: React.SubmitEvent) {
+    e.preventDefault();
+    console.log({ username, email });
+    setUsername("");
+    setEmail("");
+    const res = await fetch("/api/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, email }),
+    });
+  }
+
   return (
     <main className="flex min-h-screen items-center justify-center bg-gray-100">
       <div className="w-full max-w-sm rounded-lg bg-white p-6 shadow">
         <h1 className="mb-6 text-2xl font-bold">Create your account</h1>
-        <form className="flex flex-col gap-4">
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           <div className="flex flex-col gap-1">
             <label htmlFor="username" className="text-sm font-medium">
               username
@@ -11,6 +28,10 @@ export default function SignUp() {
             <input
               id="username"
               required
+              value={username}
+              onChange={(e) => {
+                setUsername(e.target.value);
+              }}
               className="w-full rounded border border-gray-300 px-3 py-2"
             />
           </div>
@@ -23,6 +44,10 @@ export default function SignUp() {
               id="email"
               type="email"
               required
+              value={email}
+              onChange={(e) => {
+                setEmail(e.target.value);
+              }}
               className="w-full rounded border border-gray-300 px-3 py-2"
             />
           </div>

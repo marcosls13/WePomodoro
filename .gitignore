@@ -3,3 +3,7 @@ CLAUDE.md
 node_modules/
 dist/
 .claude
+src/generated
+.agents
+.windsurf
+skills-lock.json

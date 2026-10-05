@@ -1,38 +1,43 @@
-import { type Express, type Request, type Response } from "express";
-import { User } from "./User.js";
+import type { Express, Request, Response } from "express";
+
+import { Prisma } from "../generated/prisma/client.js";
+import { createUser, listUsers } from "./users.service.js";
 
 export function runUsers(app: Express) {
-  app.get("/users/", usersMain);
-}
+  app.post("/users", async (req: Request, res: Response) => {
+    const { email, username } = (req.body ?? {}) as {
+      email?: unknown;
+      username?: unknown;
+    };
 
-function usersMain(req: Request, res: Response): void {
-  const users: User[] = createUsers();
-  res.send(users);
-  console.log(users);
-}
+    if (
+      typeof email !== "string" ||
+      typeof username !== "string" ||
+      !email ||
+      !username
+    ) {
+      return res.status(400).json({ error: "email and username are required" });
+    }
 
-function createUsers(): User[] {
-  const usernames: string[] = [
-    "Marcos",
-    "Ignacio",
-    "Fernando",
-    "Manuel",
-    "Rober",
-  ];
-  const emails: string[] = [];
+    try {
+      const user = await createUser({ email, username });
+      res.status(201).json(user);
+    } catch (e) {
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === "P2002"
+      ) {
+        return res
+          .status(409)
+          .json({ error: "email or username already in use" });
+      }
+      throw e;
+    }
+  });
 
-  for (const username of usernames) {
-    emails.push(usernameToEmail(username));
-  }
-
-  const users: User[] = [];
-
-  for (let i = 0; i < usernames.length; i++) {
-    users.push(new User(usernames[i], emails[i]));
-  }
-  return users;
-}
-
-function usernameToEmail(username: string): string {
-  return username.toLowerCase() + "@example.com";
+  app.get("/users", async (req: Request, res: Response) => {
+    const skip = Number(req.query.skip) || 0;
+    const take = Math.min(Number(req.query.take) || 20, 100);
+    res.json(await listUsers(skip, take));
+  });
 }

@@ -1,9 +1,10 @@
 import express, { type Express, type Request, type Response } from "express";
-
 import { runUsers } from "./users/users.js";
 
 const app: Express = express();
 const port = 3000;
+
+app.use(express.json());
 
 app.get("/", (req: Request, res: Response) => {
   res.send("Hello World!");

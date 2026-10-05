@@ -6,11 +6,11 @@ import { readFile } from "fs/promises";
 const DB_PATH = "src/example/users/users.json";
 
 export function runUsers(app: Express) {
-  app.get("/example/users", async (req, res) => {
+  app.get("/api/example/users", async (req, res) => {
     const users = await loadUsers(DB_PATH);
     res.send(users);
   });
-  app.post("/api/users", createUser);
+  app.post("/api/example/users", createUser);
 }
 
 async function createUser(req: Request, res: Response) {

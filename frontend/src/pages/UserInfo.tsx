@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router";
 
 const API_URL = import.meta.env.VITE_API_URL as string;
 
@@ -23,6 +24,7 @@ export default function Info() {
           <li key={u.id}>Username: {u.username} <br/> Email: {u.email}</li>
         ))}
       </ul>
+	  <Link to="/">Back</Link>
     </div>
   );
 }

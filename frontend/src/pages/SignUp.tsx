@@ -1,40 +1,45 @@
 import { useState } from "react";
 
+const API_URL = import.meta.env.VITE_API_URL as string;
+
 export default function SignUp() {
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
+  const [error, setError] = useState("");
 
   async function handleSubmit(e: React.SubmitEvent) {
     e.preventDefault();
+    setError("");
     try {
-      const res = await fetch("/api/example/users", {
+      const res = await fetch(`${API_URL}/users`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, email }),
       });
       if (!res.ok) {
-        // TODO: show an error
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        setError(body.error ?? `Request failed (${String(res.status)})`);
         return;
       }
       setUsername("");
       setEmail("");
     } catch {
-      // network failure
+      setError("Could not reach the server");
     }
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-gray-100">
-      <div className="w-full max-w-sm rounded-lg bg-white p-6 shadow">
-        <h1 className="mb-6 text-2xl font-bold">Create your account</h1>
+    <main className="signup-page">
+      <div className="signup-card">
+        <h1 className="signup-title">Create your account</h1>
         <form
           onSubmit={(e) => {
             void handleSubmit(e);
           }}
-          className="flex flex-col gap-4"
+          className="signup-form"
         >
-          <div className="flex flex-col gap-1">
-            <label htmlFor="username" className="text-sm font-medium">
+          <div className="signup-field">
+            <label htmlFor="username" className="signup-label">
               username
             </label>
             <input
@@ -44,12 +49,12 @@ export default function SignUp() {
               onChange={(e) => {
                 setUsername(e.target.value);
               }}
-              className="w-full rounded border border-gray-300 px-3 py-2"
+              className="signup-input"
             />
           </div>
 
-          <div className="flex flex-col gap-1">
-            <label htmlFor="email" className="text-sm font-medium">
+          <div className="signup-field">
+            <label htmlFor="email" className="signup-label">
               email
             </label>
             <input
@@ -60,14 +65,11 @@ export default function SignUp() {
               onChange={(e) => {
                 setEmail(e.target.value);
               }}
-              className="w-full rounded border border-gray-300 px-3 py-2"
+              className="signup-input"
             />
           </div>
-
-          <button
-            type="submit"
-            className="rounded bg-blue-600 px-4 py-2 font-medium text-white hover:bg-blue-700"
-          >
+          {error && <p className="signup-error">{error}</p>}
+          <button type="submit" className="signup-button">
             Sign up
           </button>
         </form>

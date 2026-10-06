@@ -1,1 +1,93 @@
 @import "tailwindcss";
+
+.home-title {
+  font-size: 1.875rem;
+  line-height: calc(2.25 / 1.875);
+  font-weight: 700;
+  text-decoration-line: underline;
+  color: var(--color-red-500);
+}
+
+.home-link {
+  color: var(--color-blue-600);
+  text-decoration-line: underline;
+}
+
+.signup-page {
+  display: flex;
+  min-height: 100vh;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--color-gray-100);
+}
+
+.signup-card {
+  width: 100%;
+  max-width: 24rem;
+  border-radius: 0.5rem;
+  background-color: var(--color-white);
+  padding: 1.5rem;
+  box-shadow:
+    0 1px 3px 0 rgb(0 0 0 / 0.1),
+    0 1px 2px -1px rgb(0 0 0 / 0.1);
+}
+
+.signup-title {
+  margin-bottom: 1.5rem;
+  font-size: 1.5rem;
+  line-height: calc(2 / 1.5);
+  font-weight: 700;
+}
+
+.signup-form,
+.signup-field {
+  display: flex;
+  flex-direction: column;
+}
+
+.signup-form {
+  gap: 1rem;
+}
+
+.signup-field {
+  gap: 0.25rem;
+}
+
+.signup-label,
+.signup-error {
+  font-size: 0.875rem;
+  line-height: calc(1.25 / 0.875);
+}
+
+.signup-label {
+  font-weight: 500;
+}
+
+.signup-input {
+  width: 100%;
+  border: 1px solid var(--color-gray-300);
+  border-radius: 0.25rem;
+  padding: 0.5rem 0.75rem;
+}
+
+.signup-error {
+  color: var(--color-red-600);
+}
+
+.signup-button {
+  border-radius: 0.25rem;
+  background-color: var(--color-blue-600);
+  padding: 0.5rem 1rem;
+  font-weight: 500;
+  color: var(--color-white);
+}
+
+@media (hover: hover) {
+  .home-link:hover {
+    color: var(--color-blue-800);
+  }
+
+  .signup-button:hover {
+    background-color: var(--color-blue-700);
+  }
+}

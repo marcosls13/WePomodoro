@@ -2,13 +2,14 @@ import { Link } from "react-router";
 
 export default function Home() {
   return (
-    <div>
-      <h1 className="text-3xl font-bold underline text-red-500">
-        Hola! Soy Marcos!
-      </h1>
+    <main className="flex flex-col min-h-screen items-center justify-center bg-gray-100 text-5xl gap-32">
+      <h1 className="text-6xl font-bold">WePomodoro</h1>
       <Link to="/about" className="text-blue-600 underline hover:text-blue-800">
         About
       </Link>
-    </div>
+      <Link to="/timer" className="text-blue-600 underline hover:text-blue-800">
+        Timer
+      </Link>
+    </main>
   );
 }

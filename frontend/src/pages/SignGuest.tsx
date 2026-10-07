@@ -1,15 +1,11 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router";
-import Tomato from "../Tomato";
 
 const API_URL = import.meta.env.VITE_API_URL as string;
 
-export default function SignUp() {
+export default function SignGuest() {
   const navigate = useNavigate();
   const [username, setUsername] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
 
@@ -21,23 +17,13 @@ export default function SignUp() {
       setError("Please enter a username.");
       return;
     }
-    if (password.length < 8 || password.length > 128) {
-      setError("Password must be 8–128 characters.");
-      return;
-    }
-    if (password !== confirmPassword) {
-      setError("Passwords do not match.");
-      return;
-    }
     setPending(true);
     try {
-      const res = await fetch(`${API_URL}/api/auth/signup`, {
+      const res = await fetch(`${API_URL}/api/auth/guest`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          username: username.trim(),
-          email: email.trim(),
-          password,
+          displayName: username.trim(),
         }),
       });
       if (!res.ok) {
@@ -73,12 +59,10 @@ export default function SignUp() {
         <Link className="text-link" to="/about">
           Get to know WePomodoro →
         </Link>
-        <Tomato size={140} className="tomato-friend" />
       </div>
       <div className="signup-card">
         <p className="eyebrow">Welcome to WePomodoro</p>
-        <h2 className="signup-title">Create your profile</h2>
-        <p className="form-description">A name, an email, and a fresh start.</p>
+        <h2 className="signup-title">Sign in to your profile</h2>
         <form
           onSubmit={(e) => {
             void handleSubmit(e);
@@ -94,68 +78,11 @@ export default function SignUp() {
               id="username"
               name="username"
               autoComplete="username"
-              placeholder="Your name here"
+              placeholder="Username"
               required
               value={username}
               onChange={(e) => {
                 setUsername(e.target.value);
-              }}
-              className="signup-input"
-            />
-          </div>
-
-          <div className="signup-field">
-            <label htmlFor="email" className="signup-label">
-              Email address
-            </label>
-            <input
-              id="email"
-              name="email"
-              autoComplete="email"
-              placeholder="you@example.com"
-              type="email"
-              required
-              value={email}
-              onChange={(e) => {
-                setEmail(e.target.value);
-              }}
-              className="signup-input"
-            />
-          </div>
-
-          <div className="signup-field">
-            <label htmlFor="password" className="signup-label">
-              Password
-            </label>
-            <input
-              id="password"
-              name="password"
-              autoComplete="new-password"
-              placeholder="At least 8 characters"
-              type="password"
-              required
-              value={password}
-              onChange={(e) => {
-                setPassword(e.target.value);
-              }}
-              className="signup-input"
-            />
-          </div>
-
-          <div className="signup-field">
-            <label htmlFor="confirmPassword" className="signup-label">
-              Confirm password
-            </label>
-            <input
-              id="confirmPassword"
-              name="confirmPassword"
-              autoComplete="new-password"
-              placeholder="Repeat password"
-              type="password"
-              required
-              value={confirmPassword}
-              onChange={(e) => {
-                setConfirmPassword(e.target.value);
               }}
               className="signup-input"
             />
@@ -171,13 +98,13 @@ export default function SignUp() {
             className="button signup-button"
             disabled={pending}
           >
-            {pending ? "Creating your profile…" : "Create profile"}
+            {pending ? "Entering" : "Enter"}
           </button>
           <Link className="text-link" to="/auth/login">
-            Login
+            Sign in
           </Link>
-          <Link className="text-link" to="/auth/guest">
-            Continue as Guest
+          <Link className="text-link" to="/auth/signup">
+            Sign up
           </Link>
         </form>
       </div>

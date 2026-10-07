@@ -13,6 +13,11 @@ enum PomodoroPhase {
   LONG_BREAK
 }
 
+enum EmailTokenPurpose {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+}
+
 enum SessionStatus {
   ACTIVE
   PAUSED
@@ -21,20 +26,27 @@ enum SessionStatus {
 }
 
 model User {
-  id           Int      @id @default(autoincrement())
-  email        String   @unique
-  username     String   @unique
+  id              Int       @id @default(autoincrement())
+  email           String    @unique
+  username        String    @unique
   // Nullable for existing profiles and future external login providers.
   // Password login must reject accounts without a hash.
-  passwordHash String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  passwordHash    String?
+  // Set when the owner proves they control `email`; clear it whenever the
+  // email changes. Null means unverified (all pre-existing accounts).
+  emailVerifiedAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
-  authSessions AuthSession[]
-  ownedRooms   StudyRoom[]
-  memberships  RoomMember[]
-  studyHistory SessionParticipant[]
-  gameResults  GameResult[]
+  authSessions    AuthSession[]
+  emailTokens     EmailToken[]
+  twoFactor       TwoFactor?
+  recoveryCodes   RecoveryCode[]
+  loginChallenges LoginChallenge[]
+  ownedRooms      StudyRoom[]
+  memberships     RoomMember[]
+  studyHistory    SessionParticipant[]
+  gameResults     GameResult[]
 }
 
 model AuthSession {
@@ -45,6 +57,73 @@ model AuthSession {
   expiresAt DateTime
   createdAt DateTime @default(now())
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// One-time links sent by email: address verification and password reset.
+model EmailToken {
+  id        String            @id @default(uuid()) @db.Uuid
+  userId    Int
+  purpose   EmailTokenPurpose
+  // Address the link was sent to. A verification only counts while this still
+  // equals User.email, so changing the address invalidates old links.
+  email     String
+  // Store a hash of a random token, never the token that was emailed.
+  tokenHash String            @unique
+  expiresAt DateTime
+  // Set when consumed; a used token must never work twice.
+  usedAt    DateTime?
+  createdAt DateTime          @default(now())
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, purpose])
+  @@index([expiresAt])
+}
+
+// Time-based one-time password (TOTP) enrolment; at most one per user.
+model TwoFactor {
+  userId           Int       @id
+  // The secret must be readable to verify codes, so encrypt it with a server
+  // key in the application. Never return it after enrolment.
+  secretCiphertext String
+  // Null while enrolling (secret shown, first code not yet confirmed). Login
+  // only asks for a code once this is set.
+  enabledAt        DateTime?
+  // 30-second time step of the last accepted code. Accept only later steps so
+  // an intercepted code can't be replayed.
+  lastUsedStep     Int?
+  createdAt        DateTime  @default(now())
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// Single-use backup codes for when the authenticator is lost.
+model RecoveryCode {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    Int
+  // Hash of the code; show the plain codes to the user once, at generation.
+  codeHash  String
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, codeHash])
+  @@index([userId])
+}
+
+// Step between a correct password and a full session when 2FA is on. The
+// client holds the raw token and must present a valid second factor with it.
+model LoginChallenge {
+  id             String   @id @default(uuid()) @db.Uuid
+  userId         Int
+  tokenHash      String   @unique
+  // Short-lived (minutes), unlike a session.
+  expiresAt      DateTime
+  // Wrong second-factor attempts; delete the challenge after a few.
+  failedAttempts Int      @default(0)
+  createdAt      DateTime @default(now())
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([expiresAt])

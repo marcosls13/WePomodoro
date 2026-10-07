@@ -303,7 +303,7 @@ shared interval. Solo callers use `/api/timers` instead.
 
 ## 4. Data model
 
-Nine PostgreSQL tables.
+Thirteen PostgreSQL tables (the last four are the account recovery and two-factor schema; no endpoints use them yet).
 
 | Table                | Purpose                                                                | Main relationships                                                           |
 | -------------------- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
@@ -316,6 +316,10 @@ Nine PostgreSQL tables.
 | `SessionParticipant` | Individual attendance and actual focus time for an interval            | One session and exactly one user OR guest                                    |
 | `MiniGame`           | Catalogue of games with a stable key such as `memory`                  | Has game results                                                             |
 | `GameResult`         | One registered user's verified game attempt                            | A user and a game                                                            |
+| `EmailToken`         | One-time email links: address verification and password reset          | Belongs to one user                                                          |
+| `TwoFactor`          | TOTP enrolment (encrypted secret); at most one per user                | Belongs to one user                                                          |
+| `RecoveryCode`       | Single-use backup codes for 2FA                                        | Belongs to one user                                                          |
+| `LoginChallenge`     | Short-lived step between password and session when 2FA is on           | Belongs to one user                                                          |
 
 ```mermaid
 erDiagram
@@ -380,14 +384,15 @@ someone can belong to a room while running a solo timer.
 
 A permanent registered account. Guests have no `User` row.
 
-| Field          | Type       | Default / rule             | Meaning                                          |
-| -------------- | ---------- | -------------------------- | ------------------------------------------------ |
-| `id`           | `Int`      | Primary key; autoincrement | Stable registered-user identity                  |
-| `email`        | `String`   | Unique; required           | Contact address; API trims/lowercases new values |
-| `username`     | `String`   | Unique; required           | Public name; API lowercases new values           |
-| `passwordHash` | `String?`  | Null if omitted            | Salted scrypt hash; never a plain password       |
-| `createdAt`    | `DateTime` | `now()`                    | Account creation time                            |
-| `updatedAt`    | `DateTime` | `@updatedAt`               | Last account modification                        |
+| Field             | Type        | Default / rule             | Meaning                                                   |
+| ----------------- | ----------- | -------------------------- | --------------------------------------------------------- |
+| `id`              | `Int`       | Primary key; autoincrement | Stable registered-user identity                           |
+| `email`           | `String`    | Unique; required           | Contact address; API trims/lowercases new values          |
+| `username`        | `String`    | Unique; required           | Public name; API lowercases new values                    |
+| `passwordHash`    | `String?`   | Null if omitted            | Salted scrypt hash; never a plain password                |
+| `emailVerifiedAt` | `DateTime?` | Null until verified        | When the owner proved control of `email`; clear on change |
+| `createdAt`       | `DateTime`  | `now()`                    | Account creation time                                     |
+| `updatedAt`       | `DateTime`  | `@updatedAt`               | Last account modification                                 |
 
 Relations: `authSessions`, `ownedRooms`, `memberships`, `studyHistory`,
 `gameResults`. A null hash preserves pre-existing profiles and never grants
@@ -532,6 +537,38 @@ who left early or arrived late completed the interval.
 `(userId, playedAt)`, `(userId, gameId, score)`, `gameId`. There is no guest
 relation; persistent scores require registration.
 
+### 4.10 Account recovery and two-factor tables
+
+Schema only: the API doesn't use these tables yet. Every table cascades on user
+deletion, and tokens are stored as hashes, as with `AuthSession`.
+
+- **`EmailToken`**: `purpose` is `EMAIL_VERIFICATION` or `PASSWORD_RESET`. It
+  stores the address the link was sent to (`email`), so a verification only
+  counts while it still equals `User.email`. `tokenHash` is unique, `expiresAt`
+  must be after `createdAt`, and `usedAt` marks consumption (never accept a used
+  token). Indexed by `(userId, purpose)` and `expiresAt` for cleanup.
+- **`TwoFactor`**: one row per user (`userId` is the primary key). It holds
+  `secretCiphertext`, the TOTP secret **encrypted by the application** with a
+  server key, because it must be readable to verify codes. `enabledAt` is null
+  while enrolling; login should demand a code only once it is set.
+  `lastUsedStep` is the 30-second step of the last accepted code: accept only
+  later steps so a captured code can't be replayed. SQL forbids a used step
+  before `enabledAt` is set.
+- **`RecoveryCode`**: `codeHash` is unique per user and `usedAt` marks use. Show
+  the plain codes to the user once, when generating them.
+- **`LoginChallenge`**: created after a correct password when 2FA is enabled.
+  The client holds the raw token and must present a valid code with it before
+  receiving a session. `expiresAt` should be minutes, not days, and
+  `failedAttempts` lets the service delete the challenge after a few misses.
+
+Intended flows (to implement): password reset creates a `PASSWORD_RESET` token,
+and consuming it sets a new hash, deletes the user's `AuthSession` rows and
+marks the token used, all in one transaction. Reset requests should answer
+identically whether or not the email exists, and should use the rate limiter.
+Verification sets `emailVerifiedAt`; changing the email must clear it.
+Expired rows aren't removed by SQL, so extend `cleanupExpiredSessions` to
+delete expired tokens and challenges.
+
 ---
 
 ## 5. How timers and statistics work
@@ -651,12 +688,13 @@ requests.
 adds the CHECK constraints and the partial unique live-timer index. Preserve them
 in future migrations. `prisma db push` is not a substitute.
 
-| Migration                         | Contents                                                                                     |
-| --------------------------------- | -------------------------------------------------------------------------------------------- |
-| `20261001114431_init`             | Original `User` table                                                                        |
-| `20261001115727_remove_password`  | Drops the old plain `password` column                                                        |
-| `20261006160000_study_platform`   | Nullable `User.passwordHash`, the other 8 tables, enums, indexes, FKs, CHECKs, partial index |
-| `20261006170000_timer_accounting` | `resumedAt`, `creditedAt`, timestamp CHECKs, `(status, startedAt)` index                     |
+| Migration                             | Contents                                                                                        |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `20261001114431_init`                 | Original `User` table                                                                           |
+| `20261001115727_remove_password`      | Drops the old plain `password` column                                                           |
+| `20261006160000_study_platform`       | Nullable `User.passwordHash`, the other 8 tables, enums, indexes, FKs, CHECKs, partial index    |
+| `20261006170000_timer_accounting`     | `resumedAt`, `creditedAt`, timestamp CHECKs, `(status, startedAt)` index                        |
+| `20261007140000_account_recovery_2fa` | `User.emailVerifiedAt`; `EmailToken`, `TwoFactor`, `RecoveryCode`, `LoginChallenge` with CHECKs |
 
 The study-platform migration preserves existing profiles and never drops user
 data. The timer-accounting migration keeps original start times and gives

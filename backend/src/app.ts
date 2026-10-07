@@ -4,6 +4,7 @@ import express, {
   type Response,
 } from "express";
 import cors from "cors";
+import helmet from "helmet";
 import { Prisma } from "./generated/prisma/client.js";
 import { ApiError, type Context } from "./api/common.js";
 import { createRouter, type RateLimits } from "./api/router.js";
@@ -22,6 +23,7 @@ export function createApp(
 ) {
   const app = express();
   app.disable("x-powered-by");
+  app.use(helmet());
   // Needed for correct client IPs (rate limiting) behind a reverse proxy. A
   // value larger than the real proxy count lets clients spoof their IP.
   app.set("trust proxy", options.trustProxy ?? 0);

@@ -8,14 +8,32 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "db:generate": "prisma generate --config prisma7.config.ts",
+    "db:validate": "prisma validate --config prisma7.config.ts",
+    "db:migrate": "prisma migrate dev --config prisma7.config.ts",
+    "db:deploy": "prisma migrate deploy --config prisma7.config.ts",
+    "test:db": "node --import tsx --test test/database.test.ts",
+    "test:db:up": "docker compose -f compose.test.yml up -d --wait",
+    "test:db:down": "docker compose -f compose.test.yml down",
+    "pretest:db": "npm run db:generate",
+    "test:types": "tsc -p test/tsconfig.json",
+    "predev": "npm run db:generate",
+    "prebuild": "npm run db:generate",
+    "test:api": "node --import tsx --test test/api.test.ts",
+    "test": "node --import tsx --test --test-concurrency=1 test/*.test.ts",
+    "pretest": "npm run db:generate",
+    "pretest:api": "npm run db:generate",
+    "start": "node dist/index.js",
+    "games:manage": "tsx src/games/manage.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.0",
     "@prisma/client": "^7.10.0",
     "cors": "^2.8.6",
     "express": "^5.2.1",
-    "pg": "^8.23.1"
+    "pg": "^8.23.1",
+    "dotenv": "^18.0.5"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -23,7 +41,6 @@
     "@types/express": "^5.0.6",
     "@types/node": "^26.6.3",
     "@types/pg": "^8.23.1",
-    "dotenv": "^18.0.5",
     "eslint": "^10.11.0",
     "eslint-config-prettier": "^10.1.8",
     "prettier": "3.9.9",

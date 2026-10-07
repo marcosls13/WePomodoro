@@ -1,0 +1,744 @@
+# WePomodoro backend
+
+Express 5 + Prisma 7 + PostgreSQL. This single document covers setup, the HTTP
+API, the data model, timer accounting, and testing. A product “server” is a
+`StudyRoom` in the database.
+
+Contents:
+
+1. [Setup and running](#1-setup-and-running)
+2. [Authentication](#2-authentication)
+3. [API reference](#3-api-reference)
+4. [Data model](#4-data-model)
+5. [How timers and statistics work](#5-how-timers-and-statistics-work)
+6. [Minigames](#6-minigames)
+7. [Deletion and lifecycle](#7-deletion-and-lifecycle)
+8. [Migrations](#8-migrations)
+9. [Testing](#9-testing)
+10. [Source map and frontend integration](#10-source-map-and-frontend-integration)
+
+---
+
+## 1. Setup and running
+
+The API uses `backend/.env` (`DATABASE_URL`). Copy `.env.example` and fill it in.
+
+```bash
+cd backend
+npm ci
+npm run db:deploy   # applies committed migrations to DATABASE_URL
+npm run dev         # generates the Prisma client, then starts tsx watch
+```
+
+`db:deploy` changes tables in the configured database; starting the API never
+applies migrations. For a compiled run use `npm run build` then `npm start`.
+Production transport should provide HTTPS so bearer tokens aren't sent in clear.
+
+Environment variables:
+
+| Variable       | Default                 | Meaning                                               |
+| -------------- | ----------------------- | ----------------------------------------------------- |
+| `DATABASE_URL` | none (required)         | PostgreSQL connection string                          |
+| `PORT`         | `3000`                  | Listening port (1–65535)                              |
+| `CORS_ORIGIN`  | `http://localhost:5173` | Comma-separated exact origins allowed to call the API |
+
+Requests with no `Origin` header (curl, native clients) are accepted. A browser
+`Origin` that isn't listed gets 403. CORS is not authentication.
+
+With Docker Compose the backend runs as the unprivileged `node` user (uid 1000),
+so files generated into the bind-mounted source tree (such as
+`src/generated/prisma`) belong to your user, not root.
+
+Shutdown (`SIGINT`/`SIGTERM`) stops the timer worker, closes idle keep-alive
+connections, waits for an in-flight sweep, disconnects Prisma, and exits. If that
+takes longer than 10 seconds the process exits with code 1.
+
+---
+
+## 2. Authentication
+
+All endpoints live under `/api`; there are no root-path aliases. The only
+non-`/api` route is `GET /`, which returns `{ service, health }`.
+
+Signup/login return a random `token`, its expiry, and a safe user profile. Guests
+receive a token and a temporary guest profile. Send the token on later requests:
+
+```http
+Authorization: Bearer <token>
+```
+
+- Registered sessions last **7 days**, guest sessions **24 hours**.
+- Only SHA-256 hashes of tokens are stored. Passwords use salted scrypt with
+  constant-time comparison.
+- Signup, login, guest creation and `POST /api/users` share a per-process limit
+  of 60 requests per IP per minute; exceeding it returns 429 with `Retry-After`.
+  A multi-instance deployment should add a shared limit at its gateway. Express is
+  not configured to trust forwarded IP headers from arbitrary proxies.
+- Existing profiles with a null `passwordHash` cannot password-login. Don't
+  recreate accounts or let someone claim a passwordless profile by supplying its
+  email; they need an explicit provisioning/recovery flow (email delivery and
+  verification are not implemented). New signups require a password.
+- Registered logout revokes the current token and leaves timers running. Guest
+  logout cancels solo timers and removes the temporary identity and its
+  participation; registered users' shared history is preserved.
+- A worker finalizes elapsed timers about once per second and removes expired
+  auth/guest identities every minute.
+
+Input rules:
+
+- Usernames: 3–32 letters, numbers, underscores or hyphens; lowercased.
+- Emails: valid format, at most 254 characters; trimmed and lowercased.
+- Passwords: 8–128 characters; never trimmed. `currentPassword` and the password
+  sent to `DELETE /api/users/me` are only checked for being a string of at most
+  128 characters, so accounts with older, shorter passwords can still verify.
+- Guest names: 1–32 characters after trimming.
+
+---
+
+## 3. API reference
+
+**Base URL:** `http://localhost:3000/api`. Send JSON with
+`Content-Type: application/json` (bodies are limited to 16 KB). Success responses
+are JSON, except 204 which has no body. UUID placeholders need real IDs; user IDs
+are integers.
+
+Access labels: **Public** = no token; **Authenticated** = registered user or
+guest; **Registered** = registered user; **Member** = active room member;
+**Owner** = room owner; **Timer owner** = solo participant or shared room owner.
+
+### 3.1 Service and authentication
+
+| Method | Endpoint           | Access        | JSON body                             | Response                                               |
+| ------ | ------------------ | ------------- | ------------------------------------- | ------------------------------------------------------ |
+| GET    | `/api/health`      | Public        | None                                  | 200 `{ status: "ok" }`; database connectivity only     |
+| POST   | `/api/auth/signup` | Public        | `{ "email", "username", "password" }` | 201 `{ token, expiresAt, user }`                       |
+| POST   | `/api/users`       | Public        | Same signup body                      | 201: alias of signup with the same response            |
+| POST   | `/api/auth/login`  | Public        | `{ "email", "password" }`             | 200 `{ token, expiresAt, user }`                       |
+| POST   | `/api/auth/guest`  | Public        | `{ "displayName" }`                   | 201 `{ token, guest: { id, displayName, expiresAt } }` |
+| GET    | `/api/auth/me`     | Authenticated | None                                  | 200 `{ type: "user" or "guest", profile }`             |
+| POST   | `/api/auth/logout` | Authenticated | None                                  | 204: revoke login or delete temporary guest identity   |
+
+The health check verifies connectivity, not whether all migrations are applied.
+Authentication runs before protected routing, so unknown paths without a valid
+token may return 401 before 404.
+
+### 3.2 Users and statistics
+
+| Method | Endpoint                       | Access        | Body / query                                    | Response                                       |
+| ------ | ------------------------------ | ------------- | ----------------------------------------------- | ---------------------------------------------- |
+| GET    | `/api/users`                   | Authenticated | Optional `skip`, `take`                         | 200 array of `{ id, username }`; no emails     |
+| GET    | `/api/users/me`                | Registered    | None                                            | 200 own profile                                |
+| PATCH  | `/api/users/me`                | Registered    | At least one of `username`, `email`, `password` | 200 updated profile                            |
+| DELETE | `/api/users/me`                | Registered    | `{ "password" }`                                | 204: delete account and its owned rooms        |
+| GET    | `/api/users/me/stats`          | Registered    | None                                            | 200 study totals and game aggregates           |
+| GET    | `/api/users/me/study-sessions` | Registered    | Optional `skip`, `take`                         | 200 attendance array, each including `session` |
+| GET    | `/api/users/me/game-results`   | Registered    | Optional `skip`, `take`                         | 200 result array, each including `game`        |
+
+Profiles contain `id`, `username`, `email`, `createdAt` and `updatedAt`. Password
+hashes, token hashes and other users' emails are never returned. Personal
+endpoints always derive the user ID from the token, never from the body or query.
+
+Changing email or password requires `currentPassword`; a username-only change
+does not. A password change revokes all other login sessions and keeps the
+current token valid.
+
+```json
+{
+  "email": "new@example.com",
+  "password": "new-long-password",
+  "currentPassword": "previous-password"
+}
+```
+
+Deleting an account requires its password and removes its owned rooms,
+authentication, memberships and personal records. Other users' shared study
+history survives, with the deleted room reference set to null.
+
+Statistics response:
+
+```json
+{
+  "focusedSeconds": 1800,
+  "completedFocusSessions": 1,
+  "games": [
+    { "gameId": 1, "gamesPlayed": 2, "bestScore": 25, "playedSeconds": 70 }
+  ]
+}
+```
+
+### 3.3 Study rooms
+
+Only registered users create and own rooms; guests join with a code. Room details,
+invite codes and member lists are visible only to active members. The room
+listing contains only the caller's active, open rooms.
+
+| Method | Endpoint                               | Access        | JSON body                           | Response                                    |
+| ------ | -------------------------------------- | ------------- | ----------------------------------- | ------------------------------------------- |
+| POST   | `/api/rooms`                           | Registered    | `{ "name" }` plus optional settings | 201 room with members and current timer     |
+| GET    | `/api/rooms`                           | Authenticated | None                                | 200 caller's active open rooms, up to 100   |
+| POST   | `/api/rooms/join`                      | Authenticated | `{ "inviteCode" }`                  | 200 joined room; joins/rejoins idempotently |
+| GET    | `/api/rooms/:roomId`                   | Member        | None                                | 200 room, safe member names, current timer  |
+| PATCH  | `/api/rooms/:roomId`                   | Owner         | At least one setting                | 200 updated room                            |
+| POST   | `/api/rooms/:roomId/leave`             | Member        | None                                | 204: leave and retain partial study time    |
+| POST   | `/api/rooms/:roomId/close`             | Owner         | None                                | 200 closed room; live timer cancelled       |
+| POST   | `/api/rooms/:roomId/invite-code`       | Owner         | None                                | 200 room with the new invite code           |
+| POST   | `/api/rooms/:roomId/owner`             | Owner         | `{ "userId": 2 }`                   | 200 room with transferred ownership         |
+| DELETE | `/api/rooms/:roomId/members/:memberId` | Owner         | None                                | 204: remove member, retain partial focus    |
+| POST   | `/api/rooms/:roomId/timers`            | Owner         | None                                | 201 next shared timer                       |
+
+Room settings (creation and update):
+
+| Field                   | Default              | Allowed value                  |
+| ----------------------- | -------------------- | ------------------------------ |
+| `name`                  | Required on creation | 1–80 characters after trimming |
+| `focusSeconds`          | 1500                 | Integer, 1–14400               |
+| `shortBreakSeconds`     | 300                  | Integer, 1–14400               |
+| `longBreakSeconds`      | 900                  | Integer, 1–14400               |
+| `cyclesBeforeLongBreak` | 4                    | Integer, 1–12                  |
+
+- Joins and rejoins are idempotent. Joining during a live timer also joins that
+  interval, unless the caller already participates in another live timer.
+- A room timer starts with all active members. If any of them has another live
+  timer, the start returns 409 until they leave or cancel it. This stops
+  overlapping sessions from inflating study totals. Expired guests aren't added
+  to new timers or shown as active members.
+- Owners must transfer ownership or close the room before leaving. The new owner
+  must be an active registered member.
+- Removing a member is not a permanent ban: they can rejoin with a current code.
+  Rotating the code invalidates the previous one.
+- Closed rooms reject joining, updates, transfers and new timers.
+- Settings changes affect future intervals, never the current one.
+
+### 3.4 Pomodoro timers
+
+| Method | Endpoint                        | Access                     | JSON body                                  | Response                                        |
+| ------ | ------------------------------- | -------------------------- | ------------------------------------------ | ----------------------------------------------- |
+| POST   | `/api/timers`                   | Authenticated              | `{}` or optional `phase`, `plannedSeconds` | 201 new solo timer                              |
+| GET    | `/api/timers`                   | Authenticated              | None                                       | 200 caller's live timers, up to 100             |
+| GET    | `/api/timers/:timerId`          | Solo participant or Member | None                                       | 200 server-derived countdown                    |
+| POST   | `/api/timers/:timerId/pause`    | Timer owner                | None                                       | 200 paused timer                                |
+| POST   | `/api/timers/:timerId/resume`   | Timer owner                | None                                       | 200 resumed timer                               |
+| POST   | `/api/timers/:timerId/complete` | Timer owner                | None                                       | 200 completed timer, after planned time elapses |
+| POST   | `/api/timers/:timerId/cancel`   | Timer owner                | None                                       | 200 cancelled timer, preserving partial focus   |
+| POST   | `/api/timers/:timerId/join`     | Member                     | None                                       | 200 shared timer after joining/rejoining        |
+| POST   | `/api/timers/:timerId/leave`    | Member                     | None                                       | 200 shared timer after leaving the interval     |
+
+`POST /api/timers` requires a JSON object; send `{}` for defaults.
+
+```json
+{ "phase": "FOCUS", "plannedSeconds": 1500 }
+```
+
+`phase` is `FOCUS` (default, 1500 s), `SHORT_BREAK` (300 s) or `LONG_BREAK`
+(900 s). Custom `plannedSeconds` accepts integers 1–14400.
+
+Timer responses contain the stored fields plus `elapsedSeconds`,
+`remainingSeconds` and `serverTime`. Dates are ISO timestamps. Statuses are
+`ACTIVE`, `PAUSED`, `COMPLETED` or `CANCELLED`.
+
+- A shared room chooses its next phase itself: focus, short break, focus, and a
+  long break after the configured cycle count. The owner requests each interval;
+  nothing auto-starts. Cancelling a phase does not count as completion.
+- One person can be in at most one live timer, and each room has at most one.
+  A conflicting start/join returns 409. Pausing an inactive timer, resuming a
+  non-paused one, completing early, or cancelling a completed timer also returns 409.
+- Interval join/leave applies to shared timers; leaving keeps room membership.
+  Cancel a solo timer to stop it.
+- There is no WebSocket layer: the frontend can poll the room/timer endpoint
+  about once per second and interpolate the countdown from the server response.
+
+### 3.5 Minigames
+
+| Method | Endpoint                  | Access        | JSON body                          | Response                                          |
+| ------ | ------------------------- | ------------- | ---------------------------------- | ------------------------------------------------- |
+| GET    | `/api/games`              | Authenticated | None                               | 200 up to 100 enabled `{ id, key, name }` entries |
+| POST   | `/api/games/:key/results` | Registered    | Game-specific verification payload | 201 server-verified `GameResult`                  |
+
+See [Minigames](#6-minigames) for how to add a game.
+
+### 3.6 Pagination and errors
+
+`/api/users`, `/api/users/me/study-sessions` and `/api/users/me/game-results`
+accept `?skip=0&take=20`. `skip` is an integer 0–1000000, `take` an integer
+1–100. Invalid, negative, fractional or repeated values return 400. Responses are
+plain arrays with no total-count envelope.
+
+Errors are JSON, for example `{ "error": "A valid Bearer token is required" }`.
+
+| Status | Meaning                                                                                 |
+| ------ | --------------------------------------------------------------------------------------- |
+| 400    | Invalid JSON, body, pagination, UUID or action input                                    |
+| 401    | Missing/invalid/expired token, failed login, or incorrect password                      |
+| 403    | Insufficient permissions, guest using a registered endpoint, or rejected browser origin |
+| 404    | Missing record, code, game or endpoint; inaccessible solo timers also return 404        |
+| 409    | Duplicate value, closed room, timer conflict, invalid transition or concurrent change   |
+| 413    | JSON body exceeds 16 KB                                                                 |
+| 429    | Authentication attempt limit exceeded                                                   |
+| 500    | Unexpected server error; internal details are not returned                              |
+| 501    | Game result verifier has not been implemented                                           |
+
+### 3.7 Examples
+
+```bash
+curl -X POST http://localhost:3000/api/auth/signup \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"learner@example.com","username":"learner","password":"a-long-local-password"}'
+
+curl -X POST http://localhost:3000/api/rooms \
+  -H 'Authorization: Bearer YOUR_TOKEN' \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Study group"}'
+```
+
+Friends authenticate (or enter as guests), then call `/api/rooms/join` with the
+room's invite code. The owner calls `/api/rooms/ROOM_UUID/timers` to start a
+shared interval. Solo callers use `/api/timers` instead.
+
+---
+
+## 4. Data model
+
+Nine PostgreSQL tables.
+
+| Table                | Purpose                                                                | Main relationships                                                           |
+| -------------------- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `User`               | Registered profile and optional password hash                          | Owns rooms; has login sessions, memberships, study history, and game results |
+| `AuthSession`        | A registered user's login, identified by a hashed token with an expiry | Belongs to one user                                                          |
+| `GuestSession`       | Temporary guest identity, display name, hashed token and expiry        | Can join rooms and study sessions; cannot own rooms or save game results     |
+| `StudyRoom`          | Shared space with a unique invite code and Pomodoro settings           | Owned by a registered user; has memberships and timer sessions               |
+| `RoomMember`         | Who belongs to a room                                                  | One room and exactly one user OR guest                                       |
+| `PomodoroSession`    | One focus or break interval, solo or shared                            | Optional room; has participant records                                       |
+| `SessionParticipant` | Individual attendance and actual focus time for an interval            | One session and exactly one user OR guest                                    |
+| `MiniGame`           | Catalogue of games with a stable key such as `memory`                  | Has game results                                                             |
+| `GameResult`         | One registered user's verified game attempt                            | A user and a game                                                            |
+
+```mermaid
+erDiagram
+  User ||--o{ AuthSession : authenticates
+  User ||--o{ StudyRoom : owns
+  StudyRoom ||--o{ RoomMember : includes
+  User o|--o{ RoomMember : joins
+  GuestSession o|--o{ RoomMember : joins
+  StudyRoom o|--o{ PomodoroSession : hosts
+  PomodoroSession ||--o{ SessionParticipant : records
+  User o|--o{ SessionParticipant : studies
+  GuestSession o|--o{ SessionParticipant : studies
+  User ||--o{ GameResult : plays
+  MiniGame ||--o{ GameResult : records
+```
+
+A membership or attendance record references exactly one identity, a registered
+user **or** a guest. The two optional links are an exclusive choice; PostgreSQL
+CHECK constraints enforce it, and unique pairs stop duplicate rows for the same
+person. A room membership means “belongs to this room”; a session participant
+means “attended this particular interval”. They are deliberately separate:
+someone can belong to a room while running a solo timer.
+
+### Reading the schema
+
+- `Int` is a PostgreSQL integer; `String` is text unless marked `@db.Uuid`.
+- `DateTime` is a timestamp, exposed by the API as an ISO string. Use server
+  timestamps for accounting and format for the user's timezone in the frontend.
+- `?` means nullable; `[]` is a collection of related records.
+- `@default(uuid())` generates UUIDs in Prisma. Direct SQL inserts must supply
+  UUID IDs because the migrations don't create a database default.
+- `@updatedAt` is maintained by Prisma, not a trigger; direct SQL updates must set
+  it themselves.
+- Fields such as `user`, `members` and `participants` are **Prisma relation
+  fields**, not columns. The foreign-key column is, for example, `userId`.
+
+### Design choices
+
+- The integer `User.id`, email, username and timestamps were preserved. New
+  temporary/session/room records use UUIDs; games use integer IDs.
+- Guests are separate from users, so no fake email or nullable email is needed.
+  Guest history is temporary and removed with the guest identity.
+- A room owner is always a registered user and also gets a membership, created in
+  the same transaction as the room.
+- Invite codes identify rooms, not users. They are random server-generated
+  (`randomBytes(9).toString("base64url")`), retried on Prisma `P2002`
+  collisions, case-sensitive, and rotatable.
+- `leftAt` marks leaving a room and is reset to null on rejoin. Membership is one
+  current record, not a log of every visit; attendance stores study history.
+- `plannedSeconds` is snapshotted on each interval so changing room settings
+  never rewrites history.
+- There is no database write every second. Clients derive the countdown from
+  server timestamps.
+- Statistics are computed from history; there are no redundant totals. Indexed
+  foreign keys and user/time indexes support future date filtering.
+- Minigames are independent of timers. Guests may play, but only registered users
+  keep scores. Scores are signed integers; each game decides what is valid.
+- Friend requests, chat and leaderboards are intentionally deferred. Joining
+  friends by room code needs no friendship table.
+
+### 4.1 User
+
+A permanent registered account. Guests have no `User` row.
+
+| Field          | Type       | Default / rule             | Meaning                                        |
+| -------------- | ---------- | -------------------------- | ---------------------------------------------- |
+| `id`           | `Int`      | Primary key; autoincrement | Stable registered-user identity                |
+| `email`        | `String`   | Unique; required           | Login address; API trims/lowercases new values |
+| `username`     | `String`   | Unique; required           | Public name; API lowercases new values         |
+| `passwordHash` | `String?`  | Null if omitted            | Salted scrypt hash; never a plain password     |
+| `createdAt`    | `DateTime` | `now()`                    | Account creation time                          |
+| `updatedAt`    | `DateTime` | `@updatedAt`               | Last account modification                      |
+
+Relations: `authSessions`, `ownedRooms`, `memberships`, `studyHistory`,
+`gameResults`. A null hash preserves pre-existing profiles and never grants
+login. Database uniqueness is case-sensitive; API normalization applies to new
+writes and does not rewrite older records.
+
+### 4.2 AuthSession
+
+One registered login; several allow multiple devices.
+
+| Field       | Type          | Default / rule                   | Meaning                                 |
+| ----------- | ------------- | -------------------------------- | --------------------------------------- |
+| `id`        | UUID `String` | Primary key; `uuid()`            | Login session ID                        |
+| `userId`    | `Int`         | Required foreign key → `User.id` | Authenticated account                   |
+| `tokenHash` | `String`      | Unique; required                 | SHA-256 hash of the random bearer token |
+| `expiresAt` | `DateTime`    | Required; after `createdAt`      | Token validity deadline                 |
+| `createdAt` | `DateTime`    | `now()`                          | Creation time                           |
+
+Indexes on `userId` and `expiresAt` support lookups and cleanup. Signup/login
+generate a random token, store only its hash and return the raw token once.
+Authentication hashes the presented token and **also checks expiry**: a row
+existing is not enough.
+
+### 4.3 GuestSession
+
+A temporary identity for visitors without an account.
+
+| Field         | Type          | Default / rule                    | Meaning                        |
+| ------------- | ------------- | --------------------------------- | ------------------------------ |
+| `id`          | UUID `String` | Primary key; `uuid()`             | Guest identity                 |
+| `displayName` | `String`      | Required; SQL rejects blank names | Name shown to room members     |
+| `tokenHash`   | `String`      | Unique; required                  | Hash of the guest bearer token |
+| `expiresAt`   | `DateTime`    | Required; after `createdAt`       | Guest validity deadline        |
+| `createdAt`   | `DateTime`    | `now()`                           | Guest entry time               |
+
+Relations: `memberships`, `studyHistory`. Guests may study solo, join rooms and
+join shared timers, but cannot own rooms or persist minigame results. Guest study
+records are temporary; there is no guest-to-account history transfer.
+
+### 4.4 StudyRoom
+
+| Field                   | Type          | Default / rule                    | Meaning                               |
+| ----------------------- | ------------- | --------------------------------- | ------------------------------------- |
+| `id`                    | UUID `String` | Primary key; `uuid()`             | Room identity                         |
+| `name`                  | `String`      | Required; SQL rejects blank names | Human-readable name                   |
+| `inviteCode`            | `String`      | Unique; required; nonblank        | Code for joining                      |
+| `ownerId`               | `Int`         | Required foreign key → `User.id`  | Registered owner                      |
+| `focusSeconds`          | `Int`         | 1500; positive                    | Duration of future focus intervals    |
+| `shortBreakSeconds`     | `Int`         | 300; positive                     | Duration of future short breaks       |
+| `longBreakSeconds`      | `Int`         | 900; positive                     | Duration of future long breaks        |
+| `cyclesBeforeLongBreak` | `Int`         | 4; positive                       | Completed focuses before a long break |
+| `createdAt`             | `DateTime`    | `now()`                           | Room creation                         |
+| `updatedAt`             | `DateTime`    | `@updatedAt`                      | Last setting/ownership change         |
+| `closedAt`              | `DateTime?`   | Null if omitted                   | Closed marker; null means open        |
+
+Relations: `owner`, `members`, `sessions`. Index: `ownerId`. The API limits
+durations to 1–14400 s and cycles to 1–12 on top of the SQL positive checks.
+Prefer closing over deleting a room to keep its history and name.
+
+### 4.5 RoomMember
+
+| Field            | Type           | Default / rule                         | Meaning                          |
+| ---------------- | -------------- | -------------------------------------- | -------------------------------- |
+| `id`             | UUID `String`  | Primary key; `uuid()`                  | Membership ID, used for removal  |
+| `roomId`         | UUID `String`  | Required foreign key → `StudyRoom.id`  | Room joined                      |
+| `userId`         | `Int?`         | Foreign key → `User.id`                | Registered member, if applicable |
+| `guestSessionId` | UUID `String?` | Foreign key → `GuestSession.id`        | Guest member, if applicable      |
+| `joinedAt`       | `DateTime`     | `now()`                                | First membership creation time   |
+| `leftAt`         | `DateTime?`    | Null if omitted; not before `joinedAt` | Null means active membership     |
+
+Unique pairs `(roomId, userId)` and `(roomId, guestSessionId)`; PostgreSQL permits
+nulls in those pairs, so the exactly-one-identity CHECK closes the both-empty
+loophole. A member list also filters expired guests: `leftAt = null` alone does
+not make an expired identity valid.
+
+### 4.6 PomodoroSession
+
+One focus or break interval. It stores the common timer, not each person's total.
+
+| Field            | Type            | Default / rule                         | Meaning                                      |
+| ---------------- | --------------- | -------------------------------------- | -------------------------------------------- |
+| `id`             | UUID `String`   | Primary key; `uuid()`                  | Interval identity                            |
+| `roomId`         | UUID `String?`  | Foreign key → `StudyRoom.id`; nullable | Shared room; normally null for solo          |
+| `phase`          | `PomodoroPhase` | `FOCUS`                                | `FOCUS`, `SHORT_BREAK` or `LONG_BREAK`       |
+| `status`         | `SessionStatus` | `ACTIVE`                               | `ACTIVE`, `PAUSED`, `COMPLETED`, `CANCELLED` |
+| `plannedSeconds` | `Int`           | 1500; positive                         | Duration snapshot                            |
+| `startedAt`      | `DateTime`      | `now()`                                | Original start, retained through pauses      |
+| `endedAt`        | `DateTime?`     | Null for live intervals                | Completion/cancellation time                 |
+| `resumedAt`      | `DateTime?`     | Null until resumed                     | Start of the most recent running segment     |
+| `pausedAt`       | `DateTime?`     | Required only while paused             | Last pause time                              |
+| `elapsedSeconds` | `Int`           | 0; between 0 and `plannedSeconds`      | Active time committed at transitions         |
+
+Indexes: `(roomId, startedAt)` for room history and `(status, startedAt)` for the
+worker. A custom SQL **partial unique index** allows at most one `ACTIVE` or
+`PAUSED` interval per non-null room; solo intervals don't conflict. That each
+identity is in only one live timer is an application/transaction rule, not
+covered by this index.
+
+| State     | `endedAt` | `pausedAt` | Behavior                                   |
+| --------- | --------- | ---------- | ------------------------------------------ |
+| ACTIVE    | Null      | Null       | Server computes current elapsed time       |
+| PAUSED    | Null      | Required   | Stored elapsed time stays frozen           |
+| COMPLETED | Required  | Null       | Planned time elapsed; attendance finalized |
+| CANCELLED | Required  | Null       | Partial attendance kept; not a completion  |
+
+Update status and timestamps together in one write. SQL also checks positive
+durations, `0 ≤ elapsedSeconds ≤ plannedSeconds`, and that end/pause timestamps
+are not earlier than the running segment's start. SQL validates the resulting
+row, not the whole transition history, so services must enforce allowed
+transitions.
+
+A deleted room sets `roomId` to null on its historical sessions, so null can mean
+“former shared room” as well as “solo”.
+
+### 4.7 SessionParticipant
+
+Individual attendance for an interval; the source of personal study time.
+
+| Field            | Type           | Default / rule                              | Meaning                                |
+| ---------------- | -------------- | ------------------------------------------- | -------------------------------------- |
+| `id`             | UUID `String`  | Primary key; `uuid()`                       | Attendance identity                    |
+| `sessionId`      | UUID `String`  | Required foreign key → `PomodoroSession.id` | Attended interval                      |
+| `userId`         | `Int?`         | Foreign key → `User.id`                     | Registered participant                 |
+| `guestSessionId` | UUID `String?` | Foreign key → `GuestSession.id`             | Guest participant                      |
+| `joinedAt`       | `DateTime`     | `now()`                                     | Original attendance start              |
+| `leftAt`         | `DateTime?`    | Null while attending                        | Departure or finalization boundary     |
+| `creditedAt`     | `DateTime`     | `now()`; not before `joinedAt`              | Last boundary used for time accounting |
+| `focusedSeconds` | `Int`          | 0; nonnegative                              | Persisted actual focus time            |
+| `completedAt`    | `DateTime?`    | Null unless personal completion             | Full planned focus interval completed  |
+
+Unique pairs `(sessionId, userId)` and `(sessionId, guestSessionId)`; indexes on
+`(userId, joinedAt)` and `guestSessionId`. A room finishing does not mean someone
+who left early or arrived late completed the interval.
+
+### 4.8 MiniGame and 4.9 GameResult
+
+`MiniGame`: `id` (Int, autoincrement), `key` (unique stable API identifier),
+`name`, `isEnabled` (default true).
+
+`GameResult`: `id` (UUID), `userId` → `User`, `gameId` → `MiniGame`, `score`
+(signed Int), `durationSeconds` (Int, ≥ 0), `playedAt` (`now()`). Indexes:
+`(userId, playedAt)`, `(userId, gameId, score)`, `gameId`. There is no guest
+relation; persistent scores require registration.
+
+---
+
+## 5. How timers and statistics work
+
+**Running time.** While `ACTIVE`:
+
+```text
+runningSince = resumedAt ?? startedAt
+elapsed      = min(plannedSeconds,
+                   elapsedSeconds + floor((serverNow - runningSince) / 1000))
+remaining    = plannedSeconds - elapsed
+```
+
+`elapsedSeconds` stores accumulated active time at the last pause. Pausing
+commits elapsed time and attendance. Resuming sets `resumedAt`, clears `pausedAt`
+and starts a new running segment; `startedAt` never changes. There is no full
+pause-event audit log.
+
+**Finalization.** A timer continues when clients disconnect. The worker (once a
+second, safe on every instance) and read routes finalize expired intervals,
+including after a backend restart. Finalization uses the scheduled deadline, not
+the later polling time, so polling delays can't inflate statistics. Transactions
+and row locks (room before session, always) prevent concurrent starts and
+double-crediting.
+
+**Crediting focus.** Personal `focusedSeconds` is credited on pause, leave,
+cancel and completion, and computed live for statistics reads. For a segment,
+accounting starts at the latest of `creditedAt`, `joinedAt` and the running
+segment's start; pauses, absences and breaks add zero; focus is capped at the
+planned duration. Accounting is in whole seconds, so sub-second fragments round
+down at boundaries.
+
+Leaving sets `leftAt`. Rejoining reuses the row, clears `leftAt`/`completedAt`
+and sets `creditedAt` to the rejoin time, keeping prior focused seconds without
+crediting the absence or double-crediting an earlier segment.
+
+Example: in a 1500-second interval, the owner can earn 1500 s and a friend who
+arrives 900 s late earns 600 s. Only the owner gets `completedAt`. Never multiply
+room duration by member count; use participant records.
+
+**Statistics** (`stats/stats.service.ts`, history is the source of truth):
+
+- `focusedSeconds`: sum of persisted personal focus time, including partial and
+  cancelled intervals, plus uncommitted current focus time on API reads.
+- `completedFocusSessions`: participant records with `completedAt` whose
+  interval is a `COMPLETED` focus.
+- Per game: result count, best score and total duration for that user.
+- Breaks never count toward focus; guest records never appear in user statistics.
+- A new profile returns zero totals and an empty game list; an unknown user
+  returns null. The API runs the query in a transaction for a consistent snapshot.
+
+---
+
+## 6. Minigames
+
+No actual games exist yet, so the default verifier registry is empty. An enabled
+catalogue entry without a verifier returns **501** on result submission; a
+missing or disabled game returns 404. A client-supplied `score`, `userId` or
+duration is never accepted as authority.
+
+To add a game:
+
+1. Register it in the catalogue (writes to `DATABASE_URL` only when you run it):
+
+   ```bash
+   npm run games:manage -- add memory "Memory"
+   npm run games:manage -- disable memory
+   npm run games:manage -- enable memory
+   ```
+
+2. Add its verifier in `src/games/registry.ts`. It receives the authenticated
+   user ID and the unknown payload, verifies an authoritative attempt/proof and
+   returns `{ score, durationSeconds }`. Reject bad payloads with
+   `ApiError(400, …)` and atomically consume attempt identifiers so a proof can't
+   be replayed. `GameResult` has no attempt ID, so add attempt storage if replay
+   protection needs it.
+3. The shared service validates the result (score within PostgreSQL integer
+   range, duration 0–86400) and records it in private history and statistics.
+
+Games aren't tied to a particular break. Disable games rather than deleting
+entries that have results.
+
+---
+
+## 7. Deletion and lifecycle
+
+| Parent action          | Database behavior                                                            | Implemented API behavior                                                 |
+| ---------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Delete User            | Cascade logins, memberships, attendance, results; owned rooms block deletion | Account deletion cancels/deletes owned rooms first, then the user        |
+| Delete GuestSession    | Cascade guest memberships and attendance                                     | Logout/cleanup also cancels solo timers and settles shared attendance    |
+| Delete StudyRoom       | Cascade memberships; set historical session room IDs to null                 | Prefer close; account deletion physically removes owned rooms            |
+| Delete PomodoroSession | Cascade attendance                                                           | Ordinary cancellation retains the session and partial history            |
+| Delete MiniGame        | Blocked if results reference it                                              | CLI disables instead                                                     |
+| Close StudyRoom        | SQL only stores a timestamp                                                  | Cancels the live timer, saves partial time, rejects new joins and timers |
+
+Expiry is not an automatic SQL deletion. Authentication checks it on every
+request and `cleanupExpiredSessions()` removes expired identities periodically.
+Guest-only session rows may remain after attendance is removed. Deleting a user
+who owns rooms is blocked at the database level until those rooms are transferred
+or deleted; closing alone doesn't lift that.
+
+### Application rules the schema can't enforce
+
+Room ownership and closure, current membership, expiry, allowed transitions,
+solo-timer participant count, non-overlapping attendance and game-specific
+scores live in the services. Foreign keys alone do not enforce these
+permissions, so preserve the service checks when adding endpoints. Critical
+writes use serializable transactions with retries on Prisma `P2034`; multi-record
+operations are atomic. Don't create a timer and add attendance as separate
+requests.
+
+---
+
+## 8. Migrations
+
+`schema.prisma` describes the models, while hand-written SQL in the migrations
+adds the CHECK constraints and the partial unique live-timer index. Preserve them
+in future migrations. `prisma db push` is not a substitute.
+
+| Migration                         | Contents                                                                                     |
+| --------------------------------- | -------------------------------------------------------------------------------------------- |
+| `20261001114431_init`             | Original `User` table                                                                        |
+| `20261001115727_remove_password`  | Drops the old plain `password` column                                                        |
+| `20261006160000_study_platform`   | Nullable `User.passwordHash`, the other 8 tables, enums, indexes, FKs, CHECKs, partial index |
+| `20261006170000_timer_accounting` | `resumedAt`, `creditedAt`, timestamp CHECKs, `(status, startedAt)` index                     |
+
+The study-platform migration preserves existing profiles and never drops user
+data. The timer-accounting migration keeps original start times and gives
+existing attendance an initial `creditedAt` baseline instead of guessing old
+unrecorded focus time.
+
+```bash
+npm run db:validate   # validate schema
+npm run db:deploy     # apply committed migrations (explicit; changes DATABASE_URL's DB)
+npm run db:generate   # regenerate the client; does not touch the database
+npm run db:migrate -- --name describe_the_change   # new migration on a dev DB
+```
+
+Client generation runs automatically before dev, build and tests. Don't edit
+deployed migrations; add a new one.
+
+Future features should add models when concrete: friendships (friend requests),
+messages (chat), game attempts (replay protection), external-account identities
+(OAuth), event logs (full pause/attendance audit).
+
+---
+
+## 9. Testing
+
+```bash
+cd backend
+npm run test:db:up      # disposable PostgreSQL 17 on 127.0.0.1:55432
+npm test                # API + database suites, sequentially
+npm run test:types
+npm run lint
+npm run format:check
+npm run test:db:down
+```
+
+`npm run test:api` and `npm run test:db` run the suites separately. The test
+database is `wepomodoro_test` on ephemeral storage. The runner never falls back
+to `DATABASE_URL`; an optional `TEST_DATABASE_URL` must point to localhost and
+that exact database name, without query options. Committed migrations are
+applied before fixtures run. Database cases roll back after each test; API tests
+serve Express on an ephemeral loopback port, use a controlled clock (no sleeping)
+and clean their own fixtures.
+
+Coverage includes room joins for users and guests, rejoining, solo and shared
+timers, pause/resume/completion, snapshot settings, late joins, expiry,
+long-break cycles, statistics isolation and break filtering, game totals, unique
+constraints, identity checks, duration/status checks, foreign keys, deletion
+behavior, concurrent starts, legacy-user migration preservation and secret-field
+exclusion. CI runs the full suite against its own PostgreSQL service.
+
+---
+
+## 10. Source map and frontend integration
+
+| File                                        | Role                                                            |
+| ------------------------------------------- | --------------------------------------------------------------- |
+| `src/index.ts`                              | Startup, timer/session worker, graceful shutdown                |
+| `src/app.ts`                                | Injectable Express app, CORS, JSON parsing, consistent errors   |
+| `src/api/router.ts`                         | The endpoint contract above                                     |
+| `src/api/common.ts`                         | Validation, identity types, retryable serializable transactions |
+| `src/api/lifecycle.ts`                      | Logout, account deletion, expired-session cleanup               |
+| `src/auth/auth.service.ts`                  | Passwords, token issuance/authentication, profiles              |
+| `src/rooms/rooms.service.ts`                | Memberships, settings, owner actions                            |
+| `src/timers/timers.service.ts`              | Clock math, attendance, transitions, finalization               |
+| `src/stats/stats.service.ts`                | Stored and live focus statistics                                |
+| `src/games/games.service.ts`                | Verified game result submission                                 |
+| `src/games/registry.ts`                     | Extension point for game verifiers                              |
+| `src/games/manage.ts`                       | Catalogue management CLI                                        |
+| `prisma/schema.prisma`                      | Data model                                                      |
+| `compose.test.yml`                          | Disposable test database, separate from the app Compose file    |
+| `test/api.test.ts`, `test/database.test.ts` | HTTP and real-PostgreSQL integration cases                      |
+
+`dotenv` is a runtime dependency so a production install can load its
+environment. The old unauthenticated `users.ts` router and the `users.service.ts`
+helper were removed; everything goes through the authenticated router.
+
+**Frontend.** Call the API at `<backend>/api/...`: with `VITE_API_URL` set to the
+backend origin (for example `http://localhost:3000`), use
+`${API_URL}/api/auth/signup`, `${API_URL}/api/users`, and so on. Through Vite's
+`/api` proxy, use relative `/api/...` paths. The signup form must send a
+password and keep the returned token; every other request must send
+`Authorization: Bearer <token>` or it returns 401. The user directory exposes
+usernames, not other people's emails. Don't duplicate timer/auth logic in React
+or write to Prisma from the browser, and don't submit claimed study totals: poll
+the room/timer endpoints and show server-derived remaining time locally.
+
+References:
+[Express 5 error handling](https://expressjs.com/en/5x/guide/error-handling/),
+[Prisma transaction isolation](https://docs.prisma.io/docs/orm/v7/prisma-client/queries/transactions),
+[Prisma relational modelling](https://www.prisma.io/docs/orm/data-modeling/relational-databases),
+and [Node.js crypto](https://nodejs.org/api/crypto.html).

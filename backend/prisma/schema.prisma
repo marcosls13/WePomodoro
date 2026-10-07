@@ -1,8 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
 generator client {
   provider = "prisma-client"
   output   = "../src/generated/prisma"
@@ -12,10 +7,164 @@ datasource db {
   provider = "postgresql"
 }
 
+enum PomodoroPhase {
+  FOCUS
+  SHORT_BREAK
+  LONG_BREAK
+}
+
+enum SessionStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+  CANCELLED
+}
+
 model User {
-  id        Int      @id @default(autoincrement())
-  email     String   @unique
-  username  String   @unique
+  id           Int      @id @default(autoincrement())
+  email        String   @unique
+  username     String   @unique
+  // Nullable for existing profiles and future external login providers.
+  // Password login must reject accounts without a hash.
+  passwordHash String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  authSessions AuthSession[]
+  ownedRooms   StudyRoom[]
+  memberships  RoomMember[]
+  studyHistory SessionParticipant[]
+  gameResults  GameResult[]
+}
+
+model AuthSession {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    Int
+  // Store a hash of a random session token, never the bearer token itself.
+  tokenHash String   @unique
+  expiresAt DateTime
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model GuestSession {
+  id          String   @id @default(uuid()) @db.Uuid
+  displayName String
+  tokenHash   String   @unique
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+
+  memberships  RoomMember[]
+  studyHistory SessionParticipant[]
+
+  @@index([expiresAt])
+}
+
+model StudyRoom {
+  id                    String            @id @default(uuid()) @db.Uuid
+  name                  String
+  inviteCode            String            @unique
+  ownerId               Int
+  focusSeconds          Int               @default(1500)
+  shortBreakSeconds     Int               @default(300)
+  longBreakSeconds      Int               @default(900)
+  cyclesBeforeLongBreak Int               @default(4)
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+  // Close rooms instead of deleting them to preserve study history.
+  closedAt              DateTime?
+  owner                 User              @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  members               RoomMember[]
+  sessions              PomodoroSession[]
+
+  @@index([ownerId])
+}
+
+model RoomMember {
+  id             String        @id @default(uuid()) @db.Uuid
+  roomId         String        @db.Uuid
+  // Exactly one identity; enforced by a SQL CHECK in the migration.
+  userId         Int?
+  guestSessionId String?       @db.Uuid
+  joinedAt       DateTime      @default(now())
+  leftAt         DateTime?
+  room           StudyRoom     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user           User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  guestSession   GuestSession? @relation(fields: [guestSessionId], references: [id], onDelete: Cascade)
+
+  // Rejoining updates leftAt on the same membership rather than adding a row.
+  @@unique([roomId, userId])
+  @@unique([roomId, guestSessionId])
+  @@index([userId])
+  @@index([guestSessionId])
+}
+
+model PomodoroSession {
+  id             String               @id @default(uuid()) @db.Uuid
+  // Null means a solo timer; a room session shares a timer across participants.
+  roomId         String?              @db.Uuid
+  phase          PomodoroPhase        @default(FOCUS)
+  status         SessionStatus        @default(ACTIVE)
+  // Snapshot the duration so changing room settings doesn't rewrite history.
+  plannedSeconds Int                  @default(1500)
+  startedAt      DateTime             @default(now())
+  endedAt        DateTime?
+  resumedAt      DateTime?
+  pausedAt       DateTime?
+  // Accumulated active time at the last pause; exclude paused time.
+  elapsedSeconds Int                  @default(0)
+  room           StudyRoom?           @relation(fields: [roomId], references: [id], onDelete: SetNull)
+  participants   SessionParticipant[]
+
+  @@index([roomId, startedAt])
+  @@index([status, startedAt])
+}
+
+model SessionParticipant {
+  id             String          @id @default(uuid()) @db.Uuid
+  sessionId      String          @db.Uuid
+  // Exactly one identity; enforced by a SQL CHECK in the migration.
+  userId         Int?
+  guestSessionId String?         @db.Uuid
+  joinedAt       DateTime        @default(now())
+  leftAt         DateTime?
+  creditedAt     DateTime        @default(now())
+  // Actual focused time for this person, excluding pauses and late arrival.
+  focusedSeconds Int             @default(0)
+  // Set when this person completes a focus interval, not merely on room completion.
+  completedAt    DateTime?
+  session        PomodoroSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  user           User?           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  guestSession   GuestSession?   @relation(fields: [guestSessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, userId])
+  @@unique([sessionId, guestSessionId])
+  @@index([userId, joinedAt])
+  @@index([guestSessionId])
+}
+
+model MiniGame {
+  id        Int          @id @default(autoincrement())
+  key       String       @unique
+  name      String
+  isEnabled Boolean      @default(true)
+  results   GameResult[]
+}
+
+model GameResult {
+  id              String   @id @default(uuid()) @db.Uuid
+  userId          Int
+  gameId          Int
+  score           Int
+  durationSeconds Int
+  playedAt        DateTime @default(now())
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  game            MiniGame @relation(fields: [gameId], references: [id], onDelete: Restrict)
+
+  @@index([userId, playedAt])
+  @@index([userId, gameId, score])
+  @@index([gameId])
 }

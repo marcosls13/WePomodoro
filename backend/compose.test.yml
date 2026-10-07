@@ -1,0 +1,17 @@
+name: wepomodoro-db-tests
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: wepomodoro_test
+      POSTGRES_PASSWORD: local_test_only
+      POSTGRES_DB: wepomodoro_test
+    ports:
+      - "127.0.0.1:55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wepomodoro_test -d wepomodoro_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    tmpfs:
+      - /var/lib/postgresql/data

@@ -9,6 +9,7 @@ import SignGuest from "./pages/SignGuest";
 import VerifyEmail from "./pages/VerifyEmail";
 import ForgotPassword from "./pages/ForgotPassword";
 import ResetPassword from "./pages/ResetPassword";
+import Me from "./pages/Me";
 import Tomato from "./Tomato";
 
 export default function App() {
@@ -30,6 +31,7 @@ export default function App() {
           </NavLink>
           <NavLink to="/UserInfo">Community</NavLink>
           <NavLink to="/about">About</NavLink>
+          <NavLink to="/me">Me</NavLink>
         </nav>
         <Link to="/auth/signup" className="button button-small">
           Join us <span aria-hidden="true">↗</span>
@@ -39,6 +41,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/about" element={<About />} />
+          <Route path="/me" element={<Me />} />
           <Route path="/UserInfo" element={<UserInfo />} />
           <Route path="*" element={<NotFound />} />
           <Route path="/auth/signup" element={<SignUp />} />

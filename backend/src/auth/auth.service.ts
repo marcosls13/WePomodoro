@@ -197,6 +197,11 @@ export async function updateProfile(
       where: { id: userId },
       data: {
         email: input.email,
+        // A new address hasn't been proven yet.
+        emailVerifiedAt:
+          input.email !== undefined && input.email !== current.email
+            ? null
+            : undefined,
         username: input.username,
         passwordHash: newHash,
       },

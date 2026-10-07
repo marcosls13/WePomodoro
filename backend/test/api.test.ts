@@ -29,7 +29,17 @@ const connectionString = url.toString();
 const db = new PrismaClient({ adapter: new PrismaPg({ connectionString }) });
 const prefix = `api${randomBytes(5).toString("hex")}`;
 let clock = new Date();
-const ctx = { db, now: () => new Date(clock) };
+const mails: { to: string; text: string }[] = [];
+const ctx = {
+  db,
+  now: () => new Date(clock),
+  mailer: {
+    send: (to: string, _subject: string, text: string) => {
+      mails.push({ to, text });
+      return Promise.resolve();
+    },
+  },
+};
 let server: Server;
 let base: string;
 let count = 0;
@@ -185,7 +195,11 @@ before(async () => {
   );
   const app = createApp(ctx, {
     // The shared fixtures sign up dozens of users from one IP.
-    rateLimits: { authPerMinute: 100000, loginFailures: 100000 },
+    rateLimits: {
+      authPerMinute: 100000,
+      loginFailures: 100000,
+      resetRequests: 100000,
+    },
     onError: (error) => {
       errors.push(error);
     },
@@ -776,7 +790,7 @@ void test("expired identity cleanup leaves registered study history intact", asy
 
 void test("login failures are limited per username and token issuance per IP", async () => {
   const limited = createApp(ctx, {
-    rateLimits: { authPerMinute: 6, loginFailures: 3 },
+    rateLimits: { authPerMinute: 6, loginFailures: 3, resetRequests: 3 },
     onError: (error) => {
       errors.push(error);
     },
@@ -819,4 +833,243 @@ void test("login failures are limited per username and token issuance per IP", a
       });
     });
   }
+});
+
+void test("password reset: emailed code, verified, then a new password ends every session", async () => {
+  const account = await user();
+  const other = await user();
+  const post = <T>(path: string, input: unknown, expected: number) =>
+    request<T>(
+      `/api/auth/password-reset/${path}`,
+      "POST",
+      undefined,
+      input,
+      expected,
+    );
+  const lastCode = () => {
+    const mail = mails.at(-1);
+    assert.ok(mail);
+    const match = /code is (\d{6})/.exec(mail.text);
+    assert.ok(match?.[1]);
+    return { to: mail.to, code: match[1] };
+  };
+  const wrong = (code: string) => (code === "000000" ? "111111" : "000000");
+
+  // Unknown addresses get the same answer and no email.
+  const before = mails.length;
+  const unknown = await post<{ message: string }>(
+    "request",
+    { email: `nobody-${prefix}@example.test` },
+    202,
+  );
+  assert.equal(mails.length, before);
+  const known = await post<{ message: string }>(
+    "request",
+    { email: account.user.email },
+    202,
+  );
+  assert.deepEqual(known, unknown);
+  assert.equal(mails.length, before + 1);
+  const first = lastCode();
+  assert.equal(first.to, account.user.email);
+  // Only a hash of the code is stored.
+  const rows = await db.emailToken.findMany({
+    where: { userId: account.user.id, purpose: "PASSWORD_RESET_CODE" },
+  });
+  assert.equal(rows.length, 1);
+  assert.notEqual(rows[0]?.tokenHash, first.code);
+
+  // Bad input and wrong codes fail identically; five misses lock that code.
+  await post("verify", { email: account.user.email, code: "12" }, 400);
+  for (let i = 0; i < 5; i++)
+    await post(
+      "verify",
+      { email: account.user.email, code: wrong(first.code) },
+      400,
+    );
+  await post("verify", { email: account.user.email, code: first.code }, 400);
+  // A code for someone else's account is useless.
+  await post("verify", { email: other.user.email, code: first.code }, 400);
+
+  // A new request replaces the locked code; the old one stops working.
+  await post("request", { email: account.user.email }, 202);
+  const second = lastCode();
+  await post(
+    "verify",
+    {
+      email: account.user.email,
+      code: first.code === second.code ? wrong(first.code) : first.code,
+    },
+    400,
+  );
+  const verified = await post<{ resetToken: string }>(
+    "verify",
+    { email: account.user.email, code: second.code },
+    200,
+  );
+  // The code is single use.
+  await post("verify", { email: account.user.email, code: second.code }, 400);
+
+  // The reset token must come with a valid new password and works once.
+  await post(
+    "confirm",
+    { resetToken: verified.resetToken, password: "short" },
+    400,
+  );
+  await post(
+    "confirm",
+    { resetToken: "not-a-token", password: "Brand-new-pass-1" },
+    400,
+  );
+  await post(
+    "confirm",
+    { resetToken: verified.resetToken, password: "Brand-new-pass-1" },
+    204,
+  );
+  await post(
+    "confirm",
+    { resetToken: verified.resetToken, password: "Another-pass-2" },
+    400,
+  );
+
+  // Old sessions are revoked and only the new password logs in.
+  await request("/api/auth/me", "GET", account.token, undefined, 401);
+  await request(
+    "/api/auth/login",
+    "POST",
+    undefined,
+    { username: account.user.username, password: "Correct-password-42" },
+    401,
+  );
+  await request(
+    "/api/auth/login",
+    "POST",
+    undefined,
+    { username: account.user.username, password: "Brand-new-pass-1" },
+    200,
+  );
+  // Other accounts are untouched.
+  await request("/api/auth/me", "GET", other.token, undefined, 200);
+
+  // Codes expire after 10 minutes.
+  await post("request", { email: account.user.email }, 202);
+  const stale = lastCode();
+  const now = clock;
+  clock = new Date(now.getTime() + 11 * 60_000);
+  try {
+    await post("verify", { email: account.user.email, code: stale.code }, 400);
+    await cleanupExpiredSessions(ctx);
+    assert.equal(
+      await db.emailToken.count({
+        where: {
+          userId: account.user.id,
+          purpose: "PASSWORD_RESET_CODE",
+          usedAt: null,
+        },
+      }),
+      0,
+    );
+  } finally {
+    clock = now;
+  }
+});
+
+void test("password reset requests are limited per address", async () => {
+  const account = await user();
+  const limited = createApp(ctx, {
+    rateLimits: { authPerMinute: 100, loginFailures: 100, resetRequests: 2 },
+    onError: (error) => {
+      errors.push(error);
+    },
+  });
+  const limitedServer = limited.listen(0, "127.0.0.1");
+  await new Promise<void>((resolve) => {
+    limitedServer.once("listening", resolve);
+  });
+  try {
+    const address = limitedServer.address();
+    assert.ok(address && typeof address !== "string");
+    const ask = (email: string) =>
+      fetch(
+        `http://127.0.0.1:${address.port}/api/auth/password-reset/request`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email }),
+        },
+      );
+    assert.equal((await ask(account.user.email)).status, 202);
+    assert.equal((await ask(account.user.email.toUpperCase())).status, 202);
+    assert.equal((await ask(account.user.email)).status, 429);
+    assert.equal((await ask(`x-${prefix}@example.test`)).status, 202);
+  } finally {
+    await new Promise<void>((resolve) => {
+      limitedServer.close(() => {
+        resolve();
+      });
+    });
+  }
+});
+
+void test("email verification: signup emails a code that proves the address", async () => {
+  const before = mails.length;
+  const account = await user();
+  const mail = mails.slice(before).find((m) => m.to === account.user.email);
+  assert.ok(mail);
+  const code = /code is (\d{6})/.exec(mail.text)?.[1];
+  assert.ok(code);
+  const wrong = code === "000000" ? "111111" : "000000";
+  const post = (
+    path: string,
+    token: string,
+    input: unknown,
+    expected: number,
+  ) => request(`/api/auth/verify-email${path}`, "POST", token, input, expected);
+
+  const verified = async () =>
+    (await db.user.findUniqueOrThrow({ where: { id: account.user.id } }))
+      .emailVerifiedAt;
+  assert.equal(await verified(), null);
+  // Guests have no email to verify; the code must be six digits.
+  const visitor = await guest();
+  await post("", visitor.token, { code }, 403);
+  await post("", account.token, { code: "12" }, 400);
+  await post("", account.token, { code: wrong }, 400);
+  await post("", undefined as unknown as string, { code }, 401);
+  await post("", account.token, { code }, 204);
+  assert.ok(await verified());
+  const me = await request<{ profile: { emailVerifiedAt: string | null } }>(
+    "/api/auth/me",
+    "GET",
+    account.token,
+  );
+  assert.ok(me.profile.emailVerifiedAt);
+  // Already verified: no more codes.
+  await post("/resend", account.token, {}, 409);
+
+  // Changing the address clears verification until the new one is proven.
+  await request("/api/users/me", "PATCH", account.token, {
+    email: `new-${account.user.email}`,
+    currentPassword: "Correct-password-42",
+  });
+  assert.equal(await verified(), null);
+  await post("/resend", account.token, {}, 202);
+  const latest = mails.at(-1);
+  assert.equal(latest?.to, `new-${account.user.email}`);
+  const fresh = /code is (\d{6})/.exec(latest.text)?.[1];
+  assert.ok(fresh);
+  // The five-miss lock applies to the current code.
+  for (let i = 0; i < 5; i++)
+    await post(
+      "",
+      account.token,
+      { code: fresh === wrong ? "222222" : wrong },
+      400,
+    );
+  await post("", account.token, { code: fresh }, 400);
+  await post("/resend", account.token, {}, 202);
+  const again = /code is (\d{6})/.exec(mails.at(-1)?.text ?? "")?.[1];
+  assert.ok(again);
+  await post("", account.token, { code: again }, 204);
+  assert.ok(await verified());
 });

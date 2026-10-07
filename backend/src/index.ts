@@ -1,6 +1,8 @@
 import { cleanupExpiredSessions } from "./api/lifecycle.js";
 import { createApp } from "./app.js";
 import { gameVerifiers } from "./games/registry.js";
+import { consoleMailer, type Mailer } from "./mail/mailer.js";
+import { createSmtpMailer, smtpConfigFromEnv } from "./mail/smtp.js";
 import { prisma } from "./prisma.js";
 import { sweepTimers } from "./timers/timers.service.js";
 
@@ -12,7 +14,27 @@ const trustProxy = Number(process.env.TRUST_PROXY ?? 0);
 if (!Number.isInteger(trustProxy) || trustProxy < 0 || trustProxy > 10)
   throw new Error("TRUST_PROXY must be an integer between 0 and 10");
 
-const ctx = { db: prisma, now: () => new Date() };
+function createMailer(): Mailer {
+  const config = smtpConfigFromEnv(process.env);
+  if (!config) {
+    if (process.env.NODE_ENV === "production")
+      throw new Error("SMTP_USER and SMTP_PASSWORD are required in production");
+    console.warn("SMTP_USER is not set: emails are only logged, not sent");
+    return consoleMailer;
+  }
+  const smtp = createSmtpMailer(config);
+  smtp
+    .verify()
+    .then(() => {
+      console.log(`Email ready: sending as ${config.from}`);
+    })
+    .catch((error: unknown) => {
+      console.error("Could not log in to the SMTP server", error);
+    });
+  return smtp.mailer;
+}
+
+const ctx = { db: prisma, now: () => new Date(), mailer: createMailer() };
 const app = createApp(ctx, {
   gameVerifiers,
   trustProxy,

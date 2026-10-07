@@ -53,6 +53,12 @@ import {
   timerAction,
   timerView,
 } from "../timers/timers.service.js";
+import {
+  confirmPasswordReset,
+  requestPasswordReset,
+  verifyResetCode,
+} from "../auth/reset.service.js";
+import { sendVerificationCode, verifyEmail } from "../auth/verify.service.js";
 import { getUserStatistics } from "../stats/stats.service.js";
 import { recordGame, type GameVerifiers } from "../games/games.service.js";
 import { endIdentity } from "./lifecycle.js";
@@ -103,12 +109,29 @@ export interface RateLimits {
   authPerMinute: number;
   /** Failed logins per username per 15 minutes. */
   loginFailures: number;
+  /** Password-reset emails per address per 15 minutes (stops mail bombing). */
+  resetRequests: number;
 }
 
 export const defaultRateLimits: RateLimits = {
   authPerMinute: 20,
   loginFailures: 8,
+  resetRequests: 3,
 };
+
+// Rate-limit key from a string field of the JSON body, falling back to the IP.
+function bodyKey(field: string, prefix: string, max: number) {
+  return (req: Request) => {
+    const input: unknown = req.body;
+    const value =
+      typeof input === "object" && input !== null && field in input
+        ? (input as Record<string, unknown>)[field]
+        : undefined;
+    return typeof value === "string" && value.length <= max
+      ? `${prefix}:${value.trim().toLowerCase()}`
+      : ipKeyGenerator(req.ip ?? "unknown");
+  };
+}
 
 function tooMany(message: string) {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -148,33 +171,45 @@ export function createRouter(
     skipSuccessfulRequests: true,
     standardHeaders: "draft-7",
     legacyHeaders: false,
-    keyGenerator: (req) => {
-      const input: unknown = req.body;
-      const name =
-        typeof input === "object" && input !== null && "username" in input
-          ? input.username
-          : undefined;
-      return typeof name === "string" && name.length <= 32
-        ? `user:${name.trim().toLowerCase()}`
-        : ipKeyGenerator(req.ip ?? "unknown");
-    },
+    keyGenerator: bodyKey("username", "user", 32),
     handler: tooMany(
       "Too many failed logins for this account; try again later",
     ),
   });
 
-  router.use(["/auth/signup", "/auth/login", "/auth/guest", "/users"], perIp);
+  // Each reset request sends an email, so cap them per address.
+  const perAddress = rateLimit({
+    windowMs: 15 * 60_000,
+    limit: limits.resetRequests,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    keyGenerator: bodyKey("email", "mail", 254),
+    handler: tooMany("Too many reset requests for this address; try later"),
+  });
+
+  router.use(
+    [
+      "/auth/signup",
+      "/auth/login",
+      "/auth/guest",
+      "/auth/password-reset",
+      "/users",
+    ],
+    perIp,
+  );
   router.post("/auth/login", perAccount);
+  router.post("/auth/password-reset/request", perAddress);
 
   router.post(["/auth/signup", "/users"], async (req, res) => {
     const input = body(req);
-    res.status(201).json(
-      await signup(ctx, {
-        email: email(input.email),
-        username: username(input.username),
-        password: password(input.password),
-      }),
-    );
+    const created = await signup(ctx, {
+      email: email(input.email),
+      username: username(input.username),
+      password: password(input.password),
+    });
+    // The account is usable immediately; verifying the address is a separate step.
+    await sendVerificationCode(ctx, created.user.id);
+    res.status(201).json(created);
   });
 
   router.post("/auth/login", async (req, res) => {
@@ -182,6 +217,30 @@ export function createRouter(
     res.json(
       await login(ctx, username(input.username), password(input.password)),
     );
+  });
+
+  // Password recovery: email a code, verify it, then set a new password.
+  router.post("/auth/password-reset/request", async (req, res) => {
+    await requestPasswordReset(ctx, email(body(req).email));
+    // Same answer whether or not the address has an account.
+    res.status(202).json({
+      message: "If that address has an account, a code has been sent.",
+    });
+  });
+
+  router.post("/auth/password-reset/verify", async (req, res) => {
+    const input = body(req);
+    if (typeof input.code !== "string" || !/^\d{6}$/.test(input.code))
+      throw new ApiError(400, "The code must be 6 digits");
+    res.json(await verifyResetCode(ctx, email(input.email), input.code));
+  });
+
+  router.post("/auth/password-reset/confirm", async (req, res) => {
+    const input = body(req);
+    if (typeof input.resetToken !== "string" || input.resetToken.length > 128)
+      throw new ApiError(400, "A reset token is required");
+    await confirmPasswordReset(ctx, input.resetToken, password(input.password));
+    res.sendStatus(204);
   });
 
   router.post("/auth/guest", async (req, res) => {
@@ -200,6 +259,30 @@ export function createRouter(
   router.use(async (req, res, next) => {
     res.locals.actor = await authenticate(ctx, req);
     next();
+  });
+
+  // Resends are capped per account because each one sends an email.
+  const perUser = rateLimit({
+    windowMs: 15 * 60_000,
+    limit: limits.resetRequests,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    keyGenerator: (_req, res) =>
+      `verify:${String(actor(res).userId ?? "guest")}`,
+    handler: tooMany("Too many verification emails; try again later"),
+  });
+
+  router.post("/auth/verify-email/resend", perUser, async (req, res) => {
+    await sendVerificationCode(ctx, registered(actor(res)));
+    res.status(202).json({ message: "A new code has been sent." });
+  });
+
+  router.post("/auth/verify-email", async (req, res) => {
+    const { code } = body(req);
+    if (typeof code !== "string" || !/^\d{6}$/.test(code))
+      throw new ApiError(400, "The code must be 6 digits");
+    await verifyEmail(ctx, registered(actor(res)), code);
+    res.sendStatus(204);
   });
 
   router.get("/auth/me", async (req, res) => {

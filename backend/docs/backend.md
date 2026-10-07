@@ -113,19 +113,60 @@ guest; **Registered** = registered user; **Member** = active room member;
 
 ### 3.1 Service and authentication
 
-| Method | Endpoint           | Access        | JSON body                             | Response                                               |
-| ------ | ------------------ | ------------- | ------------------------------------- | ------------------------------------------------------ |
-| GET    | `/api/health`      | Public        | None                                  | 200 `{ status: "ok" }`; database connectivity only     |
-| POST   | `/api/auth/signup` | Public        | `{ "email", "username", "password" }` | 201 `{ token, expiresAt, user }`                       |
-| POST   | `/api/users`       | Public        | Same signup body                      | 201: alias of signup with the same response            |
-| POST   | `/api/auth/login`  | Public        | `{ "username", "password" }`          | 200 `{ token, expiresAt, user }`                       |
-| POST   | `/api/auth/guest`  | Public        | `{ "displayName" }`                   | 201 `{ token, guest: { id, displayName, expiresAt } }` |
-| GET    | `/api/auth/me`     | Authenticated | None                                  | 200 `{ type: "user" or "guest", profile }`             |
-| POST   | `/api/auth/logout` | Authenticated | None                                  | 204: revoke login or delete temporary guest identity   |
+| Method | Endpoint                           | Access        | JSON body                             | Response                                                                  |
+| ------ | ---------------------------------- | ------------- | ------------------------------------- | ------------------------------------------------------------------------- |
+| GET    | `/api/health`                      | Public        | None                                  | 200 `{ status: "ok" }`; database connectivity only                        |
+| POST   | `/api/auth/signup`                 | Public        | `{ "email", "username", "password" }` | 201 `{ token, expiresAt, user }`                                          |
+| POST   | `/api/users`                       | Public        | Same signup body                      | 201: alias of signup with the same response                               |
+| POST   | `/api/auth/login`                  | Public        | `{ "username", "password" }`          | 200 `{ token, expiresAt, user }`                                          |
+| POST   | `/api/auth/guest`                  | Public        | `{ "displayName" }`                   | 201 `{ token, guest: { id, displayName, expiresAt } }`                    |
+| POST   | `/api/auth/password-reset/request` | Public        | `{ "email" }`                         | 202 same message whether or not the account exists; emails a 6-digit code |
+| POST   | `/api/auth/password-reset/verify`  | Public        | `{ "email", "code" }`                 | 200 `{ resetToken, expiresAt }`; the code is spent                        |
+| POST   | `/api/auth/password-reset/confirm` | Public        | `{ "resetToken", "password" }`        | 204; sets the password and signs out every session                        |
+| POST   | `/api/auth/verify-email`           | Registered    | `{ "code" }`                          | 204: confirms the address; sets `emailVerifiedAt`                         |
+| POST   | `/api/auth/verify-email/resend`    | Registered    | None                                  | 202: emails a new code (3 per 15 minutes); 409 if already verified        |
+| GET    | `/api/auth/me`                     | Authenticated | None                                  | 200 `{ type: "user" or "guest", profile }`                                |
+| POST   | `/api/auth/logout`                 | Authenticated | None                                  | 204: revoke login or delete temporary guest identity                      |
 
 The health check verifies connectivity, not whether all migrations are applied.
 Authentication runs before protected routing, so unknown paths without a valid
 token may return 401 before 404.
+
+### Email verification
+
+Signup creates the account, returns the session token as before, and emails a
+six-digit code (valid 30 minutes, newest only, 5 wrong guesses kill it). The
+frontend then asks for it and calls `POST /api/auth/verify-email`. Verification
+is **not enforced anywhere yet**: unverified accounts can still use the API.
+Changing the email through `PATCH /api/users/me` clears `emailVerifiedAt`, and
+`/auth/me` and the profile endpoints now include `emailVerifiedAt`.
+
+### Password recovery flow
+
+1. The user enters their email. `request` always answers 202 with the same
+   message, so addresses can't be discovered. If an account has that email, a
+   six-digit code is emailed. It expires in 10 minutes, only the newest request
+   is valid, and only its hash is stored. Requests are limited to 3 per address
+   per 15 minutes.
+2. The user enters the code. `verify` returns 400 for a wrong, expired or
+   reused code (same message in every case). After 5 wrong guesses that code is
+   dead and a new one must be requested. A correct code is spent and a random
+   `resetToken` (valid 15 minutes) is returned; the frontend then shows the
+   new-password form.
+3. `confirm` sets the new password (8–128 characters) in one transaction,
+   marks the token used, and deletes all of the user's login sessions and 2FA
+   login challenges. A token works once, and stops working if the account's
+   email changed after it was issued.
+
+Email is sent through the `Mailer` in `src/mail/mailer.ts`. With `SMTP_USER` and
+`SMTP_PASSWORD` set, `src/mail/smtp.ts` sends it over SMTP (Gmail by default);
+otherwise the API falls back to `consoleMailer`, which only logs the message and
+is fine for development. In production the API refuses to start without SMTP
+settings. At startup it checks the SMTP login and logs `Email ready: sending as
+…` or the error. Gmail needs 2-Step Verification and an
+[App Password](https://myaccount.google.com/apppasswords); it caps ordinary
+accounts at roughly 500 messages a day. Note that lookup is by the stored email, which new signups
+lowercase; older mixed-case emails may not match.
 
 ### 3.2 Users and statistics
 
@@ -539,10 +580,10 @@ relation; persistent scores require registration.
 
 ### 4.10 Account recovery and two-factor tables
 
-Schema only: the API doesn't use these tables yet. Every table cascades on user
+Password recovery uses `EmailToken`; verification and 2FA don't use their tables yet. Every table cascades on user
 deletion, and tokens are stored as hashes, as with `AuthSession`.
 
-- **`EmailToken`**: `purpose` is `EMAIL_VERIFICATION` or `PASSWORD_RESET`. It
+- **`EmailToken`**: `purpose` is `EMAIL_VERIFICATION`, `PASSWORD_RESET_CODE` (the emailed six-digit code) or `PASSWORD_RESET` (the long token a verified code is exchanged for). `failedAttempts` counts wrong guesses at a code. It
   stores the address the link was sent to (`email`), so a verification only
   counts while it still equals `User.email`. `tokenHash` is unique, `expiresAt`
   must be after `createdAt`, and `usedAt` marks consumption (never accept a used
@@ -695,6 +736,7 @@ in future migrations. `prisma db push` is not a substitute.
 | `20261006160000_study_platform`       | Nullable `User.passwordHash`, the other 8 tables, enums, indexes, FKs, CHECKs, partial index    |
 | `20261006170000_timer_accounting`     | `resumedAt`, `creditedAt`, timestamp CHECKs, `(status, startedAt)` index                        |
 | `20261007140000_account_recovery_2fa` | `User.emailVerifiedAt`; `EmailToken`, `TwoFactor`, `RecoveryCode`, `LoginChallenge` with CHECKs |
+| `20261007160000_password_reset_code`  | `PASSWORD_RESET_CODE` purpose, `EmailToken.failedAttempts` and its CHECK                        |
 
 The study-platform migration preserves existing profiles and never drops user
 data. The timer-accounting migration keeps original start times and gives

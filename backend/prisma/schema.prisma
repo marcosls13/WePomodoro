@@ -15,6 +15,9 @@ enum PomodoroPhase {
 
 enum EmailTokenPurpose {
   EMAIL_VERIFICATION
+  // Six-digit code emailed to the user; exchanged for a PASSWORD_RESET token.
+  PASSWORD_RESET_CODE
+  // Long random token that authorises setting a new password.
   PASSWORD_RESET
 }
 
@@ -64,19 +67,21 @@ model AuthSession {
 
 // One-time links sent by email: address verification and password reset.
 model EmailToken {
-  id        String            @id @default(uuid()) @db.Uuid
-  userId    Int
-  purpose   EmailTokenPurpose
+  id             String            @id @default(uuid()) @db.Uuid
+  userId         Int
+  purpose        EmailTokenPurpose
   // Address the link was sent to. A verification only counts while this still
   // equals User.email, so changing the address invalidates old links.
-  email     String
+  email          String
   // Store a hash of a random token, never the token that was emailed.
-  tokenHash String            @unique
-  expiresAt DateTime
+  tokenHash      String            @unique
+  expiresAt      DateTime
   // Set when consumed; a used token must never work twice.
-  usedAt    DateTime?
-  createdAt DateTime          @default(now())
-  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  usedAt         DateTime?
+  // Wrong guesses against a short code; stop accepting it after a few.
+  failedAttempts Int               @default(0)
+  createdAt      DateTime          @default(now())
+  user           User              @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, purpose])
   @@index([expiresAt])

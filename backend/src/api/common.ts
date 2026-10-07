@@ -1,4 +1,5 @@
 import type { Request } from "express";
+import type { Mailer } from "../mail/mailer.js";
 import type { Prisma, PrismaClient } from "../generated/prisma/client.js";
 
 export class ApiError extends Error {
@@ -19,6 +20,7 @@ export interface Actor {
 export interface Context {
   db: PrismaClient;
   now: () => Date;
+  mailer: Mailer;
 }
 
 export type Transaction = Prisma.TransactionClient;
@@ -125,6 +127,7 @@ export const profileSelect = {
   id: true,
   username: true,
   email: true,
+  emailVerifiedAt: true,
   createdAt: true,
   updatedAt: true,
 } as const;

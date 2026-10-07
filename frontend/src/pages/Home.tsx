@@ -2,13 +2,16 @@ import { Link } from "react-router";
 
 export default function Home() {
   return (
-    <div>
-      <h1 className="text-3xl font-bold underline text-red-500">
-        Hola! Soy Marcos!
+    // h-full le dice que ocupe todo el alto que le heredó <main className="flex-grow">
+    <div className="flex-grow flex flex-row items-center justify-around overflow-hidden">
+      <h1 className="text-3xl text-red-600 animate-slide-up">
+        Your time is your most valuable asset.
       </h1>
-      <Link to="/about" className="text-blue-600 underline hover:text-blue-800">
-        About
-      </Link>
+      <div>
+      <h1>Este es otro texto random para probar la disposición</h1>
+        
+      </div>
+      {/* Tu enlace */}
     </div>
   );
 }

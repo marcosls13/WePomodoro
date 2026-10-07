@@ -49,7 +49,7 @@ export default function SignUp() {
       // The API returns a bearer token; later requests send it as
       // "Authorization: Bearer <token>".
       localStorage.setItem("token", token);
-      void navigate("/UserInfo");
+      void navigate("/auth/verify-email");
     } catch {
       setError("Could not reach the server. Please try again.");
     } finally {

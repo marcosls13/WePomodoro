@@ -584,3 +584,6 @@ h2 {
     transition: none;
   }
 }
+.signup-title + .signup-form {
+  margin-top: 24px;
+}

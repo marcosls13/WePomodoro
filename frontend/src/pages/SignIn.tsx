@@ -125,6 +125,9 @@ export default function SignIn() {
           >
             {pending ? "Signin in" : "Sign In"}
           </button>
+          <Link className="text-link" to="/auth/forgot-password">
+            Forgot your password?
+          </Link>
           <Link className="text-link" to="/auth/signup">
             Sign Up
           </Link>

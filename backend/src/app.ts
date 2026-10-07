@@ -6,19 +6,25 @@ import express, {
 import cors from "cors";
 import { Prisma } from "./generated/prisma/client.js";
 import { ApiError, type Context } from "./api/common.js";
-import { createRouter } from "./api/router.js";
+import { createRouter, type RateLimits } from "./api/router.js";
 import type { GameVerifiers } from "./games/games.service.js";
 
 export function createApp(
   ctx: Context,
   options: {
     origins?: string[];
+    /** Number of reverse proxies in front of the app; 0 when directly exposed. */
+    trustProxy?: number;
+    rateLimits?: RateLimits;
     gameVerifiers?: GameVerifiers;
     onError?: (error: unknown) => void;
   } = {},
 ) {
   const app = express();
   app.disable("x-powered-by");
+  // Needed for correct client IPs (rate limiting) behind a reverse proxy. A
+  // value larger than the real proxy count lets clients spoof their IP.
+  app.set("trust proxy", options.trustProxy ?? 0);
 
   const origins = options.origins ?? ["http://localhost:5173"];
   app.use(
@@ -42,7 +48,7 @@ export function createApp(
     res.json({ service: "WePomodoro API", health: "/api/health" });
   });
 
-  app.use("/api", createRouter(ctx, options.gameVerifiers));
+  app.use("/api", createRouter(ctx, options.gameVerifiers, options.rateLimits));
 
   app.use((req, res) => {
     res.status(404).json({ error: "Endpoint not found" });

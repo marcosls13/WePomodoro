@@ -5,7 +5,7 @@ const API_URL = import.meta.env.VITE_API_URL as string;
 
 export default function SignIn() {
   const navigate = useNavigate();
-  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
@@ -14,8 +14,8 @@ export default function SignIn() {
     e.preventDefault();
     if (pending) return;
     setError("");
-    if (!email.trim()) {
-      setError("Please enter your email.");
+    if (!username.trim()) {
+      setError("Please enter a username.");
       return;
     }
     if (!password) {
@@ -28,7 +28,7 @@ export default function SignIn() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          email: email.trim(),
+          username: username.trim(),
           password,
         }),
       });
@@ -77,19 +77,18 @@ export default function SignIn() {
           aria-busy={pending}
         >
           <div className="signup-field">
-            <label htmlFor="email" className="signup-label">
-              Email address
+            <label htmlFor="username" className="signup-label">
+              Username
             </label>
             <input
-              id="email"
-              name="email"
-              type="email"
-              autoComplete="email"
-              placeholder="you@example.com"
+              id="username"
+              name="username"
+              autoComplete="username"
+              placeholder="Username"
               required
-              value={email}
+              value={username}
               onChange={(e) => {
-                setEmail(e.target.value);
+                setUsername(e.target.value);
               }}
               className="signup-input"
             />

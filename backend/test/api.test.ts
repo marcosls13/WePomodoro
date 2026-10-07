@@ -184,6 +184,8 @@ before(async () => {
     { env: { ...process.env, DATABASE_URL: connectionString }, stdio: "pipe" },
   );
   const app = createApp(ctx, {
+    // The shared fixtures sign up dozens of users from one IP.
+    rateLimits: { authPerMinute: 100000, loginFailures: 100000 },
     onError: (error) => {
       errors.push(error);
     },
@@ -246,14 +248,14 @@ void test("signup, login, hashed storage, profile updates and token revocation",
     }),
   );
   const logged = await request<Auth>("/api/auth/login", "POST", undefined, {
-    email: auth.user.email,
+    username: auth.user.username,
     password: "Correct-password-42",
   });
   await request(
     "/api/auth/login",
     "POST",
     undefined,
-    { email: auth.user.email, password: "Wrong-password-42" },
+    { username: auth.user.username, password: "Wrong-password-42" },
     401,
   );
   await request(
@@ -280,7 +282,7 @@ void test("legacy profiles with no hash cannot log in, and directory does not ex
     "/api/auth/login",
     "POST",
     undefined,
-    { email: `${name}@example.test`, password: "Correct-password-42" },
+    { username: name, password: "Correct-password-42" },
     401,
   );
   const visitor = await guest();
@@ -770,4 +772,51 @@ void test("expired identity cleanup leaves registered study history intact", asy
       where: { user: { username: { startsWith: prefix } } },
     })) > 0,
   );
+});
+
+void test("login failures are limited per username and token issuance per IP", async () => {
+  const limited = createApp(ctx, {
+    rateLimits: { authPerMinute: 6, loginFailures: 3 },
+    onError: (error) => {
+      errors.push(error);
+    },
+  });
+  const limitedServer = limited.listen(0, "127.0.0.1");
+  await new Promise<void>((resolve) => {
+    limitedServer.once("listening", resolve);
+  });
+  try {
+    const address = limitedServer.address();
+    assert.ok(address && typeof address !== "string");
+    const url = `http://127.0.0.1:${address.port}/api/auth/login`;
+    const attempt = (username: string) =>
+      fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password: "wrong-password" }),
+      });
+    for (let i = 0; i < 3; i++)
+      assert.equal((await attempt(`Victim-${prefix}`)).status, 401);
+    // Same account, different casing: blocked, with a Retry-After hint.
+    const blocked = await attempt(`victim-${prefix}`);
+    assert.equal(blocked.status, 429);
+    assert.ok(Number(blocked.headers.get("retry-after")) >= 1);
+    assert.deepEqual(await blocked.json(), {
+      error: "Too many failed logins for this account; try again later",
+    });
+    // A different account is unaffected until the per-IP limit (6 requests,
+    // including the four above) is reached.
+    assert.equal((await attempt(`other-${prefix}`)).status, 401);
+    assert.equal((await attempt(`other2-${prefix}`)).status, 401);
+    assert.equal((await attempt(`other3-${prefix}`)).status, 429);
+    // Reads aren't counted.
+    const health = await fetch(url.replace("/auth/login", "/health"));
+    assert.equal(health.status, 200);
+  } finally {
+    await new Promise<void>((resolve) => {
+      limitedServer.close(() => {
+        resolve();
+      });
+    });
+  }
 });

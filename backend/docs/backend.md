@@ -70,10 +70,15 @@ Authorization: Bearer <token>
 - Registered sessions last **7 days**, guest sessions **24 hours**.
 - Only SHA-256 hashes of tokens are stored. Passwords use salted scrypt with
   constant-time comparison.
-- Signup, login, guest creation and `POST /api/users` share a per-process limit
-  of 60 requests per IP per minute; exceeding it returns 429 with `Retry-After`.
-  A multi-instance deployment should add a shared limit at its gateway. Express is
-  not configured to trust forwarded IP headers from arbitrary proxies.
+- Rate limits (per process, in memory): signup, login, guest creation and
+  `POST /api/users` allow 20 requests per IP per minute, and login additionally
+  allows 8 **failed** attempts per username per 15 minutes (successful logins
+  don't count, and `Alice`/`alice` share one counter). Exceeding either returns
+  429 with `Retry-After`. A multi-instance deployment should also enforce a
+  shared limit at its gateway.
+- Behind a reverse proxy set `TRUST_PROXY` to the number of proxies (0 when
+  exposed directly). Too low makes all clients share the proxy's IP; too high
+  lets clients spoof their IP with `X-Forwarded-For`.
 - Existing profiles with a null `passwordHash` cannot password-login. Don't
   recreate accounts or let someone claim a passwordless profile by supplying its
   email; they need an explicit provisioning/recovery flow (email delivery and
@@ -113,7 +118,7 @@ guest; **Registered** = registered user; **Member** = active room member;
 | GET    | `/api/health`      | Public        | None                                  | 200 `{ status: "ok" }`; database connectivity only     |
 | POST   | `/api/auth/signup` | Public        | `{ "email", "username", "password" }` | 201 `{ token, expiresAt, user }`                       |
 | POST   | `/api/users`       | Public        | Same signup body                      | 201: alias of signup with the same response            |
-| POST   | `/api/auth/login`  | Public        | `{ "email", "password" }`             | 200 `{ token, expiresAt, user }`                       |
+| POST   | `/api/auth/login`  | Public        | `{ "username", "password" }`          | 200 `{ token, expiresAt, user }`                       |
 | POST   | `/api/auth/guest`  | Public        | `{ "displayName" }`                   | 201 `{ token, guest: { id, displayName, expiresAt } }` |
 | GET    | `/api/auth/me`     | Authenticated | None                                  | 200 `{ type: "user" or "guest", profile }`             |
 | POST   | `/api/auth/logout` | Authenticated | None                                  | 204: revoke login or delete temporary guest identity   |
@@ -375,14 +380,14 @@ someone can belong to a room while running a solo timer.
 
 A permanent registered account. Guests have no `User` row.
 
-| Field          | Type       | Default / rule             | Meaning                                        |
-| -------------- | ---------- | -------------------------- | ---------------------------------------------- |
-| `id`           | `Int`      | Primary key; autoincrement | Stable registered-user identity                |
-| `email`        | `String`   | Unique; required           | Login address; API trims/lowercases new values |
-| `username`     | `String`   | Unique; required           | Public name; API lowercases new values         |
-| `passwordHash` | `String?`  | Null if omitted            | Salted scrypt hash; never a plain password     |
-| `createdAt`    | `DateTime` | `now()`                    | Account creation time                          |
-| `updatedAt`    | `DateTime` | `@updatedAt`               | Last account modification                      |
+| Field          | Type       | Default / rule             | Meaning                                          |
+| -------------- | ---------- | -------------------------- | ------------------------------------------------ |
+| `id`           | `Int`      | Primary key; autoincrement | Stable registered-user identity                  |
+| `email`        | `String`   | Unique; required           | Contact address; API trims/lowercases new values |
+| `username`     | `String`   | Unique; required           | Public name; API lowercases new values           |
+| `passwordHash` | `String?`  | Null if omitted            | Salted scrypt hash; never a plain password       |
+| `createdAt`    | `DateTime` | `now()`                    | Account creation time                            |
+| `updatedAt`    | `DateTime` | `@updatedAt`               | Last account modification                        |
 
 Relations: `authSessions`, `ownedRooms`, `memberships`, `studyHistory`,
 `gameResults`. A null hash preserves pre-existing profiles and never grants

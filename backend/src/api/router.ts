@@ -1,4 +1,13 @@
-import { Router, type Response } from "express";
+import {
+  Router,
+  type NextFunction,
+  type Request,
+  type Response,
+} from "express";
+import rateLimit, {
+  ipKeyGenerator,
+  type RateLimitInfo,
+} from "express-rate-limit";
 import {
   ApiError,
   body,
@@ -89,42 +98,73 @@ function phase(value: unknown) {
   return value;
 }
 
-export function createRouter(ctx: Context, verifiers: GameVerifiers = {}) {
-  const router = Router();
-  // Bound local rate limit for token issuance; deployment proxies can add a shared limit.
-  const attempts = new Map<string, { count: number; resetAt: number }>();
+export interface RateLimits {
+  /** Token-issuing requests (signup, login, guest) per IP per minute. */
+  authPerMinute: number;
+  /** Failed logins per username per 15 minutes. */
+  loginFailures: number;
+}
 
-  router.use(
-    ["/auth/signup", "/auth/login", "/auth/guest", "/users"],
-    (req, res, next) => {
-      if (req.method !== "POST") {
-        next();
-        return;
-      }
-      const now = Date.now();
-      if (attempts.size > 10000)
-        for (const [key, entry] of attempts)
-          if (entry.resetAt <= now) attempts.delete(key);
-      const key = req.ip ?? "unknown";
-      let entry = attempts.get(key);
-      if (!entry || entry.resetAt <= now) {
-        entry = { count: 0, resetAt: now + 60000 };
-        attempts.set(key, entry);
-      }
-      entry.count++;
-      if (entry.count > 60 || attempts.size > 10000) {
-        res.setHeader("Retry-After", "60");
-        next(
-          new ApiError(
-            429,
-            "Too many authentication attempts; try again shortly",
-          ),
-        );
-        return;
-      }
-      next();
+export const defaultRateLimits: RateLimits = {
+  authPerMinute: 20,
+  loginFailures: 8,
+};
+
+function tooMany(message: string) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const { rateLimit: info } = req as Request & { rateLimit?: RateLimitInfo };
+    const resetAt = info?.resetTime?.getTime() ?? Date.now() + 60000;
+    res.setHeader(
+      "Retry-After",
+      String(Math.max(1, Math.ceil((resetAt - Date.now()) / 1000))),
+    );
+    next(new ApiError(429, message));
+  };
+}
+
+export function createRouter(
+  ctx: Context,
+  verifiers: GameVerifiers = {},
+  limits: RateLimits = defaultRateLimits,
+) {
+  const router = Router();
+
+  // In-memory limits are per process. A multi-instance deployment should also
+  // enforce a shared limit at its gateway.
+  const perIp = rateLimit({
+    windowMs: 60_000,
+    limit: limits.authPerMinute,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    skip: (req) => req.method !== "POST",
+    keyGenerator: (req) => ipKeyGenerator(req.ip ?? "unknown"),
+    handler: tooMany("Too many authentication attempts; try again shortly"),
+  });
+  // Stops password guessing against one account from many IPs. Successful
+  // logins don't count, so a legitimate user is never locked out by their own use.
+  const perAccount = rateLimit({
+    windowMs: 15 * 60_000,
+    limit: limits.loginFailures,
+    skipSuccessfulRequests: true,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    keyGenerator: (req) => {
+      const input: unknown = req.body;
+      const name =
+        typeof input === "object" && input !== null && "username" in input
+          ? input.username
+          : undefined;
+      return typeof name === "string" && name.length <= 32
+        ? `user:${name.trim().toLowerCase()}`
+        : ipKeyGenerator(req.ip ?? "unknown");
     },
-  );
+    handler: tooMany(
+      "Too many failed logins for this account; try again later",
+    ),
+  });
+
+  router.use(["/auth/signup", "/auth/login", "/auth/guest", "/users"], perIp);
+  router.post("/auth/login", perAccount);
 
   router.post(["/auth/signup", "/users"], async (req, res) => {
     const input = body(req);

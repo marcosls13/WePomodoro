@@ -5,10 +5,17 @@ import { Link } from "react-router";
 // const BREAK_SEC = 10 * 60;
 const FOCUS_SEC = 5;
 const BREAK_SEC = 2;
+const CYCLE_SEC = FOCUS_SEC + BREAK_SEC;
 
 // TODO:
-// make the timer cycle between focused and break
-// change the background between cycles
+// change the background between modes
+
+type Mode = "focus" | "break";
+
+function calculateRemainingTime(position: number): number {
+  if (position < FOCUS_SEC) return FOCUS_SEC - position;
+  else return CYCLE_SEC - position;
+}
 
 function formatTime(totalSeconds: number): string {
   const minutes = Math.floor(totalSeconds / 60);
@@ -17,30 +24,25 @@ function formatTime(totalSeconds: number): string {
 }
 
 export default function Timer() {
-  const [seconds, setSeconds] = useState(FOCUS_SEC);
+  const [elapsed, setElapsed] = useState(0);
   const [running, setRunning] = useState(false);
-  type Mode = "focus" | "break";
-  const [mode, setMode] = useState<Mode>("focus");
+  const position = elapsed % CYCLE_SEC;
+  const mode: Mode = position < FOCUS_SEC ? "focus" : "break";
 
   useEffect(() => {
     if (!running) return;
     const id = setInterval(() => {
-      if (seconds === 0) {
-        const nextMode = mode === "focus" ? "break" : "focus";
-        setMode(nextMode);
-        setSeconds(nextMode === "focus" ? FOCUS_SEC : BREAK_SEC);
-      } else {
-        setSeconds((s) => s - 1);
-      }
+      setElapsed((e) => e + 1);
     }, 1000);
     return () => {
       clearInterval(id);
     };
-  }, [running, mode, seconds]);
+  }, [running]);
 
   return (
     <main className="flex flex-col min-h-screen items-center justify-center bg-gray-100 text-5xl gap-32">
-      <h1>{formatTime(seconds)}</h1>
+      <h1>{formatTime(calculateRemainingTime(position))}</h1>
+      {mode}
       <div className="flex gap-16">
         <button
           className="w-48 shrink-0 rounded-lg border px-4 py-2"

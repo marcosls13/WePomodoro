@@ -7,10 +7,11 @@ const FOCUS_SEC = 5;
 const BREAK_SEC = 2;
 const CYCLE_SEC = FOCUS_SEC + BREAK_SEC;
 
-// TODO:
-// change the background between modes
-
 type Mode = "focus" | "break";
+const MODE_BG: Record<Mode, string> = {
+  focus: "bg-red-200",
+  break: "bg-green-200",
+};
 
 function calculateRemainingTime(position: number): number {
   if (position < FOCUS_SEC) return FOCUS_SEC - position;
@@ -40,9 +41,10 @@ export default function Timer() {
   }, [running]);
 
   return (
-    <main className="flex flex-col min-h-screen items-center justify-center bg-gray-100 text-5xl gap-32">
+    <main
+      className={`flex flex-col min-h-screen items-center justify-center text-5xl gap-32 transition-colors duration-500 ${MODE_BG[mode]}`}
+    >
       <h1>{formatTime(calculateRemainingTime(position))}</h1>
-      {mode}
       <div className="flex gap-16">
         <button
           className="w-48 shrink-0 rounded-lg border px-4 py-2"

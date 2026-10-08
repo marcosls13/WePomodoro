@@ -1,10 +1,10 @@
 import { useState, useEffect } from "react";
 import { Link } from "react-router";
 
-// const FOCUSED_SEC = 50 * 60;
+// const FOCUS_SEC = 50 * 60;
 // const BREAK_SEC = 10 * 60;
-const FOCUSED_SEC = 5;
-// const BREAK_SEC = 2;
+const FOCUS_SEC = 5;
+const BREAK_SEC = 2;
 
 // TODO:
 // make the timer cycle between focused and break
@@ -17,34 +17,38 @@ function formatTime(totalSeconds: number): string {
 }
 
 export default function Timer() {
-  const [seconds, setSeconds] = useState(FOCUSED_SEC);
+  const [seconds, setSeconds] = useState(FOCUS_SEC);
   const [running, setRunning] = useState(false);
-
-  const isFinished = seconds === 0;
-  const isRunning = running && seconds > 0;
+  type Mode = "focus" | "break";
+  const [mode, setMode] = useState<Mode>("focus");
 
   useEffect(() => {
-    if (!isRunning) return;
+    if (!running) return;
     const id = setInterval(() => {
-      setSeconds((s) => s - 1);
+      if (seconds === 0) {
+        const nextMode = mode === "focus" ? "break" : "focus";
+        setMode(nextMode);
+        setSeconds(nextMode === "focus" ? FOCUS_SEC : BREAK_SEC);
+      } else {
+        setSeconds((s) => s - 1);
+      }
     }, 1000);
     return () => {
       clearInterval(id);
     };
-  }, [isRunning]);
+  }, [running, mode, seconds]);
 
   return (
     <main className="flex flex-col min-h-screen items-center justify-center bg-gray-100 text-5xl gap-32">
       <h1>{formatTime(seconds)}</h1>
-      {isFinished && <p className="text-3xl text-green-600">Time's up</p>}
       <div className="flex gap-16">
         <button
           className="w-48 shrink-0 rounded-lg border px-4 py-2"
           onClick={() => {
-            setRunning(!isRunning);
+            setRunning(!running);
           }}
         >
-          {isRunning ? "Pause" : "Start"}
+          {running ? "Pause" : "Start"}
         </button>
       </div>
       <Link to="/" className="text-blue-600 underline hover:text-blue-800">

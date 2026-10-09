@@ -10,6 +10,7 @@ import { cleanupExpiredSessions } from "../src/api/lifecycle.js";
 import { createApp } from "../src/app.js";
 import { PrismaClient } from "../src/generated/prisma/client.js";
 import { tokenHash } from "../src/auth/auth.service.js";
+import { base32Decode, stepOf, totp } from "../src/auth/twofactor.service.js";
 import { sweepTimers } from "../src/timers/timers.service.js";
 
 const url = new URL(
@@ -28,6 +29,7 @@ if (
 const connectionString = url.toString();
 const db = new PrismaClient({ adapter: new PrismaPg({ connectionString }) });
 const prefix = `api${randomBytes(5).toString("hex")}`;
+process.env.TWO_FACTOR_KEY ??= randomBytes(32).toString("base64");
 let clock = new Date();
 const mails: { to: string; text: string }[] = [];
 const ctx = {
@@ -1271,6 +1273,138 @@ void test("dev auth acts as a user without a token, only when switched on", asyn
         });
       });
   }
+});
+
+void test("two-factor: setup, login challenge, replay protection, recovery codes, disable", async () => {
+  const account = await user();
+  const password = "Correct-password-42";
+  const status = () =>
+    request<{ enabled: boolean; recoveryCodesLeft: number }>(
+      "/api/auth/2fa",
+      "GET",
+      account.token,
+    );
+  assert.equal((await status()).enabled, false);
+  await request(
+    "/api/auth/2fa/setup",
+    "POST",
+    account.token,
+    { password: "wrong-password" },
+    401,
+  );
+  const setup = await request<{ secret: string; otpauthUri: string }>(
+    "/api/auth/2fa/setup",
+    "POST",
+    account.token,
+    { password },
+  );
+  assert.ok(setup.otpauthUri.startsWith("otpauth://totp/WePomodoro"));
+  const secret = base32Decode(setup.secret);
+  const codeNow = () => totp(secret, stepOf(clock));
+  // Not on until a code from the app confirms it.
+  await request("/api/auth/login", "POST", undefined, {
+    username: account.user.username,
+    password,
+  });
+  await request(
+    "/api/auth/2fa/enable",
+    "POST",
+    account.token,
+    { code: "000000" },
+    400,
+  );
+  const enabled = await request<{ recoveryCodes: string[] }>(
+    "/api/auth/2fa/enable",
+    "POST",
+    account.token,
+    { code: codeNow() },
+  );
+  assert.equal(enabled.recoveryCodes.length, 10);
+  assert.deepEqual(await status(), { enabled: true, recoveryCodesLeft: 10 });
+
+  const challenge = async () => {
+    const result = await request<{
+      twoFactorRequired: true;
+      challengeToken: string;
+    }>("/api/auth/login", "POST", undefined, {
+      username: account.user.username,
+      password,
+    });
+    assert.equal(result.twoFactorRequired, true);
+    assert.ok(!("token" in result));
+    return result.challengeToken;
+  };
+  const second = (challengeToken: string, input: object, expected: number) =>
+    request<Auth>(
+      "/api/auth/login/2fa",
+      "POST",
+      undefined,
+      { challengeToken, ...input },
+      expected,
+    );
+
+  // The code that confirmed setup can't be replayed; a later step works once.
+  await second(await challenge(), { code: codeNow() }, 401);
+  advance(30);
+  const good = await second(await challenge(), { code: codeNow() }, 200);
+  await request("/api/auth/me", "GET", good.token);
+  await second(await challenge(), { code: codeNow() }, 401);
+
+  // Recovery codes work once each.
+  const [first] = enabled.recoveryCodes;
+  await second(await challenge(), { recoveryCode: first }, 200);
+  await second(await challenge(), { recoveryCode: first }, 401);
+  assert.equal((await status()).recoveryCodesLeft, 9);
+
+  // Five wrong codes burn the challenge, even for the right code afterwards.
+  advance(30);
+  const burned = await challenge();
+  for (let i = 0; i < 5; i++) await second(burned, { code: "000000" }, 401);
+  await second(burned, { code: codeNow() }, 401);
+
+  // New recovery codes replace the old ones.
+  const fresh = await request<{ recoveryCodes: string[] }>(
+    "/api/auth/2fa/recovery-codes",
+    "POST",
+    good.token,
+    { password },
+  );
+  await second(
+    await challenge(),
+    { recoveryCode: enabled.recoveryCodes[1] },
+    401,
+  );
+  assert.equal(fresh.recoveryCodes.length, 10);
+
+  // Turning it off needs the password and a code.
+  await request(
+    "/api/auth/2fa/disable",
+    "POST",
+    good.token,
+    { password, code: "000000" },
+    401,
+  );
+  advance(30);
+  await request(
+    "/api/auth/2fa/disable",
+    "POST",
+    good.token,
+    { password, code: codeNow() },
+    204,
+  );
+  assert.equal((await status()).enabled, false);
+  const plain = await request<Auth>("/api/auth/login", "POST", undefined, {
+    username: account.user.username,
+    password,
+  });
+  assert.ok(plain.token);
+  await request(
+    "/api/auth/2fa/setup",
+    "POST",
+    (await guest()).token,
+    { password },
+    403,
+  );
 });
 
 void test("password reset: emailed code, verified, then a new password ends every session", async () => {

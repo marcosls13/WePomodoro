@@ -9,6 +9,7 @@ import {
   type Actor,
   type Context,
 } from "../api/common.js";
+import { startChallenge } from "./twofactor.service.js";
 
 export function password(value: unknown): string {
   if (typeof value !== "string" || value.length < 8 || value.length > 128)
@@ -87,6 +88,11 @@ export async function login(ctx: Context, address: string, value: string) {
   const user = await ctx.db.user.findUnique({ where: { username: address } });
   const valid = await verifyPassword(value, user?.passwordHash ?? null);
   if (!user || !valid) throw new ApiError(401, "Invalid username or password");
+  // With two-factor on, the password only earns a challenge, not a session.
+  const second = await ctx.db.twoFactor.findUnique({
+    where: { userId: user.id },
+  });
+  if (second?.enabledAt) return startChallenge(ctx, user.id);
   const bearer = token();
   const now = ctx.now();
   const expiresAt = new Date(now.getTime() + 7 * 86400000);

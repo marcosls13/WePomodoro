@@ -125,20 +125,48 @@ guest; **Registered** = registered user; **Member** = room member;
 
 ### 3.1 Service and authentication
 
-| Method | Endpoint                           | Access        | JSON body                             | Response                                                                  |
-| ------ | ---------------------------------- | ------------- | ------------------------------------- | ------------------------------------------------------------------------- |
-| GET    | `/api/health`                      | Public        | None                                  | 200 `{ status: "ok" }`; database connectivity only                        |
-| POST   | `/api/auth/signup`                 | Public        | `{ "email", "username", "password" }` | 201 `{ token, expiresAt, user }`                                          |
-| POST   | `/api/users`                       | Public        | Same signup body                      | 201: alias of signup with the same response                               |
-| POST   | `/api/auth/login`                  | Public        | `{ "username", "password" }`          | 200 `{ token, expiresAt, user }`                                          |
-| POST   | `/api/auth/guest`                  | Public        | `{ "displayName" }`                   | 201 `{ token, guest: { id, displayName, expiresAt } }`                    |
-| POST   | `/api/auth/password-reset/request` | Public        | `{ "email" }`                         | 202 same message whether or not the account exists; emails a 6-digit code |
-| POST   | `/api/auth/password-reset/verify`  | Public        | `{ "email", "code" }`                 | 200 `{ resetToken, expiresAt }`; the code is spent                        |
-| POST   | `/api/auth/password-reset/confirm` | Public        | `{ "resetToken", "password" }`        | 204; sets the password and signs out every session                        |
-| POST   | `/api/auth/verify-email`           | Registered    | `{ "code" }`                          | 204: confirms the address; sets `emailVerifiedAt`                         |
-| POST   | `/api/auth/verify-email/resend`    | Registered    | None                                  | 202: emails a new code (3 per 15 minutes); 409 if already verified        |
-| GET    | `/api/auth/me`                     | Authenticated | None                                  | 200 `{ type: "user" or "guest", profile }`                                |
-| POST   | `/api/auth/logout`                 | Authenticated | None                                  | 204: revoke login or delete temporary guest identity                      |
+| Method | Endpoint                           | Access        | JSON body                                                                | Response                                                                                                                |
+| ------ | ---------------------------------- | ------------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/health`                      | Public        | None                                                                     | 200 `{ status: "ok" }`; database connectivity only                                                                      |
+| POST   | `/api/auth/signup`                 | Public        | `{ "email", "username", "password" }`                                    | 201 `{ token, expiresAt, user }`                                                                                        |
+| POST   | `/api/users`                       | Public        | Same signup body                                                         | 201: alias of signup with the same response                                                                             |
+| POST   | `/api/auth/login`                  | Public        | `{ "username", "password" }`                                             | 200 `{ token, expiresAt, user }`; with two-factor on: `{ twoFactorRequired, challengeToken, expiresAt }` and no session |
+| POST   | `/api/auth/login/2fa`              | Public        | `{ "challengeToken", "code" }` or `{ "challengeToken", "recoveryCode" }` | 200 `{ token, expiresAt, user }`; 401 on a wrong code                                                                   |
+| POST   | `/api/auth/guest`                  | Public        | `{ "displayName" }`                                                      | 201 `{ token, guest: { id, displayName, expiresAt } }`                                                                  |
+| POST   | `/api/auth/password-reset/request` | Public        | `{ "email" }`                                                            | 202 same message whether or not the account exists; emails a 6-digit code                                               |
+| POST   | `/api/auth/password-reset/verify`  | Public        | `{ "email", "code" }`                                                    | 200 `{ resetToken, expiresAt }`; the code is spent                                                                      |
+| POST   | `/api/auth/password-reset/confirm` | Public        | `{ "resetToken", "password" }`                                           | 204; sets the password and signs out every session                                                                      |
+| POST   | `/api/auth/verify-email`           | Registered    | `{ "code" }`                                                             | 204: confirms the address; sets `emailVerifiedAt`                                                                       |
+| POST   | `/api/auth/verify-email/resend`    | Registered    | None                                                                     | 202: emails a new code (3 per 15 minutes); 409 if already verified                                                      |
+| GET    | `/api/auth/me`                     | Authenticated | None                                                                     | 200 `{ type: "user" or "guest", profile }`                                                                              |
+| POST   | `/api/auth/logout`                 | Authenticated | None                                                                     | 204: revoke login or delete temporary guest identity                                                                    |
+
+### Two-factor authentication (TOTP)
+
+Optional per account: an authenticator app (any RFC 6238 app) gives a 6-digit code
+every 30 s. Intended UX: after signup the client offers to turn it on (the user
+can skip), and a registered user can turn it on or off later from their profile
+page. Backend flow:
+
+| Method | Endpoint                       | Body                                       | Result                                                     |
+| ------ | ------------------------------ | ------------------------------------------ | ---------------------------------------------------------- |
+| GET    | `/api/auth/2fa`                | None                                       | `{ enabled, recoveryCodesLeft }`                           |
+| POST   | `/api/auth/2fa/setup`          | `{ "password" }`                           | `{ secret, otpauthUri }`; show as QR/text. Not active yet. |
+| POST   | `/api/auth/2fa/enable`         | `{ "code" }`                               | `{ recoveryCodes }`: 10 codes, shown **once**; now active  |
+| POST   | `/api/auth/2fa/recovery-codes` | `{ "password" }`                           | New `{ recoveryCodes }`; the old ones stop working         |
+| POST   | `/api/auth/2fa/disable`        | `{ "password", "code" or "recoveryCode" }` | 204                                                        |
+
+Once on, `POST /api/auth/login` answers a correct password with
+`{ twoFactorRequired: true, challengeToken, expiresAt }` instead of a session. The
+client then calls `POST /api/auth/login/2fa` with that token and a current `code`
+(or a `recoveryCode`) within 5 minutes. Five wrong codes cancel the challenge
+(sign in again). A code can be used once: a step no later than the last accepted
+one is rejected, and each recovery code works once. Setup, disable and recovery
+codes require the account password; failed attempts on them are limited to 8 per
+15 minutes. The secret is stored AES-256-GCM encrypted with `TWO_FACTOR_KEY`
+(32 random bytes, base64; without it these endpoints return 503). Losing or
+changing the key makes every stored secret unreadable. Password reset ends all
+sessions but leaves two-factor on.
 
 The health check verifies connectivity, not whether all migrations are applied.
 Authentication runs before protected routing, so unknown paths without a valid
@@ -392,8 +420,7 @@ shared interval. Solo callers use `/api/timers` instead.
 
 ## 4. Data model
 
-Eighteen PostgreSQL tables. `TwoFactor`, `RecoveryCode` and `LoginChallenge` are
-schema only; no endpoints use them yet.
+Eighteen PostgreSQL tables. `TwoFactor`, `RecoveryCode` and `LoginChallenge` back two-factor login.
 
 | Table                | Purpose                                                                | Main relationships                                                           |
 | -------------------- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
@@ -642,8 +669,9 @@ relation; persistent scores require registration.
 
 ### 4.10 Account recovery and two-factor tables
 
-Password recovery uses `EmailToken`; verification and 2FA don't use their tables yet. Every table cascades on user
-deletion, and tokens are stored as hashes, as with `AuthSession`.
+`EmailToken` backs email verification and password reset; `TwoFactor`, `RecoveryCode` and
+`LoginChallenge` back two-factor login. Every table cascades on user deletion, and
+tokens are stored as hashes, as with `AuthSession`.
 
 - **`EmailToken`**: `purpose` is `EMAIL_VERIFICATION`, `PASSWORD_RESET_CODE` (the emailed six-digit code) or `PASSWORD_RESET` (the long token a verified code is exchanged for). `failedAttempts` counts wrong guesses at a code. It
   stores the address the link was sent to (`email`), so a verification only
@@ -664,13 +692,11 @@ deletion, and tokens are stored as hashes, as with `AuthSession`.
   receiving a session. `expiresAt` should be minutes, not days, and
   `failedAttempts` lets the service delete the challenge after a few misses.
 
-Intended flows (to implement): password reset creates a `PASSWORD_RESET` token,
-and consuming it sets a new hash, deletes the user's `AuthSession` rows and
-marks the token used, all in one transaction. Reset requests should answer
-identically whether or not the email exists, and should use the rate limiter.
-Verification sets `emailVerifiedAt`; changing the email must clear it.
-Expired rows aren't removed by SQL, so extend `cleanupExpiredSessions` to
-delete expired tokens and challenges.
+Password reset creates a `PASSWORD_RESET` token; consuming it sets a new hash, deletes
+the user's `AuthSession` rows and login challenges, and marks the token used, in one
+transaction. Reset requests answer identically whether or not the email exists.
+Verification sets `emailVerifiedAt`; changing the email clears it. Expired tokens
+and challenges are removed by `cleanupExpiredSessions`.
 
 ### 4.11 Invites, friends, chat and presence
 
@@ -869,7 +895,8 @@ applied before fixtures run. Database cases roll back after each test; API tests
 serve Express on an ephemeral loopback port, use a controlled clock (no sleeping)
 and clean their own fixtures.
 
-Coverage includes room joins for users and guests, personal invite codes,
+Coverage includes two-factor setup, challenge login, replay protection and
+recovery codes, room joins for users and guests, personal invite codes,
 permanent membership with leave and kick, friends, presence, join requests, server
 chat, solo and shared
 timers, pause/resume/completion, snapshot settings, late joins, expiry,
@@ -891,6 +918,7 @@ exclusion. CI runs the full suite against its own PostgreSQL service.
 | `src/api/lifecycle.ts`                      | Logout, account deletion, expired-session cleanup               |
 | `src/auth/auth.service.ts`                  | Passwords, token issuance/authentication, profiles              |
 | `src/rooms/rooms.service.ts`                | Memberships, settings, owner actions                            |
+| `src/auth/twofactor.service.ts`             | TOTP, secret encryption, recovery codes, login challenge        |
 | `src/friends/friends.service.ts`            | Friend requests, accept, list, remove                           |
 | `src/friends/social.service.ts`             | Presence heartbeat, join requests                               |
 | `src/chat/chat.service.ts`                  | Server chat messages                                            |

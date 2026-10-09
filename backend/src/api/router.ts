@@ -34,6 +34,14 @@ import {
   updateProfile,
   verifyPassword,
 } from "../auth/auth.service.js";
+import {
+  confirmSetup,
+  disableTwoFactor,
+  finishChallenge,
+  regenerateRecoveryCodes,
+  startSetup,
+  twoFactorStatus,
+} from "../auth/twofactor.service.js";
 import { devActor } from "../dev.js";
 import { listMessages, sendMessage } from "../chat/chat.service.js";
 import {
@@ -237,6 +245,11 @@ export function createRouter(
   });
 
   // Password recovery: email a code, verify it, then set a new password.
+  router.post("/auth/login/2fa", async (req, res) => {
+    const input = body(req);
+    res.json(await finishChallenge(ctx, input.challengeToken, input));
+  });
+
   router.post("/auth/password-reset/request", async (req, res) => {
     await requestPasswordReset(ctx, email(body(req).email));
     // Same answer whether or not the address has an account.
@@ -304,6 +317,40 @@ export function createRouter(
       throw new ApiError(400, "The code must be 6 digits");
     await verifyEmail(ctx, registered(actor(res)), code);
     res.sendStatus(204);
+  });
+
+  // Each of these checks a password or a code, so cap attempts per account.
+  const perUser2fa = rateLimit({
+    windowMs: 15 * 60_000,
+    limit: limits.loginFailures,
+    skipSuccessfulRequests: true,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    keyGenerator: (_req, res) => `2fa:${String(actor(res).userId ?? "guest")}`,
+    handler: tooMany("Too many attempts; try again later"),
+  });
+
+  router.get("/auth/2fa", async (req, res) => {
+    res.json(await twoFactorStatus(ctx, actor(res)));
+  });
+
+  router.post("/auth/2fa/setup", perUser2fa, async (req, res) => {
+    res.json(await startSetup(ctx, actor(res), body(req).password));
+  });
+
+  router.post("/auth/2fa/enable", perUser2fa, async (req, res) => {
+    res.json(await confirmSetup(ctx, actor(res), body(req).code));
+  });
+
+  router.post("/auth/2fa/disable", perUser2fa, async (req, res) => {
+    await disableTwoFactor(ctx, actor(res), body(req));
+    res.sendStatus(204);
+  });
+
+  router.post("/auth/2fa/recovery-codes", perUser2fa, async (req, res) => {
+    res.json(
+      await regenerateRecoveryCodes(ctx, actor(res), body(req).password),
+    );
   });
 
   router.get("/auth/me", async (req, res) => {

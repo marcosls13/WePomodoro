@@ -22,6 +22,49 @@ const presets = [
   ],
   ["Auth", "Me", "GET", "/auth/me", null],
   ["Auth", "Log out", "POST", "/auth/logout", null],
+  ["2FA", "Status", "GET", "/auth/2fa", null],
+  [
+    "2FA",
+    "Start setup",
+    "POST",
+    "/auth/2fa/setup",
+    { password: "Password123!" },
+  ],
+  [
+    "2FA",
+    "Enable (6-digit code)",
+    "POST",
+    "/auth/2fa/enable",
+    { code: "123456" },
+  ],
+  [
+    "2FA",
+    "Finish login",
+    "POST",
+    "/auth/login/2fa",
+    { challengeToken: "{challengeToken}", code: "123456" },
+  ],
+  [
+    "2FA",
+    "Finish login (recovery)",
+    "POST",
+    "/auth/login/2fa",
+    { challengeToken: "{challengeToken}", recoveryCode: "xxxx-xxxx-xxxx-xxxx" },
+  ],
+  [
+    "2FA",
+    "New recovery codes",
+    "POST",
+    "/auth/2fa/recovery-codes",
+    { password: "Password123!" },
+  ],
+  [
+    "2FA",
+    "Disable",
+    "POST",
+    "/auth/2fa/disable",
+    { password: "Password123!", code: "123456" },
+  ],
   ["Email", "Resend verification", "POST", "/auth/verify-email/resend", null],
   ["Email", "Verify email", "POST", "/auth/verify-email", { code: "123456" }],
   [
@@ -191,7 +234,7 @@ pre{margin:0;padding:10px;background:var(--code);border-radius:6px;overflow:auto
 
 const script = `
 const presets = ${JSON.stringify(presets)};
-const names = ["token", "roomId", "timerId", "inviteCode", "resetToken", "friendshipId", "joinRequestId"];
+const names = ["token", "roomId", "timerId", "inviteCode", "resetToken", "friendshipId", "joinRequestId", "challengeToken"];
 const $ = (id) => document.getElementById(id);
 const vars = {};
 for (const n of names) {
@@ -280,6 +323,7 @@ async function send() {
 }
 function capture(path, d) {
   if (typeof d.token === "string") set("token", d.token);
+  if (typeof d.challengeToken === "string") set("challengeToken", d.challengeToken);
   if (typeof d.resetToken === "string") set("resetToken", d.resetToken);
   const o = d.room ?? d;
   if (/^\\/rooms/.test(path) && typeof o.id === "string") set("roomId", o.id);

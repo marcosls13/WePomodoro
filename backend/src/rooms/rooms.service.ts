@@ -42,6 +42,7 @@ async function roomView(tx: Transaction, roomId: string, now: Date) {
       userId: true,
       guestSessionId: true,
       joinedAt: true,
+      invitedById: true,
       user: { select: { username: true } },
       guestSession: { select: { displayName: true } },
     },
@@ -166,7 +167,7 @@ export async function joinRoom(ctx: Context, actor: Actor, code: string) {
       throw new ApiError(404, "Invite code not found");
     if (room.closedAt) throw new ApiError(409, "Room is closed");
     const now = ctx.now();
-    await addMember(tx, room.id, actor, now);
+    await addMember(tx, room.id, actor, now, found.createdById);
     return roomView(tx, room.id, now);
   });
 }
@@ -180,13 +181,14 @@ export async function addMember(
   roomId: string,
   actor: Actor,
   now: Date,
+  invitedById: number,
 ) {
   const member = await tx.roomMember.findFirst({
     where: { roomId, ...identity(actor) },
   });
   if (member) return;
   await tx.roomMember.create({
-    data: { roomId, ...identity(actor), joinedAt: now },
+    data: { roomId, ...identity(actor), joinedAt: now, invitedById },
   });
   const session = await tx.pomodoroSession.findFirst({
     where: { roomId, status: { in: [...liveStatuses] } },

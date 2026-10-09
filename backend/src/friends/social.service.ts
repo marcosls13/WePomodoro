@@ -135,6 +135,7 @@ export async function acceptJoin(ctx: Context, actor: Actor, id: string) {
       room.id,
       { userId: request.requesterId, guestSessionId: null },
       ctx.now(),
+      me,
     );
     await tx.joinRequest.delete({ where: { id } });
   });

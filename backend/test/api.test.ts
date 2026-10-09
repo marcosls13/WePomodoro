@@ -67,6 +67,7 @@ interface Room {
   members: {
     id: string;
     userId: number | null;
+    invitedById: number | null;
     guestSessionId: string | null;
   }[];
   timer: Timer | null;
@@ -371,6 +372,10 @@ void test("room joins are idempotent, private, and controlled by registered owne
     inviteCode: study.inviteCode,
   });
   assert.equal(joined.members.length, 3);
+  assert.equal(
+    joined.members.find((m) => m.userId === friend.user.id)?.invitedById,
+    owner.user.id,
+  );
   await request(
     `/api/rooms/${study.id}`,
     "PATCH",
@@ -691,7 +696,12 @@ void test("friends see presence and can ask to join a server", async () => {
     undefined,
     204,
   );
-  await request(`/api/rooms/${study.id}`, "GET", bob.token);
+  const joinedRoom = await request<{
+    members: { userId: number; invitedById: number | null }[];
+  }>(`/api/rooms/${study.id}`, "GET", bob.token);
+  const byId = (id: number) => joinedRoom.members.find((m) => m.userId === id);
+  assert.equal(byId(bob.user.id)?.invitedById, alice.user.id);
+  assert.equal(byId(alice.user.id)?.invitedById, null);
   const after = await request<{ friends: Friend[] }>(
     "/api/friends",
     "GET",

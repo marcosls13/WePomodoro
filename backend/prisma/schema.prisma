@@ -57,6 +57,7 @@ model User {
   friendInvites   Friendship[]         @relation("FriendshipAddressee")
   messages        Message[]
   presence        Presence?
+  invitedMembers  RoomMember[]         @relation("MemberInvitedBy")
   joinAsks        JoinRequest[]        @relation("JoinRequester")
   joinOffers      JoinRequest[]        @relation("JoinTarget")
   memberships     RoomMember[]
@@ -205,6 +206,10 @@ model RoomMember {
   userId         Int?
   guestSessionId String?       @db.Uuid
   joinedAt       DateTime      @default(now())
+  // Who let this person in: the owner of the code used, or the friend who
+  // accepted a join request. Null for the room creator; cleared if that user is deleted.
+  invitedById    Int?
+  invitedBy      User?         @relation("MemberInvitedBy", fields: [invitedById], references: [id], onDelete: SetNull)
   room           StudyRoom     @relation(fields: [roomId], references: [id], onDelete: Cascade)
   user           User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
   guestSession   GuestSession? @relation(fields: [guestSessionId], references: [id], onDelete: Cascade)

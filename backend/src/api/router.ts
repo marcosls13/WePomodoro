@@ -34,6 +34,7 @@ import {
   updateProfile,
   verifyPassword,
 } from "../auth/auth.service.js";
+import { devActor } from "../dev.js";
 import { listMessages, sendMessage } from "../chat/chat.service.js";
 import {
   acceptJoin,
@@ -164,6 +165,7 @@ export function createRouter(
   ctx: Context,
   verifiers: GameVerifiers = {},
   limits: RateLimits = defaultRateLimits,
+  devAuth = false,
 ) {
   const router = Router();
 
@@ -272,7 +274,11 @@ export function createRouter(
   });
 
   router.use(async (req, res, next) => {
-    res.locals.actor = await authenticate(ctx, req);
+    const as = req.headers["x-dev-user"];
+    res.locals.actor =
+      devAuth && typeof as === "string"
+        ? await devActor(ctx, as)
+        : await authenticate(ctx, req);
     next();
   });
 

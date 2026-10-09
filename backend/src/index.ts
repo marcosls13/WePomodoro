@@ -38,6 +38,7 @@ const ctx = { db: prisma, now: () => new Date(), mailer: createMailer() };
 const app = createApp(ctx, {
   gameVerifiers,
   trustProxy,
+  devAuth: process.env.DEV_AUTH === "true",
   origins: (process.env.CORS_ORIGIN ?? "http://localhost:5173")
     .split(",")
     .map((origin) => origin.trim()),

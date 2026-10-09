@@ -47,6 +47,13 @@ In development (`NODE_ENV` not `production`) the API also serves a test console 
 timer, invite and request IDs filled in from earlier responses. It is not mounted
 in production.
 
+To skip tokens in the console, set `DEV_AUTH=true` in `backend/.env` and restart. A
+"no token, act as" checkbox then appears in the console header with a list of
+users and guests; requests carry `X-Dev-User: <username>` (or `guest:<id>`) instead
+of a Bearer token, and untick it to use a real token again. The header is ignored
+unless `DEV_AUTH=true` and `NODE_ENV` is not `production`; never enable it on a
+shared server, since it lets any caller act as anyone.
+
 Requests with no `Origin` header (curl, native clients) are accepted. A browser
 `Origin` that isn't listed gets 403. CORS is not authentication.
 

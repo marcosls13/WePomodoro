@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { ApiError, type Actor, type Context } from "./api/common.js";
 
 // Dev-only test console served at /dev (never mounted in production).
 // The script is a separate route because helmet's CSP blocks inline scripts.
@@ -148,7 +149,8 @@ const page = `<!doctype html>
 body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 system-ui,sans-serif}
 header{display:flex;align-items:center;gap:12px;padding:14px 20px;border-bottom:1px solid var(--line);background:var(--card)}
 header h1{font-size:16px;margin:0}header span{color:var(--mute)}
-#who{margin-left:auto;padding:2px 10px;border-radius:99px;background:var(--code);font-size:12px}
+.skip{margin-left:auto;display:flex;gap:6px;align-items:center;color:var(--mute)}.skip input{flex:none}#reload{background:var(--code);color:inherit;border:1px solid var(--line);border-radius:6px;padding:5px 9px;cursor:pointer}
+#who{padding:2px 10px;border-radius:99px;background:var(--code);font-size:12px}
 main{display:grid;grid-template-columns:260px 1fr;gap:16px;padding:16px 20px;max-width:1200px;margin:auto}
 @media(max-width:800px){main{grid-template-columns:1fr}}
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px}
@@ -170,7 +172,9 @@ pre{margin:0;padding:10px;background:var(--code);border-radius:6px;overflow:auto
 .ok{color:var(--ok)}.bad{color:var(--bad)}
 .col{display:grid;gap:16px;align-content:start}
 </style></head><body>
-<header><h1>WePomodoro Dev</h1><span>test console</span><span id="who">no token</span></header>
+<header><h1>WePomodoro Dev</h1><span>test console</span><label class="skip"><input type="checkbox" id="skip"> no token, act as</label>
+<select id="actor" disabled></select><button id="reload" title="Reload users">&#8635;</button>
+<span id="who">no token</span></header>
 <main>
 <div class="card presets" id="presets"></div>
 <div class="col">
@@ -204,9 +208,31 @@ for (const n of names) {
 function set(n, v) {
   vars[n] = v; vars[n + "$"].value = v;
   try { localStorage.setItem("dev." + n, v); } catch {}
-  $("who").textContent = vars.token ? "token set" : "no token";
+  updateWho();
+}
+function updateWho() {
+  $("who").textContent = $("skip").checked ? "as " + ($("actor").value || "nobody") : vars.token ? "token set" : "no token";
 }
 set("token", vars.token);
+async function loadActors() {
+  const res = await fetch("/dev/actors");
+  if (!res.ok) { $("skip").disabled = true; $("skip").parentNode.title = "Start the API with DEV_AUTH=true"; return; }
+  const list = await res.json();
+  $("actor").replaceChildren(...list.map((a) => new Option(a.label, a.value)));
+  try { $("actor").value = localStorage.getItem("dev.actor") ?? ""; } catch {}
+  if (!$("actor").value && list[0]) $("actor").value = list[0].value;
+  $("skip").checked = (() => { try { return localStorage.getItem("dev.skip") === "1"; } catch { return false; } })();
+  $("actor").disabled = !$("skip").checked;
+  updateWho();
+}
+$("skip").onchange = () => {
+  $("actor").disabled = !$("skip").checked;
+  try { localStorage.setItem("dev.skip", $("skip").checked ? "1" : "0"); } catch {}
+  updateWho();
+};
+$("actor").onchange = () => { try { localStorage.setItem("dev.actor", $("actor").value); } catch {} updateWho(); };
+$("reload").onclick = loadActors;
+loadActors();
 const fill = (s) => s.replace(/\\{(\\w+)\\}/g, (m, k) => vars[k] || m);
 
 let group = "";
@@ -229,7 +255,8 @@ for (const p of presets) {
 async function send() {
   const method = $("method").value;
   const headers = { "Content-Type": "application/json" };
-  if (vars.token) headers.Authorization = "Bearer " + vars.token;
+  if ($("skip").checked && $("actor").value) headers["X-Dev-User"] = $("actor").value;
+  else if (vars.token) headers.Authorization = "Bearer " + vars.token;
   const path = fill($("path").value);
   const raw = fill($("body").value).trim();
   const t0 = performance.now();
@@ -261,12 +288,51 @@ function capture(path, d) {
   if (/^\\/friends/.test(path) && typeof d.id === "string") set("friendshipId", d.id);
   if (/^\\/join-requests/.test(path) && typeof d.id === "string") set("joinRequestId", d.id);
   if (path === "/auth/logout") set("token", "");
+  if (/^\\/(auth\\/(signup|guest)|users)$/.test(path)) loadActors();
 }
 $("send").onclick = send;
 `;
 
-export function devRouter() {
+/** `X-Dev-User: <username>` or `guest:<id>`; only called when dev auth is on. */
+export async function devActor(ctx: Context, who: string): Promise<Actor> {
+  if (who.startsWith("guest:")) {
+    const guest = await ctx.db.guestSession.findUnique({
+      where: { id: who.slice(6) },
+    });
+    if (!guest) throw new ApiError(401, "Unknown dev guest");
+    return { userId: null, guestSessionId: guest.id };
+  }
+  const user = await ctx.db.user.findUnique({ where: { username: who } });
+  if (!user) throw new ApiError(401, "Unknown dev user");
+  return { userId: user.id, guestSessionId: null };
+}
+
+export function devRouter(ctx: Context, devAuth: boolean) {
   const router = Router();
+  router.get("/actors", async (req, res) => {
+    if (!devAuth) {
+      res.sendStatus(404);
+      return;
+    }
+    const [users, guests] = await Promise.all([
+      ctx.db.user.findMany({ orderBy: { id: "desc" }, take: 200 }),
+      ctx.db.guestSession.findMany({
+        where: { expiresAt: { gt: ctx.now() } },
+        orderBy: { createdAt: "desc" },
+        take: 100,
+      }),
+    ]);
+    res.json([
+      ...users.map((u) => ({
+        value: u.username,
+        label: `${u.username} (#${u.id})`,
+      })),
+      ...guests.map((g) => ({
+        value: `guest:${g.id}`,
+        label: `guest ${g.displayName} (${g.id.slice(0, 8)})`,
+      })),
+    ]);
+  });
   router.get("/", (req, res) => {
     // helmet's default CSP already allows same-origin scripts and inline styles.
     res.type("html").send(page);

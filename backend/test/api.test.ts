@@ -1230,6 +1230,49 @@ void test("login failures are limited per username and token issuance per IP", a
   }
 });
 
+void test("dev auth acts as a user without a token, only when switched on", async () => {
+  const account = await user();
+  const serve = async (devAuth: boolean) => {
+    const server = createApp(ctx, { devAuth }).listen(0, "127.0.0.1");
+    await new Promise<void>((resolve) => {
+      server.once("listening", resolve);
+    });
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    return { server, base: `http://127.0.0.1:${address.port}` };
+  };
+  const on = await serve(true);
+  const off = await serve(false);
+  try {
+    const as = { "X-Dev-User": account.user.username };
+    assert.equal((await fetch(`${on.base}/api/auth/me`)).status, 401);
+    const me = await fetch(`${on.base}/api/auth/me`, { headers: as });
+    assert.equal(me.status, 200);
+    assert.equal(
+      ((await me.json()) as { profile: { id: number } }).profile.id,
+      account.user.id,
+    );
+    const unknown = await fetch(`${on.base}/api/auth/me`, {
+      headers: { "X-Dev-User": "nobody-" + prefix },
+    });
+    assert.equal(unknown.status, 401);
+    assert.equal((await fetch(`${on.base}/dev/actors`)).status, 200);
+    // Off: the header is ignored and the actor list is hidden.
+    assert.equal(
+      (await fetch(`${off.base}/api/auth/me`, { headers: as })).status,
+      401,
+    );
+    assert.equal((await fetch(`${off.base}/dev/actors`)).status, 404);
+  } finally {
+    for (const { server } of [on, off])
+      await new Promise<void>((resolve) => {
+        server.close(() => {
+          resolve();
+        });
+      });
+  }
+});
+
 void test("password reset: emailed code, verified, then a new password ends every session", async () => {
   const account = await user();
   const other = await user();

@@ -20,8 +20,12 @@ export function createApp(
     rateLimits?: RateLimits;
     gameVerifiers?: GameVerifiers;
     onError?: (error: unknown) => void;
+    /** Dev only: let `X-Dev-User` act as any user without a token. Ignored in production. */
+    devAuth?: boolean;
   } = {},
 ) {
+  const dev = process.env.NODE_ENV !== "production";
+  const devAuth = dev && options.devAuth === true;
   const app = express();
   app.disable("x-powered-by");
   app.use(helmet());
@@ -51,9 +55,12 @@ export function createApp(
     res.json({ service: "WePomodoro API", health: "/api/health", dev: "/dev" });
   });
 
-  if (process.env.NODE_ENV !== "production") app.use("/dev", devRouter());
+  if (dev) app.use("/dev", devRouter(ctx, devAuth));
 
-  app.use("/api", createRouter(ctx, options.gameVerifiers, options.rateLimits));
+  app.use(
+    "/api",
+    createRouter(ctx, options.gameVerifiers, options.rateLimits, devAuth),
+  );
 
   app.use((req, res) => {
     res.status(404).json({ error: "Endpoint not found" });

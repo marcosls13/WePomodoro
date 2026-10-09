@@ -1,11 +1,13 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router";
 import Tomato from "../Tomato";
+import { useRedirectIfSignedIn } from "../useRedirectIfSignedIn";
 
 const API_URL = import.meta.env.VITE_API_URL as string;
 
 export default function SignUp() {
   const navigate = useNavigate();
+  const checking = useRedirectIfSignedIn();
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -56,6 +58,8 @@ export default function SignUp() {
       setPending(false);
     }
   }
+
+  if (checking) return null;
 
   return (
     <section className="signup-page">

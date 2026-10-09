@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router";
+import { useRedirectIfSignedIn } from "../useRedirectIfSignedIn";
 
 const API_URL = import.meta.env.VITE_API_URL as string;
 
 export default function SignGuest() {
   const navigate = useNavigate();
+  const checking = useRedirectIfSignedIn();
   const [username, setUsername] = useState("");
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
@@ -42,6 +44,8 @@ export default function SignGuest() {
       setPending(false);
     }
   }
+
+  if (checking) return null;
 
   return (
     <section className="signup-page">

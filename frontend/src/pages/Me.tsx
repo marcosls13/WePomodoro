@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router";
+import TwoFactorCard from "./TwoFactorCard";
 
 const API_URL = import.meta.env.VITE_API_URL as string;
 
@@ -71,6 +72,27 @@ export default function Me() {
     } finally {
       setPending(false);
     }
+  }
+
+  // Ends the session on the server (a guest's temporary identity is deleted),
+  // then forgets the token locally. The token is dropped even if the request
+  // fails, e.g. because the session had already expired.
+  async function logout() {
+    if (pending) return;
+    setError("");
+    setPending(true);
+    try {
+      await fetch(`${API_URL}/api/auth/logout`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token ?? ""}` },
+      });
+    } catch {
+      // Offline: still sign out locally.
+    } finally {
+      localStorage.removeItem("token");
+      setPending(false);
+    }
+    void navigate("/auth/login");
   }
 
   if (!token || loadError)
@@ -149,6 +171,25 @@ export default function Me() {
           </button>
         </div>
       )}
+      {me.type === "user" && <TwoFactorCard token={token} />}
+      <div className="signup-card">
+        <h2 className="signup-title">Sign out</h2>
+        <p className="form-description">
+          {me.type === "guest"
+            ? "Signing out ends your guest session and removes your temporary identity."
+            : "Signs you out on this device."}
+        </p>
+        <button
+          type="button"
+          className="button signup-button"
+          disabled={pending}
+          onClick={() => {
+            void logout();
+          }}
+        >
+          Log out
+        </button>
+      </div>
     </section>
   );
 }

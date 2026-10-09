@@ -9,6 +9,7 @@ import { Prisma } from "./generated/prisma/client.js";
 import { ApiError, type Context } from "./api/common.js";
 import { createRouter, type RateLimits } from "./api/router.js";
 import type { GameVerifiers } from "./games/games.service.js";
+import { devRouter } from "./dev.js";
 
 export function createApp(
   ctx: Context,
@@ -47,8 +48,10 @@ export function createApp(
   });
 
   app.get("/", (req, res) => {
-    res.json({ service: "WePomodoro API", health: "/api/health" });
+    res.json({ service: "WePomodoro API", health: "/api/health", dev: "/dev" });
   });
+
+  if (process.env.NODE_ENV !== "production") app.use("/dev", devRouter());
 
   app.use("/api", createRouter(ctx, options.gameVerifiers, options.rateLimits));
 

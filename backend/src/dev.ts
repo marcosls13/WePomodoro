@@ -216,7 +216,7 @@ function updateWho() {
 set("token", vars.token);
 async function loadActors() {
   const res = await fetch("/dev/actors");
-  if (!res.ok) { $("skip").disabled = true; $("skip").parentNode.title = "Start the API with DEV_AUTH=true"; return; }
+  if (!res.ok) { $("skip").disabled = true; $("skip").parentNode.append(" (off: set DEV_AUTH=true in backend/.env and restart the API)"); return; }
   const list = await res.json();
   $("actor").replaceChildren(...list.map((a) => new Option(a.label, a.value)));
   try { $("actor").value = localStorage.getItem("dev.actor") ?? ""; } catch {}

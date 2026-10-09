@@ -35,12 +35,14 @@ export function createApp(
 
   const origins = options.origins ?? ["http://localhost:5173"];
   app.use(
-    cors({
-      origin(origin, callback) {
-        // Requests without an Origin header (curl, native clients) are not CORS.
-        if (!origin || origins.includes(origin)) callback(null, true);
-        else callback(new ApiError(403, "Origin not allowed"));
-      },
+    cors((req, callback) => {
+      const origin = req.headers.origin;
+      // No Origin (curl, native clients) or the API's own origin (the /dev
+      // console) is not cross-origin.
+      const sameSite = origin === `${req.protocol}://${req.headers.host}`;
+      if (!origin || sameSite || origins.includes(origin))
+        callback(null, { origin: true });
+      else callback(new ApiError(403, "Origin not allowed"));
     }),
   );
 

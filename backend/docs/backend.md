@@ -42,6 +42,11 @@ Environment variables:
 | `PORT`         | `3000`                  | Listening port (1–65535)                              |
 | `CORS_ORIGIN`  | `http://localhost:5173` | Comma-separated exact origins allowed to call the API |
 
+In development (`NODE_ENV` not `production`) the API also serves a test console at
+`http://localhost:3000/dev`: presets for the main endpoints, with the token, room,
+timer, invite and request IDs filled in from earlier responses. It is not mounted
+in production.
+
 Requests with no `Origin` header (curl, native clients) are accepted. A browser
 `Origin` that isn't listed gets 403. CORS is not authentication.
 
@@ -108,7 +113,7 @@ are JSON, except 204 which has no body. UUID placeholders need real IDs; user ID
 are integers.
 
 Access labels: **Public** = no token; **Authenticated** = registered user or
-guest; **Registered** = registered user; **Member** = active room member;
+guest; **Registered** = registered user; **Member** = room member;
 **Owner** = room owner; **Timer owner** = solo participant or shared room owner.
 
 ### 3.1 Service and authentication
@@ -245,9 +250,8 @@ wait for a push channel (SSE/WebSocket). Server chat has no push channel yet: po
 ### 3.3 Study rooms
 
 Only registered users create and own rooms; guests join with a code. Room details
-and member lists are visible only to active members; each registered member
-fetches their own invite code. The room
-listing contains only the caller's active, open rooms.
+and member lists are visible only to members; each registered member fetches
+their own invite code. The room listing contains only the caller's open rooms.
 
 | Method | Endpoint                               | Access        | JSON body                           | Response                                          |
 | ------ | -------------------------------------- | ------------- | ----------------------------------- | ------------------------------------------------- |
@@ -281,12 +285,12 @@ Room settings (creation and update):
   then a code is needed again. A first join during a live timer also joins that
   interval, unless the caller already participates in another live timer.
   Joining again as an existing member is a no-op.
-- A room timer starts with all active members. If any of them has another live
+- A room timer starts with all members. If any of them has another live
   timer, the start returns 409 until they leave or cancel it. This stops
   overlapping sessions from inflating study totals. Expired guests aren't added
-  to new timers or shown as active members.
+  to new timers or shown as members.
 - Owners must transfer ownership or close the room before leaving. The new owner
-  must be an active registered member.
+  must be a registered member.
 - Kicking is not a permanent ban: they can rejoin with a current code. Rotating
   your code invalidates the previous one.
 - Closed rooms reject joining, updates, transfers and new timers.
@@ -373,15 +377,16 @@ curl -X POST http://localhost:3000/api/rooms \
   -d '{"name":"Study group"}'
 ```
 
-Friends authenticate (or enter as guests), then call `/api/rooms/join` with the
-member's invite code. The owner calls `/api/rooms/ROOM_UUID/timers` to start a
+A member fetches their own code with `POST /api/rooms/ROOM_UUID/invite-code`.
+Friends authenticate (or enter as guests), then call `/api/rooms/join` with it. The owner calls `/api/rooms/ROOM_UUID/timers` to start a
 shared interval. Solo callers use `/api/timers` instead.
 
 ---
 
 ## 4. Data model
 
-Thirteen PostgreSQL tables (the last four are the account recovery and two-factor schema; no endpoints use them yet).
+Eighteen PostgreSQL tables. `TwoFactor`, `RecoveryCode` and `LoginChallenge` are
+schema only; no endpoints use them yet.
 
 | Table                | Purpose                                                                | Main relationships                                                           |
 | -------------------- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
@@ -389,7 +394,8 @@ Thirteen PostgreSQL tables (the last four are the account recovery and two-facto
 | `AuthSession`        | A registered user's login, identified by a hashed token with an expiry | Belongs to one user                                                          |
 | `GuestSession`       | Temporary guest identity, display name, hashed token and expiry        | Can join rooms and study sessions; cannot own rooms or save game results     |
 | `StudyRoom`          | Shared space with Pomodoro settings                                    | Owned by a registered user; has memberships and timer sessions               |
-| `RoomMember`         | Who belongs to a room                                                  | One room and exactly one user OR guest                                       |
+| `RoomMember`         | Who belongs to a room until they leave or are kicked                   | One room and exactly one user OR guest; optional inviter                     |
+| `Invite`             | A member's personal join code for a room                               | One room and one registered user                                             |
 | `PomodoroSession`    | One focus or break interval, solo or shared                            | Optional room; has participant records                                       |
 | `SessionParticipant` | Individual attendance and actual focus time for an interval            | One session and exactly one user OR guest                                    |
 | `MiniGame`           | Catalogue of games with a stable key such as `memory`                  | Has game results                                                             |
@@ -398,6 +404,10 @@ Thirteen PostgreSQL tables (the last four are the account recovery and two-facto
 | `TwoFactor`          | TOTP enrolment (encrypted secret); at most one per user                | Belongs to one user                                                          |
 | `RecoveryCode`       | Single-use backup codes for 2FA                                        | Belongs to one user                                                          |
 | `LoginChallenge`     | Short-lived step between password and session when 2FA is on           | Belongs to one user                                                          |
+| `Friendship`         | A friend request between two registered users, pending or accepted     | Two users                                                                    |
+| `Message`            | A chat message in a server                                             | One room; author is a user or guest, cleared if they are deleted             |
+| `Presence`           | A registered user's last heartbeat and the server they are in          | One user, optional room                                                      |
+| `JoinRequest`        | "Let me into the server you are in", sent to a friend                  | One room, a requester and a friend                                           |
 
 ```mermaid
 erDiagram
@@ -407,6 +417,10 @@ erDiagram
   StudyRoom ||--o{ Invite : has
   StudyRoom ||--o{ Message : holds
   User ||--o{ Friendship : requests
+  User ||--o| Presence : heartbeats
+  StudyRoom ||--o{ JoinRequest : receives
+  User ||--o{ JoinRequest : asks
+  User o|--o{ RoomMember : invites
   User ||--o{ Invite : creates
   User o|--o{ RoomMember : joins
   GuestSession o|--o{ RoomMember : joins
@@ -535,42 +549,16 @@ Relations: `owner`, `members`, `sessions`. Index: `ownerId`. The API limits
 durations to 1–14400 s and cycles to 1–12 on top of the SQL positive checks.
 Prefer closing over deleting a room to keep its history and name.
 
-### 4.4b Invite
-
-| Field         | Type          | Default / rule                        | Meaning                  |
-| ------------- | ------------- | ------------------------------------- | ------------------------ |
-| `id`          | UUID `String` | Primary key; `uuid()`                 | Invite identity          |
-| `roomId`      | UUID `String` | Foreign key → `StudyRoom.id`, cascade | Room the code opens      |
-| `createdById` | `Int`         | Foreign key → `User.id`, cascade      | Member who owns the code |
-| `code`        | `String`      | Unique; nonblank                      | Code to join             |
-| `createdAt`   | `DateTime`    | `now()`                               | Creation time            |
-
-Unique pair `(roomId, createdById)`: one code per member per room.
-
-### 4.4c Friendship and Message
-
-`Friendship`: `requesterId` → `addresseeId`, `status` `PENDING`/`ACCEPTED`,
-`createdAt`, `respondedAt`. Both users cascade. SQL rejects a friendship with
-yourself and a second row for the same pair in either direction. Declining,
-cancelling and unfriending delete the row.
-
-`Presence`: one row per user (`userId`, `roomId?`, `seenAt`); a stale `seenAt` means
-offline. `JoinRequest`: `roomId`, `requesterId`, `targetId`, unique per triple; accepting
-adds a `RoomMember` and deletes the row.
-
-`Message`: integer `id` (used as the polling cursor), `roomId` (cascade),
-`userId?` / `guestSessionId?` (set null when the author goes), `authorName`
-snapshot, `content` (1–2000 chars, not blank), `createdAt`.
-
 ### 4.5 RoomMember
 
-| Field            | Type           | Default / rule                        | Meaning                          |
-| ---------------- | -------------- | ------------------------------------- | -------------------------------- |
-| `id`             | UUID `String`  | Primary key; `uuid()`                 | Membership ID, used for removal  |
-| `roomId`         | UUID `String`  | Required foreign key → `StudyRoom.id` | Room joined                      |
-| `userId`         | `Int?`         | Foreign key → `User.id`               | Registered member, if applicable |
-| `guestSessionId` | UUID `String?` | Foreign key → `GuestSession.id`       | Guest member, if applicable      |
-| `joinedAt`       | `DateTime`     | `now()`                               | First membership creation time   |
+| Field            | Type           | Default / rule                        | Meaning                                                                                 |
+| ---------------- | -------------- | ------------------------------------- | --------------------------------------------------------------------------------------- |
+| `id`             | UUID `String`  | Primary key; `uuid()`                 | Membership ID, used for removal                                                         |
+| `roomId`         | UUID `String`  | Required foreign key → `StudyRoom.id` | Room joined                                                                             |
+| `userId`         | `Int?`         | Foreign key → `User.id`               | Registered member, if applicable                                                        |
+| `guestSessionId` | UUID `String?` | Foreign key → `GuestSession.id`       | Guest member, if applicable                                                             |
+| `joinedAt`       | `DateTime`     | `now()`                               | First membership creation time                                                          |
+| `invitedById`    | `Int?`         | Foreign key → `User.id`, set null     | Who let them in (code owner or the friend who accepted a request); null for the creator |
 
 Unique pairs `(roomId, userId)` and `(roomId, guestSessionId)`; PostgreSQL permits
 nulls in those pairs, so the exactly-one-identity CHECK closes the both-empty
@@ -677,6 +665,28 @@ Verification sets `emailVerifiedAt`; changing the email must clear it.
 Expired rows aren't removed by SQL, so extend `cleanupExpiredSessions` to
 delete expired tokens and challenges.
 
+### 4.11 Invites, friends, chat and presence
+
+`Invite`: `id`, `roomId` (cascade), `createdById` (user, cascade), unique `code`
+(nonblank), `createdAt`. Unique `(roomId, createdById)`: one code per member per
+room. Leaving or being kicked deletes the member's invite.
+
+`Friendship`: `requesterId` → `addresseeId`, `status` `PENDING`/`ACCEPTED`,
+`createdAt`, `respondedAt`. Both users cascade. SQL rejects a friendship with
+yourself and a second row for the same pair in either direction. Declining,
+cancelling and unfriending delete the row.
+
+`Message`: integer `id` (the polling cursor), `roomId` (cascade), `userId?` /
+`guestSessionId?` (set null when the author goes), `authorName` snapshot,
+`content` (1–2000 chars, not blank), `createdAt`.
+
+`Presence`: one row per user (`userId`, `roomId?`, `seenAt`). A `seenAt` older than
+60 s means offline; the room is set null if the room is deleted.
+
+`JoinRequest`: `roomId`, `requesterId`, `targetId` (both users), `createdAt`,
+unique per triple, SQL rejects asking yourself. Accepting adds a `RoomMember`
+(with `invitedById` = the friend) and deletes the row.
+
 ---
 
 ## 5. How timers and statistics work
@@ -763,24 +773,26 @@ entries that have results.
 
 ## 7. Deletion and lifecycle
 
-| Parent action          | Database behavior                                                            | Implemented API behavior                                                 |
-| ---------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| Delete User            | Cascade logins, memberships, attendance, results; owned rooms block deletion | Account deletion cancels/deletes owned rooms first, then the user        |
-| Delete GuestSession    | Cascade guest memberships and attendance                                     | Logout/cleanup also cancels solo timers and settles shared attendance    |
-| Delete StudyRoom       | Cascade memberships; set historical session room IDs to null                 | Prefer close; account deletion physically removes owned rooms            |
-| Delete PomodoroSession | Cascade attendance                                                           | Ordinary cancellation retains the session and partial history            |
-| Delete MiniGame        | Blocked if results reference it                                              | CLI disables instead                                                     |
-| Close StudyRoom        | SQL only stores a timestamp                                                  | Cancels the live timer, saves partial time, rejects new joins and timers |
+| Parent action          | Database behavior                                                                                                                                                                  | Implemented API behavior                                                 |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Delete User            | Cascade logins, memberships, invites, friendships, presence, join requests, attendance, results; chat messages keep their text with the author cleared; owned rooms block deletion | Account deletion cancels/deletes owned rooms first, then the user        |
+| Delete GuestSession    | Cascade guest memberships and attendance; chat messages keep their text                                                                                                            | Logout/cleanup also cancels solo timers and settles shared attendance    |
+| Delete StudyRoom       | Cascade memberships, invites, messages, join requests; set historical session room IDs to null                                                                                     | Prefer close; account deletion physically removes owned rooms            |
+| Delete PomodoroSession | Cascade attendance                                                                                                                                                                 | Ordinary cancellation retains the session and partial history            |
+| Delete MiniGame        | Blocked if results reference it                                                                                                                                                    | CLI disables instead                                                     |
+| Close StudyRoom        | SQL only stores a timestamp                                                                                                                                                        | Cancels the live timer, saves partial time, rejects new joins and timers |
 
 Expiry is not an automatic SQL deletion. Authentication checks it on every
 request and `cleanupExpiredSessions()` removes expired identities periodically.
-Guest-only session rows may remain after attendance is removed. Deleting a user
+Timer rows left with no participants (a deleted guest's solo timer) are removed by
+the same periodic cleanup, which also drops stale presence and join requests older
+than a day. Deleting a user
 who owns rooms is blocked at the database level until those rooms are transferred
 or deleted; closing alone doesn't lift that.
 
 ### Application rules the schema can't enforce
 
-Room ownership and closure, current membership, expiry, allowed transitions,
+Room ownership and closure, membership, expiry, allowed transitions,
 solo-timer participant count, non-overlapping attendance and game-specific
 scores live in the services. Foreign keys alone do not enforce these
 permissions, so preserve the service checks when adding endpoints. Critical
@@ -796,14 +808,18 @@ requests.
 adds the CHECK constraints and the partial unique live-timer index. Preserve them
 in future migrations. `prisma db push` is not a substitute.
 
-| Migration                             | Contents                                                                                        |
-| ------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `20261001114431_init`                 | Original `User` table                                                                           |
-| `20261001115727_remove_password`      | Drops the old plain `password` column                                                           |
-| `20261006160000_study_platform`       | Nullable `User.passwordHash`, the other 8 tables, enums, indexes, FKs, CHECKs, partial index    |
-| `20261006170000_timer_accounting`     | `resumedAt`, `creditedAt`, timestamp CHECKs, `(status, startedAt)` index                        |
-| `20261007140000_account_recovery_2fa` | `User.emailVerifiedAt`; `EmailToken`, `TwoFactor`, `RecoveryCode`, `LoginChallenge` with CHECKs |
-| `20261007160000_password_reset_code`  | `PASSWORD_RESET_CODE` purpose, `EmailToken.failedAttempts` and its CHECK                        |
+| Migration                               | Contents                                                                                        |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `20261001114431_init`                   | Original `User` table                                                                           |
+| `20261001115727_remove_password`        | Drops the old plain `password` column                                                           |
+| `20261006160000_study_platform`         | Nullable `User.passwordHash`, the other 8 tables, enums, indexes, FKs, CHECKs, partial index    |
+| `20261006170000_timer_accounting`       | `resumedAt`, `creditedAt`, timestamp CHECKs, `(status, startedAt)` index                        |
+| `20261007140000_account_recovery_2fa`   | `User.emailVerifiedAt`; `EmailToken`, `TwoFactor`, `RecoveryCode`, `LoginChallenge` with CHECKs |
+| `20261007160000_password_reset_code`    | `PASSWORD_RESET_CODE` purpose, `EmailToken.failedAttempts` and its CHECK                        |
+| `20261009120000_personal_invites`       | `Invite`; existing room codes become the owner's code; drops `StudyRoom.inviteCode`             |
+| `20261009130000_servers_friends_chat`   | Drops `RoomMember.leftAt` (deleting rows that had left); `Friendship`, `Message` with CHECKs    |
+| `20261009140000_presence_join_requests` | `Presence`, `JoinRequest` with CHECK                                                            |
+| `20261009150000_member_invited_by`      | `RoomMember.invitedById`                                                                        |
 
 The study-platform migration preserves existing profiles and never drops user
 data. The timer-accounting migration keeps original start times and gives
@@ -820,7 +836,8 @@ npm run db:migrate -- --name describe_the_change   # new migration on a dev DB
 Client generation runs automatically before dev, build and tests. Don't edit
 deployed migrations; add a new one.
 
-Future features should add models when concrete: direct messages, game attempts (replay protection), external-account identities
+Future features should add models when concrete: direct messages (they need a
+push channel), game attempts (replay protection), external-account identities
 (OAuth), event logs (full pause/attendance audit).
 
 ---
@@ -845,7 +862,9 @@ applied before fixtures run. Database cases roll back after each test; API tests
 serve Express on an ephemeral loopback port, use a controlled clock (no sleeping)
 and clean their own fixtures.
 
-Coverage includes room joins for users and guests, rejoining, solo and shared
+Coverage includes room joins for users and guests, personal invite codes,
+permanent membership with leave and kick, friends, presence, join requests, server
+chat, solo and shared
 timers, pause/resume/completion, snapshot settings, late joins, expiry,
 long-break cycles, statistics isolation and break filtering, game totals, unique
 constraints, identity checks, duration/status checks, foreign keys, deletion

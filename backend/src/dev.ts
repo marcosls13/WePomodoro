@@ -84,6 +84,36 @@ const presets = [
   ["Friends", "Send request", "POST", "/friends", { username: "bob" }],
   ["Friends", "Accept request", "POST", "/friends/{friendshipId}/accept", null],
   ["Friends", "Remove / decline", "DELETE", "/friends/{friendshipId}", null],
+  [
+    "Friends",
+    "Heartbeat (in room)",
+    "PUT",
+    "/presence",
+    { roomId: "{roomId}" },
+  ],
+  ["Friends", "Heartbeat (online only)", "PUT", "/presence", { roomId: null }],
+  [
+    "Friends",
+    "Ask friend to join",
+    "POST",
+    "/join-requests",
+    { friendId: 1, roomId: "{roomId}" },
+  ],
+  ["Friends", "Join requests", "GET", "/join-requests", null],
+  [
+    "Friends",
+    "Accept join request",
+    "POST",
+    "/join-requests/{joinRequestId}/accept",
+    null,
+  ],
+  [
+    "Friends",
+    "Decline / cancel join",
+    "DELETE",
+    "/join-requests/{joinRequestId}",
+    null,
+  ],
   ["Chat", "Read messages", "GET", "/rooms/{roomId}/messages", null],
   [
     "Chat",
@@ -145,7 +175,7 @@ pre{margin:0;padding:10px;background:var(--code);border-radius:6px;overflow:auto
 <div class="card presets" id="presets"></div>
 <div class="col">
  <div class="card">
-  <div class="row"><select id="method"><option>GET</option><option>POST</option><option>PATCH</option><option>DELETE</option></select>
+  <div class="row"><select id="method"><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select>
   <input id="path" spellcheck="false"><button class="send" id="send">Send</button></div>
   <h2>Body (JSON)</h2><textarea id="body" spellcheck="false"></textarea>
   <h2>Variables (auto-filled from responses, editable)</h2><div class="vars" id="vars"></div>
@@ -157,7 +187,7 @@ pre{margin:0;padding:10px;background:var(--code);border-radius:6px;overflow:auto
 
 const script = `
 const presets = ${JSON.stringify(presets)};
-const names = ["token", "roomId", "timerId", "inviteCode", "resetToken", "friendshipId"];
+const names = ["token", "roomId", "timerId", "inviteCode", "resetToken", "friendshipId", "joinRequestId"];
 const $ = (id) => document.getElementById(id);
 const vars = {};
 for (const n of names) {
@@ -229,6 +259,7 @@ function capture(path, d) {
   if (typeof o.inviteCode === "string") set("inviteCode", o.inviteCode);
   if (/^\\/(rooms\\/.*\\/)?timers/.test(path) && typeof d.id === "string") set("timerId", d.id);
   if (/^\\/friends/.test(path) && typeof d.id === "string") set("friendshipId", d.id);
+  if (/^\\/join-requests/.test(path) && typeof d.id === "string") set("joinRequestId", d.id);
   if (path === "/auth/logout") set("token", "");
 }
 $("send").onclick = send;

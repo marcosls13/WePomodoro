@@ -87,6 +87,13 @@ export async function cleanupExpiredSessions(ctx: Context) {
   await ctx.db.pomodoroSession.deleteMany({
     where: { participants: { none: {} } },
   });
+  // Stale heartbeats are already "offline"; unanswered requests lapse after a day.
+  await ctx.db.presence.deleteMany({
+    where: { seenAt: { lte: new Date(ctx.now().getTime() - 3600_000) } },
+  });
+  await ctx.db.joinRequest.deleteMany({
+    where: { createdAt: { lte: new Date(ctx.now().getTime() - 86_400_000) } },
+  });
   await ctx.db.emailToken.deleteMany({
     where: { expiresAt: { lte: ctx.now() } },
   });

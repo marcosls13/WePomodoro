@@ -595,6 +595,148 @@ void test("friends: request, accept, list and remove", async () => {
   const crossed = await request<Lists>("/api/friends", "GET", bob.token);
   assert.equal(crossed.friends.length, 1);
 });
+void test("friends see presence and can ask to join a server", async () => {
+  const alice = await user();
+  const bob = await user();
+  const stranger = await user();
+  const study = await room(alice.token);
+  interface Friend {
+    id: string;
+    user: { id: number };
+    presence: { online: boolean; room: { id: string; joined: boolean } | null };
+  }
+  const befriend = async () => {
+    const sent = await request<{ id: string }>(
+      "/api/friends",
+      "POST",
+      bob.token,
+      { username: alice.user.username },
+      201,
+    );
+    await request(
+      `/api/friends/${sent.id}/accept`,
+      "POST",
+      alice.token,
+      undefined,
+      204,
+    );
+  };
+  // Not friends yet: no asking, and presence needs membership.
+  await request(
+    "/api/join-requests",
+    "POST",
+    bob.token,
+    { friendId: alice.user.id, roomId: study.id },
+    403,
+  );
+  await request(
+    "/api/presence",
+    "PUT",
+    stranger.token,
+    { roomId: study.id },
+    403,
+  );
+  await befriend();
+  const before = await request<{ friends: Friend[] }>(
+    "/api/friends",
+    "GET",
+    bob.token,
+  );
+  assert.equal(before.friends[0]?.presence.online, false);
+  await request("/api/presence", "PUT", alice.token, { roomId: study.id }, 204);
+  const seen = await request<{ friends: Friend[] }>(
+    "/api/friends",
+    "GET",
+    bob.token,
+  );
+  assert.equal(seen.friends[0]?.presence.online, true);
+  assert.equal(seen.friends[0]?.presence.room?.id, study.id);
+  assert.equal(seen.friends[0]?.presence.room?.joined, false);
+  // Ask to join: only a member can be asked, and only once.
+  await request(
+    "/api/join-requests",
+    "POST",
+    bob.token,
+    { friendId: alice.user.id, roomId: study.id },
+    201,
+  );
+  await request(
+    "/api/join-requests",
+    "POST",
+    bob.token,
+    { friendId: alice.user.id, roomId: study.id },
+    201,
+  );
+  interface Ask {
+    id: string;
+  }
+  const asks = await request<{ incoming: Ask[]; outgoing: Ask[] }>(
+    "/api/join-requests",
+    "GET",
+    alice.token,
+  );
+  assert.equal(asks.incoming.length, 1);
+  // Only the person asked can accept.
+  await request(
+    `/api/join-requests/${asks.incoming[0].id}/accept`,
+    "POST",
+    bob.token,
+    undefined,
+    404,
+  );
+  await request(
+    `/api/join-requests/${asks.incoming[0].id}/accept`,
+    "POST",
+    alice.token,
+    undefined,
+    204,
+  );
+  await request(`/api/rooms/${study.id}`, "GET", bob.token);
+  const after = await request<{ friends: Friend[] }>(
+    "/api/friends",
+    "GET",
+    bob.token,
+  );
+  assert.equal(after.friends[0]?.presence.room?.joined, true);
+  await request(
+    "/api/join-requests",
+    "POST",
+    bob.token,
+    { friendId: alice.user.id, roomId: study.id },
+    409,
+  );
+  // Declining removes the request.
+  const carol = await user();
+  const sent = await request<{ id: string }>(
+    "/api/friends",
+    "POST",
+    carol.token,
+    { username: alice.user.username },
+    201,
+  );
+  await request(
+    `/api/friends/${sent.id}/accept`,
+    "POST",
+    alice.token,
+    undefined,
+    204,
+  );
+  const ask = await request<Ask>(
+    "/api/join-requests",
+    "POST",
+    carol.token,
+    { friendId: alice.user.id, roomId: study.id },
+    201,
+  );
+  await request(
+    `/api/join-requests/${ask.id}`,
+    "DELETE",
+    alice.token,
+    undefined,
+    204,
+  );
+  await request(`/api/rooms/${study.id}`, "GET", carol.token, undefined, 403);
+});
 void test("room chat is for members, in order, and polls by message id", async () => {
   const owner = await user();
   const outsider = await user();
@@ -617,7 +759,11 @@ void test("room chat is for members, in order, and polls by message id", async (
   await request("/api/rooms/join", "POST", visitor.token, {
     inviteCode: study.inviteCode,
   });
-  interface Message { id: number; authorName: string; content: string }
+  interface Message {
+    id: number;
+    authorName: string;
+    content: string;
+  }
   const first = await request<Message>(
     `/api/rooms/${study.id}/messages`,
     "POST",

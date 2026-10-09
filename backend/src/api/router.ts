@@ -36,6 +36,13 @@ import {
 } from "../auth/auth.service.js";
 import { listMessages, sendMessage } from "../chat/chat.service.js";
 import {
+  acceptJoin,
+  askToJoin,
+  dropJoinRequest,
+  listJoinRequests,
+  setPresence,
+} from "../friends/social.service.js";
+import {
   acceptFriend,
   listFriends,
   removeFriend,
@@ -544,6 +551,44 @@ export function createRouter(
 
   router.delete("/friends/:id", async (req, res) => {
     await removeFriend(ctx, actor(res), uuid(req.params.id));
+    res.sendStatus(204);
+  });
+
+  router.put("/presence", async (req, res) => {
+    const { roomId } = body(req);
+    await setPresence(
+      ctx,
+      actor(res),
+      roomId === null || roomId === undefined ? null : uuid(roomId),
+    );
+    res.sendStatus(204);
+  });
+
+  router.get("/join-requests", async (req, res) => {
+    res.json(await listJoinRequests(ctx, actor(res)));
+  });
+
+  router.post("/join-requests", async (req, res) => {
+    const input = body(req);
+    res
+      .status(201)
+      .json(
+        await askToJoin(
+          ctx,
+          actor(res),
+          integer(input.friendId, "friendId", 1, 2147483647),
+          uuid(input.roomId),
+        ),
+      );
+  });
+
+  router.post("/join-requests/:id/accept", async (req, res) => {
+    await acceptJoin(ctx, actor(res), uuid(req.params.id));
+    res.sendStatus(204);
+  });
+
+  router.delete("/join-requests/:id", async (req, res) => {
+    await dropJoinRequest(ctx, actor(res), uuid(req.params.id));
     res.sendStatus(204);
   });
 

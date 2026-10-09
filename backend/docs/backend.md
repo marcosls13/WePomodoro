@@ -224,7 +224,23 @@ automatically if they had already asked you.
 | POST   | `/api/friends/:id/accept` | None             | 204; only the addressee                   |
 | DELETE | `/api/friends/:id`        | None             | 204: decline, cancel or unfriend          |
 
-Chat has no push channel yet: poll `GET /api/rooms/:roomId/messages?after=<last id>`.
+Presence is always visible to friends. The client sends a heartbeat every
+~30 s (`PUT /api/presence`, `{ "roomId": "<uuid>" | null }`, 204; the room must be
+one you belong to). A friend counts as online for 60 s after the last heartbeat,
+and `GET /api/friends` adds `presence: { online, room: { id, name, joined } | null }`
+to each friend; `joined` says whether you are already a member of that room.
+
+If a friend is in a server you haven't joined, ask to join it:
+
+| Method | Path                            | Body                       | Result                                           |
+| ------ | ------------------------------- | -------------------------- | ------------------------------------------------ |
+| POST   | `/api/join-requests`            | `{ "friendId", "roomId" }` | 201; friends only; the friend must be a member   |
+| GET    | `/api/join-requests`            | None                       | `{ incoming, outgoing }`                         |
+| POST   | `/api/join-requests/:id/accept` | None                       | 204; only the friend asked; adds you as a member |
+| DELETE | `/api/join-requests/:id`        | None                       | 204: decline or cancel                           |
+
+Unanswered requests lapse after a day. Friend direct messages are not built: they
+wait for a push channel (SSE/WebSocket). Server chat has no push channel yet: poll `GET /api/rooms/:roomId/messages?after=<last id>`.
 
 ### 3.3 Study rooms
 
@@ -446,7 +462,7 @@ someone can belong to a room while running a solo timer.
 - Minigames are independent of timers. Guests may play, but only registered users
   keep scores. Scores are signed integers; each game decides what is valid.
 - Leaderboards are intentionally deferred. Friends and server chat exist;
-  friend direct messages, presence and join requests are not built yet.
+  friend direct messages are not built yet (they need a push channel).
 
 ### 4.1 User
 
@@ -537,6 +553,10 @@ Unique pair `(roomId, createdById)`: one code per member per room.
 `createdAt`, `respondedAt`. Both users cascade. SQL rejects a friendship with
 yourself and a second row for the same pair in either direction. Declining,
 cancelling and unfriending delete the row.
+
+`Presence`: one row per user (`userId`, `roomId?`, `seenAt`); a stale `seenAt` means
+offline. `JoinRequest`: `roomId`, `requesterId`, `targetId`, unique per triple; accepting
+adds a `RoomMember` and deletes the row.
 
 `Message`: integer `id` (used as the polling cursor), `roomId` (cascade),
 `userId?` / `guestSessionId?` (set null when the author goes), `authorName`
@@ -800,8 +820,7 @@ npm run db:migrate -- --name describe_the_change   # new migration on a dev DB
 Client generation runs automatically before dev, build and tests. Don't edit
 deployed migrations; add a new one.
 
-Future features should add models when concrete: direct messages, presence,
-join requests, game attempts (replay protection), external-account identities
+Future features should add models when concrete: direct messages, game attempts (replay protection), external-account identities
 (OAuth), event logs (full pause/attendance audit).
 
 ---
@@ -847,6 +866,7 @@ exclusion. CI runs the full suite against its own PostgreSQL service.
 | `src/auth/auth.service.ts`                  | Passwords, token issuance/authentication, profiles              |
 | `src/rooms/rooms.service.ts`                | Memberships, settings, owner actions                            |
 | `src/friends/friends.service.ts`            | Friend requests, accept, list, remove                           |
+| `src/friends/social.service.ts`             | Presence heartbeat, join requests                               |
 | `src/chat/chat.service.ts`                  | Server chat messages                                            |
 | `src/dev.ts`                                | Dev-only test console at `/dev` (not mounted in production)     |
 | `src/timers/timers.service.ts`              | Clock math, attendance, transitions, finalization               |

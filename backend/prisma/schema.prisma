@@ -56,6 +56,9 @@ model User {
   friendRequests  Friendship[]         @relation("FriendshipRequester")
   friendInvites   Friendship[]         @relation("FriendshipAddressee")
   messages        Message[]
+  presence        Presence?
+  joinAsks        JoinRequest[]        @relation("JoinRequester")
+  joinOffers      JoinRequest[]        @relation("JoinTarget")
   memberships     RoomMember[]
   studyHistory    SessionParticipant[]
   gameResults     GameResult[]
@@ -173,6 +176,8 @@ model StudyRoom {
   members               RoomMember[]
   invites               Invite[]
   messages              Message[]
+  presence              Presence[]
+  joinRequests          JoinRequest[]
   sessions              PomodoroSession[]
 
   @@index([ownerId])
@@ -245,6 +250,35 @@ model Message {
   guestSession   GuestSession? @relation(fields: [guestSessionId], references: [id], onDelete: SetNull)
 
   @@index([roomId, id])
+}
+
+// Where a registered user is right now. The client sends a heartbeat; a row
+// whose seenAt is older than the freshness window means offline.
+model Presence {
+  userId Int        @id
+  roomId String?    @db.Uuid
+  seenAt DateTime
+  user   User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  room   StudyRoom? @relation(fields: [roomId], references: [id], onDelete: SetNull)
+
+  @@index([seenAt])
+}
+
+// "Let me into the server you are in." Accepting adds the requester as a
+// member and deletes the row; declining or cancelling just deletes it.
+model JoinRequest {
+  id          String    @id @default(uuid()) @db.Uuid
+  roomId      String    @db.Uuid
+  requesterId Int
+  targetId    Int
+  createdAt   DateTime  @default(now())
+  room        StudyRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  requester   User      @relation("JoinRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  target      User      @relation("JoinTarget", fields: [targetId], references: [id], onDelete: Cascade)
+
+  @@unique([roomId, requesterId, targetId])
+  @@index([targetId])
+  @@index([requesterId])
 }
 
 model PomodoroSession {

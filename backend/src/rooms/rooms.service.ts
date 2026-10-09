@@ -166,25 +166,36 @@ export async function joinRoom(ctx: Context, actor: Actor, code: string) {
       throw new ApiError(404, "Invite code not found");
     if (room.closedAt) throw new ApiError(409, "Room is closed");
     const now = ctx.now();
-    const member = await tx.roomMember.findFirst({
-      where: { roomId: room.id, ...identity(actor) },
-    });
-    // Already a member (code used before): nothing to do, and a running timer
-    // is only joined explicitly through the timer's own join action.
-    if (member) return roomView(tx, room.id, now);
-    await tx.roomMember.create({
-      data: { roomId: room.id, ...identity(actor), joinedAt: now },
-    });
-    const session = await tx.pomodoroSession.findFirst({
-      where: { roomId: room.id, status: { in: [...liveStatuses] } },
-    });
-    if (session) {
-      const current = await settle(tx, session, now);
-      if (liveStatuses.includes(current.status as "ACTIVE" | "PAUSED"))
-        await attend(tx, actor, current, now);
-    }
+    await addMember(tx, room.id, actor, now);
     return roomView(tx, room.id, now);
   });
+}
+
+/**
+ * Adds a member and joins a running timer. Already a member (code used before):
+ * nothing to do; a running timer is then joined through the timer's own action.
+ */
+export async function addMember(
+  tx: Transaction,
+  roomId: string,
+  actor: Actor,
+  now: Date,
+) {
+  const member = await tx.roomMember.findFirst({
+    where: { roomId, ...identity(actor) },
+  });
+  if (member) return;
+  await tx.roomMember.create({
+    data: { roomId, ...identity(actor), joinedAt: now },
+  });
+  const session = await tx.pomodoroSession.findFirst({
+    where: { roomId, status: { in: [...liveStatuses] } },
+  });
+  if (session) {
+    const current = await settle(tx, session, now);
+    if (liveStatuses.includes(current.status as "ACTIVE" | "PAUSED"))
+      await attend(tx, actor, current, now);
+  }
 }
 
 export async function leaveRoom(ctx: Context, actor: Actor, roomId: string) {

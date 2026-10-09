@@ -5,6 +5,7 @@ import {
   type Actor,
   type Context,
 } from "../api/common.js";
+import { presenceWindowMs } from "./social.service.js";
 
 const person = { select: { id: true, username: true } } as const;
 
@@ -16,11 +17,45 @@ export async function listFriends(ctx: Context, actor: Actor) {
     orderBy: { createdAt: "desc" },
     take: 500,
   });
-  const view = (row: (typeof rows)[number]) => ({
-    id: row.id,
-    user: row.requesterId === me ? row.addressee : row.requester,
-    createdAt: row.createdAt,
+  // Always visible to friends: online if a heartbeat is fresh, plus the server.
+  const friendIds = rows
+    .filter((r) => r.status === "ACCEPTED")
+    .map((r) => (r.requesterId === me ? r.addresseeId : r.requesterId));
+  const seen = await ctx.db.presence.findMany({
+    where: {
+      userId: { in: friendIds },
+      seenAt: { gt: new Date(ctx.now().getTime() - presenceWindowMs) },
+    },
+    include: { room: { select: { id: true, name: true, closedAt: true } } },
   });
+  const mine = new Set(
+    (
+      await ctx.db.roomMember.findMany({
+        where: {
+          userId: me,
+          roomId: { in: seen.flatMap((p) => p.roomId ?? []) },
+        },
+        select: { roomId: true },
+      })
+    ).map((m) => m.roomId),
+  );
+  const presenceOf = (userId: number) => {
+    const p = seen.find((x) => x.userId === userId);
+    const room = p?.room && !p.room.closedAt ? p.room : null;
+    return {
+      online: Boolean(p),
+      room: room && { id: room.id, name: room.name, joined: mine.has(room.id) },
+    };
+  };
+  const view = (row: (typeof rows)[number]) => {
+    const user = row.requesterId === me ? row.addressee : row.requester;
+    return {
+      id: row.id,
+      user,
+      createdAt: row.createdAt,
+      ...(row.status === "ACCEPTED" ? { presence: presenceOf(user.id) } : {}),
+    };
+  };
   return {
     friends: rows.filter((r) => r.status === "ACCEPTED").map(view),
     incoming: rows

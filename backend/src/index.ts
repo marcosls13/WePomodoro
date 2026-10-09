@@ -16,3 +16,5 @@ app.listen(port, () => {
 });
 
 runUsers(app);
+
+import "./rooms/test.js";

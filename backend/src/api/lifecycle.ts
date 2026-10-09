@@ -82,6 +82,11 @@ export async function cleanupExpiredSessions(ctx: Context) {
   await ctx.db.authSession.deleteMany({
     where: { expiresAt: { lte: ctx.now() } },
   });
+  // Deleting a user or guest cascades their attendance but not the timer rows,
+  // so drop sessions nobody attended (solo timers, rooms without participants).
+  await ctx.db.pomodoroSession.deleteMany({
+    where: { participants: { none: {} } },
+  });
   await ctx.db.emailToken.deleteMany({
     where: { expiresAt: { lte: ctx.now() } },
   });

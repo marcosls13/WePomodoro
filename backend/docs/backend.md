@@ -445,8 +445,8 @@ someone can belong to a room while running a solo timer.
   foreign keys and user/time indexes support future date filtering.
 - Minigames are independent of timers. Guests may play, but only registered users
   keep scores. Scores are signed integers; each game decides what is valid.
-- Friend requests, chat and leaderboards are intentionally deferred. Joining
-  friends by room code needs no friendship table.
+- Leaderboards are intentionally deferred. Friends and server chat exist;
+  friend direct messages, presence and join requests are not built yet.
 
 ### 4.1 User
 
@@ -800,8 +800,8 @@ npm run db:migrate -- --name describe_the_change   # new migration on a dev DB
 Client generation runs automatically before dev, build and tests. Don't edit
 deployed migrations; add a new one.
 
-Future features should add models when concrete: friendships (friend requests),
-messages (chat), game attempts (replay protection), external-account identities
+Future features should add models when concrete: direct messages, presence,
+join requests, game attempts (replay protection), external-account identities
 (OAuth), event logs (full pause/attendance audit).
 
 ---
@@ -846,6 +846,9 @@ exclusion. CI runs the full suite against its own PostgreSQL service.
 | `src/api/lifecycle.ts`                      | Logout, account deletion, expired-session cleanup               |
 | `src/auth/auth.service.ts`                  | Passwords, token issuance/authentication, profiles              |
 | `src/rooms/rooms.service.ts`                | Memberships, settings, owner actions                            |
+| `src/friends/friends.service.ts`            | Friend requests, accept, list, remove                           |
+| `src/chat/chat.service.ts`                  | Server chat messages                                            |
+| `src/dev.ts`                                | Dev-only test console at `/dev` (not mounted in production)     |
 | `src/timers/timers.service.ts`              | Clock math, attendance, transitions, finalization               |
 | `src/stats/stats.service.ts`                | Stored and live focus statistics                                |
 | `src/games/games.service.ts`                | Verified game result submission                                 |

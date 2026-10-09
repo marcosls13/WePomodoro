@@ -92,9 +92,9 @@ async function fixtures(tx: Prisma.TransactionClient) {
   const room = await tx.studyRoom.create({
     data: {
       name: "Study together",
-      inviteCode: key,
       ownerId: user.id,
       members: { create: { userId: user.id } },
+      invites: { create: { createdById: user.id, code: key } },
     },
   });
   return { user, friend, guest, room };
@@ -117,9 +117,11 @@ function constraintError(name: string) {
 void test("registered users and guests join a room found by its invite code", async () => {
   await isolated(async (tx) => {
     const { friend, guest, room } = await fixtures(tx);
-    const found = await tx.studyRoom.findUniqueOrThrow({
-      where: { inviteCode: room.inviteCode },
+    const invite = await tx.invite.findFirstOrThrow({
+      where: { roomId: room.id },
+      include: { room: true },
     });
+    const found = invite.room;
     await tx.roomMember.createMany({
       data: [
         { roomId: found.id, userId: friend.id },
@@ -134,19 +136,51 @@ void test("registered users and guests join a room found by its invite code", as
   });
 });
 
-void test("a registered participant can leave and rejoin without duplicate membership", async () => {
+void test("leaving a server deletes the membership so it can be recreated", async () => {
   await isolated(async (tx) => {
     const { user, room } = await fixtures(tx);
-    await tx.roomMember.update({
+    await tx.roomMember.delete({
       where: { roomId_userId: { roomId: room.id, userId: user.id } },
-      data: { leftAt: new Date() },
     });
-    await tx.roomMember.upsert({
-      where: { roomId_userId: { roomId: room.id, userId: user.id } },
-      create: { roomId: room.id, userId: user.id },
-      update: { leftAt: null },
-    });
+    await tx.roomMember.create({ data: { roomId: room.id, userId: user.id } });
     assert.equal(await tx.roomMember.count({ where: { roomId: room.id } }), 1);
+  });
+});
+
+void test("a friendship exists once per pair, in either direction", async () => {
+  await isolated(async (tx) => {
+    const { user, friend } = await fixtures(tx);
+    await tx.friendship.create({
+      data: { requesterId: user.id, addresseeId: friend.id },
+    });
+    await assert.rejects(
+      tx.$transaction((inner) =>
+        inner.friendship.create({
+          data: { requesterId: friend.id, addresseeId: user.id },
+        }),
+      ),
+      constraintError("Friendship_pair_key"),
+    );
+  });
+});
+
+void test("chat messages survive their author being deleted", async () => {
+  await isolated(async (tx) => {
+    const { friend, room } = await fixtures(tx);
+    const message = await tx.message.create({
+      data: {
+        roomId: room.id,
+        userId: friend.id,
+        authorName: friend.username,
+        content: "hello",
+      },
+    });
+    await tx.user.delete({ where: { id: friend.id } });
+    const kept = await tx.message.findUniqueOrThrow({
+      where: { id: message.id },
+    });
+    assert.equal(kept.userId, null);
+    assert.equal(kept.authorName, friend.username);
   });
 });
 
@@ -423,13 +457,13 @@ const invalidCases: {
     name: "duplicate invite codes",
     error: knownError("P2002"),
     run: async (tx) => {
-      const { room, user } = await fixtures(tx);
-      return tx.studyRoom.create({
-        data: {
-          name: "Duplicate",
-          inviteCode: room.inviteCode,
-          ownerId: user.id,
-        },
+      const { friend, room, user } = await fixtures(tx);
+      const code = randomUUID();
+      await tx.invite.create({
+        data: { roomId: room.id, createdById: friend.id, code },
+      });
+      return tx.invite.create({
+        data: { roomId: room.id, createdById: user.id, code },
       });
     },
   },
@@ -461,8 +495,28 @@ const invalidCases: {
     error: knownError("P2003"),
     run: (tx) =>
       tx.studyRoom.create({
-        data: { name: "Invalid", inviteCode: randomUUID(), ownerId: -1 },
+        data: { name: "Invalid", ownerId: -1 },
       }),
+  },
+  {
+    name: "a friendship with yourself",
+    error: constraintError("Friendship_distinct_check"),
+    run: async (tx) => {
+      const { user } = await fixtures(tx);
+      return tx.friendship.create({
+        data: { requesterId: user.id, addresseeId: user.id },
+      });
+    },
+  },
+  {
+    name: "a blank chat message",
+    error: constraintError("Message_content_check"),
+    run: async (tx) => {
+      const { room } = await fixtures(tx);
+      return tx.message.create({
+        data: { roomId: room.id, authorName: "x", content: "   " },
+      });
+    },
   },
   {
     name: "membership without an identity",

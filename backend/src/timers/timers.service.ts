@@ -124,7 +124,7 @@ export async function activeMember(
   roomId: string,
 ) {
   const member = await tx.roomMember.findFirst({
-    where: { roomId, ...identity(actor), leftAt: null },
+    where: { roomId, ...identity(actor) },
   });
   if (!member) throw new ApiError(403, "You must be an active room member");
   return member;
@@ -291,7 +291,6 @@ export async function startRoom(ctx: Context, actor: Actor, roomId: string) {
     const members = await tx.roomMember.findMany({
       where: {
         roomId,
-        leftAt: null,
         OR: [
           { userId: { not: null } },
           { guestSession: { expiresAt: { gt: now } } },

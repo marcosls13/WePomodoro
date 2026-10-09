@@ -212,25 +212,42 @@ Statistics response:
 }
 ```
 
+### 3.2b Friends
+
+Registered users only. A request is accepted by the other person, or
+automatically if they had already asked you.
+
+| Method | Path                      | Body             | Result                                    |
+| ------ | ------------------------- | ---------------- | ----------------------------------------- |
+| GET    | `/api/friends`            | None             | `{ friends, incoming, outgoing }`         |
+| POST   | `/api/friends`            | `{ "username" }` | 201 request (or accepted crossed request) |
+| POST   | `/api/friends/:id/accept` | None             | 204; only the addressee                   |
+| DELETE | `/api/friends/:id`        | None             | 204: decline, cancel or unfriend          |
+
+Chat has no push channel yet: poll `GET /api/rooms/:roomId/messages?after=<last id>`.
+
 ### 3.3 Study rooms
 
-Only registered users create and own rooms; guests join with a code. Room details,
-invite codes and member lists are visible only to active members. The room
+Only registered users create and own rooms; guests join with a code. Room details
+and member lists are visible only to active members; each registered member
+fetches their own invite code. The room
 listing contains only the caller's active, open rooms.
 
-| Method | Endpoint                               | Access        | JSON body                           | Response                                    |
-| ------ | -------------------------------------- | ------------- | ----------------------------------- | ------------------------------------------- |
-| POST   | `/api/rooms`                           | Registered    | `{ "name" }` plus optional settings | 201 room with members and current timer     |
-| GET    | `/api/rooms`                           | Authenticated | None                                | 200 caller's active open rooms, up to 100   |
-| POST   | `/api/rooms/join`                      | Authenticated | `{ "inviteCode" }`                  | 200 joined room; joins/rejoins idempotently |
-| GET    | `/api/rooms/:roomId`                   | Member        | None                                | 200 room, safe member names, current timer  |
-| PATCH  | `/api/rooms/:roomId`                   | Owner         | At least one setting                | 200 updated room                            |
-| POST   | `/api/rooms/:roomId/leave`             | Member        | None                                | 204: leave and retain partial study time    |
-| POST   | `/api/rooms/:roomId/close`             | Owner         | None                                | 200 closed room; live timer cancelled       |
-| POST   | `/api/rooms/:roomId/invite-code`       | Owner         | None                                | 200 room with the new invite code           |
-| POST   | `/api/rooms/:roomId/owner`             | Owner         | `{ "userId": 2 }`                   | 200 room with transferred ownership         |
-| DELETE | `/api/rooms/:roomId/members/:memberId` | Owner         | None                                | 204: remove member, retain partial focus    |
-| POST   | `/api/rooms/:roomId/timers`            | Owner         | None                                | 201 next shared timer                       |
+| Method | Endpoint                               | Access        | JSON body                           | Response                                          |
+| ------ | -------------------------------------- | ------------- | ----------------------------------- | ------------------------------------------------- |
+| POST   | `/api/rooms`                           | Registered    | `{ "name" }` plus optional settings | 201 room with members and current timer           |
+| GET    | `/api/rooms`                           | Authenticated | None                                | 200 caller's active open rooms, up to 100         |
+| POST   | `/api/rooms/join`                      | Authenticated | `{ "inviteCode" }`                  | 200 joined room; no-op if already a member        |
+| GET    | `/api/rooms/:roomId`                   | Member        | None                                | 200 room, safe member names, current timer        |
+| PATCH  | `/api/rooms/:roomId`                   | Owner         | At least one setting                | 200 updated room                                  |
+| POST   | `/api/rooms/:roomId/leave`             | Member        | None                                | 204: leave the server; a code is needed to return |
+| POST   | `/api/rooms/:roomId/close`             | Owner         | None                                | 200 closed room; live timer cancelled             |
+| POST   | `/api/rooms/:roomId/invite-code`       | Member (user) | None, or `{ "rotate": true }`       | 200 `{ inviteCode }`: your own code               |
+| GET    | `/api/rooms/:roomId/messages`          | Member        | `?after=<id>&limit=50`              | 200 chat messages, oldest first                   |
+| POST   | `/api/rooms/:roomId/messages`          | Member        | `{ "content" }` (≤ 2000 chars)      | 201 message; 10 per 10 s per sender               |
+| POST   | `/api/rooms/:roomId/owner`             | Owner         | `{ "userId": 2 }`                   | 200 room with transferred ownership               |
+| DELETE | `/api/rooms/:roomId/members/:memberId` | Owner         | None                                | 204: kick; a code is needed to return             |
+| POST   | `/api/rooms/:roomId/timers`            | Owner         | None                                | 201 next shared timer                             |
 
 Room settings (creation and update):
 
@@ -242,16 +259,20 @@ Room settings (creation and update):
 | `longBreakSeconds`      | 900                  | Integer, 1–14400               |
 | `cyclesBeforeLongBreak` | 4                    | Integer, 1–12                  |
 
-- Joins and rejoins are idempotent. Joining during a live timer also joins that
+- Membership is permanent: closing the app, disconnecting or leaving a timer never
+  changes it, and a registered member reopens their rooms from `GET /api/rooms`
+  without a code. Only leaving the server or being kicked deletes the row, and
+  then a code is needed again. A first join during a live timer also joins that
   interval, unless the caller already participates in another live timer.
+  Joining again as an existing member is a no-op.
 - A room timer starts with all active members. If any of them has another live
   timer, the start returns 409 until they leave or cancel it. This stops
   overlapping sessions from inflating study totals. Expired guests aren't added
   to new timers or shown as active members.
 - Owners must transfer ownership or close the room before leaving. The new owner
   must be an active registered member.
-- Removing a member is not a permanent ban: they can rejoin with a current code.
-  Rotating the code invalidates the previous one.
+- Kicking is not a permanent ban: they can rejoin with a current code. Rotating
+  your code invalidates the previous one.
 - Closed rooms reject joining, updates, transfers and new timers.
 - Settings changes affect future intervals, never the current one.
 
@@ -337,7 +358,7 @@ curl -X POST http://localhost:3000/api/rooms \
 ```
 
 Friends authenticate (or enter as guests), then call `/api/rooms/join` with the
-room's invite code. The owner calls `/api/rooms/ROOM_UUID/timers` to start a
+member's invite code. The owner calls `/api/rooms/ROOM_UUID/timers` to start a
 shared interval. Solo callers use `/api/timers` instead.
 
 ---
@@ -351,7 +372,7 @@ Thirteen PostgreSQL tables (the last four are the account recovery and two-facto
 | `User`               | Registered profile and optional password hash                          | Owns rooms; has login sessions, memberships, study history, and game results |
 | `AuthSession`        | A registered user's login, identified by a hashed token with an expiry | Belongs to one user                                                          |
 | `GuestSession`       | Temporary guest identity, display name, hashed token and expiry        | Can join rooms and study sessions; cannot own rooms or save game results     |
-| `StudyRoom`          | Shared space with a unique invite code and Pomodoro settings           | Owned by a registered user; has memberships and timer sessions               |
+| `StudyRoom`          | Shared space with Pomodoro settings                                    | Owned by a registered user; has memberships and timer sessions               |
 | `RoomMember`         | Who belongs to a room                                                  | One room and exactly one user OR guest                                       |
 | `PomodoroSession`    | One focus or break interval, solo or shared                            | Optional room; has participant records                                       |
 | `SessionParticipant` | Individual attendance and actual focus time for an interval            | One session and exactly one user OR guest                                    |
@@ -367,6 +388,10 @@ erDiagram
   User ||--o{ AuthSession : authenticates
   User ||--o{ StudyRoom : owns
   StudyRoom ||--o{ RoomMember : includes
+  StudyRoom ||--o{ Invite : has
+  StudyRoom ||--o{ Message : holds
+  User ||--o{ Friendship : requests
+  User ||--o{ Invite : creates
   User o|--o{ RoomMember : joins
   GuestSession o|--o{ RoomMember : joins
   StudyRoom o|--o{ PomodoroSession : hosts
@@ -405,11 +430,13 @@ someone can belong to a room while running a solo timer.
   Guest history is temporary and removed with the guest identity.
 - A room owner is always a registered user and also gets a membership, created in
   the same transaction as the room.
-- Invite codes identify rooms, not users. They are random server-generated
-  (`randomBytes(9).toString("base64url")`), retried on Prisma `P2002`
-  collisions, case-sensitive, and rotatable.
-- `leftAt` marks leaving a room and is reset to null on rejoin. Membership is one
-  current record, not a log of every visit; attendance stores study history.
+- Invite codes are personal: one per registered member per room (`Invite`). They
+  are random, case-sensitive, 6 characters to start; a length that keeps
+  colliding grows by one, so there is no fixed length. Leaving or being removed
+  deletes your code, and `{ "rotate": true }` replaces it. Guests cannot make codes.
+- Leaving a server or being kicked deletes the `RoomMember` row. Membership is
+  one current record, not a log of visits; attendance (`SessionParticipant`)
+  stores study history and its `leftAt` only records leaving a timer.
 - `plannedSeconds` is snapshotted on each interval so changing room settings
   never rewrites history.
 - There is no database write every second. Clients derive the countdown from
@@ -479,7 +506,6 @@ records are temporary; there is no guest-to-account history transfer.
 | ----------------------- | ------------- | --------------------------------- | ------------------------------------- |
 | `id`                    | UUID `String` | Primary key; `uuid()`             | Room identity                         |
 | `name`                  | `String`      | Required; SQL rejects blank names | Human-readable name                   |
-| `inviteCode`            | `String`      | Unique; required; nonblank        | Code for joining                      |
 | `ownerId`               | `Int`         | Required foreign key → `User.id`  | Registered owner                      |
 | `focusSeconds`          | `Int`         | 1500; positive                    | Duration of future focus intervals    |
 | `shortBreakSeconds`     | `Int`         | 300; positive                     | Duration of future short breaks       |
@@ -493,21 +519,42 @@ Relations: `owner`, `members`, `sessions`. Index: `ownerId`. The API limits
 durations to 1–14400 s and cycles to 1–12 on top of the SQL positive checks.
 Prefer closing over deleting a room to keep its history and name.
 
+### 4.4b Invite
+
+| Field         | Type          | Default / rule                        | Meaning                  |
+| ------------- | ------------- | ------------------------------------- | ------------------------ |
+| `id`          | UUID `String` | Primary key; `uuid()`                 | Invite identity          |
+| `roomId`      | UUID `String` | Foreign key → `StudyRoom.id`, cascade | Room the code opens      |
+| `createdById` | `Int`         | Foreign key → `User.id`, cascade      | Member who owns the code |
+| `code`        | `String`      | Unique; nonblank                      | Code to join             |
+| `createdAt`   | `DateTime`    | `now()`                               | Creation time            |
+
+Unique pair `(roomId, createdById)`: one code per member per room.
+
+### 4.4c Friendship and Message
+
+`Friendship`: `requesterId` → `addresseeId`, `status` `PENDING`/`ACCEPTED`,
+`createdAt`, `respondedAt`. Both users cascade. SQL rejects a friendship with
+yourself and a second row for the same pair in either direction. Declining,
+cancelling and unfriending delete the row.
+
+`Message`: integer `id` (used as the polling cursor), `roomId` (cascade),
+`userId?` / `guestSessionId?` (set null when the author goes), `authorName`
+snapshot, `content` (1–2000 chars, not blank), `createdAt`.
+
 ### 4.5 RoomMember
 
-| Field            | Type           | Default / rule                         | Meaning                          |
-| ---------------- | -------------- | -------------------------------------- | -------------------------------- |
-| `id`             | UUID `String`  | Primary key; `uuid()`                  | Membership ID, used for removal  |
-| `roomId`         | UUID `String`  | Required foreign key → `StudyRoom.id`  | Room joined                      |
-| `userId`         | `Int?`         | Foreign key → `User.id`                | Registered member, if applicable |
-| `guestSessionId` | UUID `String?` | Foreign key → `GuestSession.id`        | Guest member, if applicable      |
-| `joinedAt`       | `DateTime`     | `now()`                                | First membership creation time   |
-| `leftAt`         | `DateTime?`    | Null if omitted; not before `joinedAt` | Null means active membership     |
+| Field            | Type           | Default / rule                        | Meaning                          |
+| ---------------- | -------------- | ------------------------------------- | -------------------------------- |
+| `id`             | UUID `String`  | Primary key; `uuid()`                 | Membership ID, used for removal  |
+| `roomId`         | UUID `String`  | Required foreign key → `StudyRoom.id` | Room joined                      |
+| `userId`         | `Int?`         | Foreign key → `User.id`               | Registered member, if applicable |
+| `guestSessionId` | UUID `String?` | Foreign key → `GuestSession.id`       | Guest member, if applicable      |
+| `joinedAt`       | `DateTime`     | `now()`                               | First membership creation time   |
 
 Unique pairs `(roomId, userId)` and `(roomId, guestSessionId)`; PostgreSQL permits
 nulls in those pairs, so the exactly-one-identity CHECK closes the both-empty
-loophole. A member list also filters expired guests: `leftAt = null` alone does
-not make an expired identity valid.
+loophole. A member list also filters expired guests.
 
 ### 4.6 PomodoroSession
 

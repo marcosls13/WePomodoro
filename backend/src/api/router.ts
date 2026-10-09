@@ -34,8 +34,16 @@ import {
   updateProfile,
   verifyPassword,
 } from "../auth/auth.service.js";
+import { listMessages, sendMessage } from "../chat/chat.service.js";
+import {
+  acceptFriend,
+  listFriends,
+  removeFriend,
+  requestFriend,
+} from "../friends/friends.service.js";
 import {
   createRoom,
+  getInvite,
   getRoom,
   joinRoom,
   leaveRoom,
@@ -432,7 +440,12 @@ export function createRouter(
 
   router.post("/rooms/:roomId/invite-code", async (req, res) => {
     res.json(
-      await manageRoom(ctx, actor(res), uuid(req.params.roomId), "rotate"),
+      await getInvite(
+        ctx,
+        actor(res),
+        uuid(req.params.roomId),
+        (req.body as { rotate?: unknown } | undefined)?.rotate === true,
+      ),
     );
   });
 
@@ -513,6 +526,65 @@ export function createRouter(
         await timerAction(ctx, actor(res), uuid(req.params.timerId), action),
       );
     });
+
+  router.get("/friends", async (req, res) => {
+    res.json(await listFriends(ctx, actor(res)));
+  });
+
+  router.post("/friends", async (req, res) => {
+    res
+      .status(201)
+      .json(await requestFriend(ctx, actor(res), username(body(req).username)));
+  });
+
+  router.post("/friends/:id/accept", async (req, res) => {
+    await acceptFriend(ctx, actor(res), uuid(req.params.id));
+    res.sendStatus(204);
+  });
+
+  router.delete("/friends/:id", async (req, res) => {
+    await removeFriend(ctx, actor(res), uuid(req.params.id));
+    res.sendStatus(204);
+  });
+
+  router.get("/rooms/:roomId/messages", async (req, res) => {
+    const { after, limit } = req.query;
+    res.json(
+      await listMessages(
+        ctx,
+        actor(res),
+        uuid(req.params.roomId),
+        after === undefined
+          ? undefined
+          : integer(Number(after), "after", 0, 2147483647),
+        limit === undefined ? 50 : integer(Number(limit), "limit", 1, 100),
+      ),
+    );
+  });
+
+  // Chat is capped per identity so one client cannot flood a room.
+  const perSender = rateLimit({
+    windowMs: 10_000,
+    limit: 10,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    keyGenerator: (_req, res) =>
+      `chat:${actor(res).userId ?? actor(res).guestSessionId}`,
+    handler: tooMany("You are sending messages too fast"),
+  });
+
+  router.post("/rooms/:roomId/messages", perSender, async (req, res) => {
+    res
+      .status(201)
+      .json(
+        await sendMessage(
+          ctx,
+          actor(res),
+          uuid(req.params.roomId),
+          text(body(req).content, "content", 2000),
+        ),
+      );
+  });
 
   router.get("/games", async (req, res) => {
     res.json(

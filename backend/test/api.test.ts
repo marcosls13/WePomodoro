@@ -144,7 +144,13 @@ async function room(token: string, input: Record<string, unknown> = {}) {
     201,
   );
   roomIds.push(result.id);
-  return result;
+  // The owner's personal join code, which the other tests share.
+  const invite = await request<{ inviteCode: string }>(
+    `/api/rooms/${result.id}/invite-code`,
+    "POST",
+    token,
+  );
+  return { ...result, inviteCode: invite.inviteCode };
 }
 async function solo(token: string, input: Record<string, unknown> = {}) {
   const result = await request<Timer>(
@@ -379,10 +385,31 @@ void test("room joins are idempotent, private, and controlled by registered owne
     undefined,
     409,
   );
-  const rotated = await request<Room>(
+  const rotated = await request<{ inviteCode: string }>(
     `/api/rooms/${study.id}/invite-code`,
     "POST",
     owner.token,
+    { rotate: true },
+  );
+  const same = await request<{ inviteCode: string }>(
+    `/api/rooms/${study.id}/invite-code`,
+    "POST",
+    owner.token,
+  );
+  assert.equal(same.inviteCode, rotated.inviteCode);
+  // Members get their own code; guests cannot make one.
+  const friendCode = await request<{ inviteCode: string }>(
+    `/api/rooms/${study.id}/invite-code`,
+    "POST",
+    friend.token,
+  );
+  assert.notEqual(friendCode.inviteCode, rotated.inviteCode);
+  await request(
+    `/api/rooms/${study.id}/invite-code`,
+    "POST",
+    visitor.token,
+    undefined,
+    403,
   );
   await request(
     "/api/rooms/join",
@@ -413,13 +440,225 @@ void test("room joins are idempotent, private, and controlled by registered owne
     204,
   );
   await request(`/api/rooms/${study.id}`, "GET", visitor.token, undefined, 403);
-  await request(`/api/rooms/${study.id}/close`, "POST", friend.token);
+  // A member who left can no longer invite: the owner's code died with them.
   await request(
     "/api/rooms/join",
     "POST",
     visitor.token,
     { inviteCode: rotated.inviteCode },
+    404,
+  );
+  await request(`/api/rooms/${study.id}/close`, "POST", friend.token);
+  await request(
+    "/api/rooms/join",
+    "POST",
+    visitor.token,
+    { inviteCode: friendCode.inviteCode },
     409,
+  );
+});
+void test("membership persists until the person leaves or is kicked", async () => {
+  const owner = await user();
+  const friend = await user();
+  const study = await room(owner.token);
+  await request("/api/rooms/join", "POST", friend.token, {
+    inviteCode: study.inviteCode,
+  });
+  // Leaving the timer (or never being in it) never touches membership.
+  const timer = await request<{ id: string }>(
+    `/api/rooms/${study.id}/timers`,
+    "POST",
+    owner.token,
+    undefined,
+    201,
+  );
+  await request(`/api/timers/${timer.id}/leave`, "POST", friend.token);
+  const listed = await request<{ id: string }[]>(
+    "/api/rooms",
+    "GET",
+    friend.token,
+  );
+  assert.ok(listed.some((r) => r.id === study.id));
+  await request(`/api/rooms/${study.id}`, "GET", friend.token);
+  // Joining again with a code is a no-op for an existing member.
+  const again = await request<Room>("/api/rooms/join", "POST", friend.token, {
+    inviteCode: study.inviteCode,
+  });
+  assert.equal(again.members.length, 2);
+  // Leaving the server removes the membership; a code is needed to return.
+  await request(
+    `/api/rooms/${study.id}/leave`,
+    "POST",
+    friend.token,
+    undefined,
+    204,
+  );
+  await request(`/api/rooms/${study.id}`, "GET", friend.token, undefined, 403);
+  const rejoined = await request<Room>(
+    "/api/rooms/join",
+    "POST",
+    friend.token,
+    {
+      inviteCode: study.inviteCode,
+    },
+  );
+  // Kicked members need a code again too.
+  const member = rejoined.members.find((m) => m.userId === friend.user.id);
+  assert.ok(member);
+  await request(
+    `/api/rooms/${study.id}/members/${member.id}`,
+    "DELETE",
+    owner.token,
+    undefined,
+    204,
+  );
+  await request(`/api/rooms/${study.id}`, "GET", friend.token, undefined, 403);
+  await request("/api/rooms/join", "POST", friend.token, {
+    inviteCode: study.inviteCode,
+  });
+  await request(`/api/rooms/${study.id}`, "GET", friend.token);
+});
+void test("friends: request, accept, list and remove", async () => {
+  const alice = await user();
+  const bob = await user();
+  const visitor = await guest();
+  await request("/api/friends", "GET", visitor.token, undefined, 403);
+  await request(
+    "/api/friends",
+    "POST",
+    alice.token,
+    { username: alice.user.username },
+    400,
+  );
+  await request(
+    "/api/friends",
+    "POST",
+    alice.token,
+    { username: "nobody-" + prefix },
+    404,
+  );
+  const sent = await request<{ id: string }>(
+    "/api/friends",
+    "POST",
+    alice.token,
+    { username: bob.user.username },
+    201,
+  );
+  await request(
+    "/api/friends",
+    "POST",
+    alice.token,
+    { username: bob.user.username },
+    409,
+  );
+  type Lists = Record<"friends" | "incoming" | "outgoing", { id: string }[]>;
+  const aliceView = await request<Lists>("/api/friends", "GET", alice.token);
+  assert.equal(aliceView.outgoing.length, 1);
+  const bobView = await request<Lists>("/api/friends", "GET", bob.token);
+  assert.equal(bobView.incoming.length, 1);
+  // Only the addressee can accept.
+  await request(
+    `/api/friends/${sent.id}/accept`,
+    "POST",
+    alice.token,
+    undefined,
+    404,
+  );
+  await request(
+    `/api/friends/${sent.id}/accept`,
+    "POST",
+    bob.token,
+    undefined,
+    204,
+  );
+  const after = await request<Lists>("/api/friends", "GET", alice.token);
+  assert.equal(after.friends.length, 1);
+  assert.equal(after.outgoing.length, 0);
+  await request(`/api/friends/${sent.id}`, "DELETE", bob.token, undefined, 204);
+  const gone = await request<Lists>("/api/friends", "GET", alice.token);
+  assert.equal(gone.friends.length, 0);
+  // A crossed request is accepted instead of duplicated.
+  await request(
+    "/api/friends",
+    "POST",
+    alice.token,
+    { username: bob.user.username },
+    201,
+  );
+  await request(
+    "/api/friends",
+    "POST",
+    bob.token,
+    { username: alice.user.username },
+    201,
+  );
+  const crossed = await request<Lists>("/api/friends", "GET", bob.token);
+  assert.equal(crossed.friends.length, 1);
+});
+void test("room chat is for members, in order, and polls by message id", async () => {
+  const owner = await user();
+  const outsider = await user();
+  const visitor = await guest();
+  const study = await room(owner.token);
+  await request(
+    `/api/rooms/${study.id}/messages`,
+    "GET",
+    outsider.token,
+    undefined,
+    403,
+  );
+  await request(
+    `/api/rooms/${study.id}/messages`,
+    "POST",
+    outsider.token,
+    { content: "hi" },
+    403,
+  );
+  await request("/api/rooms/join", "POST", visitor.token, {
+    inviteCode: study.inviteCode,
+  });
+  interface Message { id: number; authorName: string; content: string }
+  const first = await request<Message>(
+    `/api/rooms/${study.id}/messages`,
+    "POST",
+    owner.token,
+    { content: "  hello  " },
+    201,
+  );
+  assert.equal(first.content, "hello");
+  assert.equal(first.authorName, owner.user.username);
+  await request(
+    `/api/rooms/${study.id}/messages`,
+    "POST",
+    owner.token,
+    { content: "   " },
+    400,
+  );
+  const second = await request<Message>(
+    `/api/rooms/${study.id}/messages`,
+    "POST",
+    visitor.token,
+    { content: "hey" },
+    201,
+  );
+  assert.equal(second.authorName, prefix);
+  const all = await request<Message[]>(
+    `/api/rooms/${study.id}/messages`,
+    "GET",
+    visitor.token,
+  );
+  assert.deepEqual(
+    all.map((m) => m.content),
+    ["hello", "hey"],
+  );
+  const newer = await request<Message[]>(
+    `/api/rooms/${study.id}/messages?after=${first.id}`,
+    "GET",
+    owner.token,
+  );
+  assert.deepEqual(
+    newer.map((m) => m.id),
+    [second.id],
   );
 });
 void test("solo timers exclude paused time, prevent early completion and calculate statistics", async () => {

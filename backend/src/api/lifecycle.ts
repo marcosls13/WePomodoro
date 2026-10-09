@@ -56,7 +56,7 @@ export async function endIdentity(
   for (const solo of solos) await timerAction(ctx, actor, solo.id, "cancel");
   await transaction(ctx, async (tx) => {
     const memberships = await tx.roomMember.findMany({
-      where: { ...identity(actor), leftAt: null },
+      where: identity(actor),
       orderBy: { roomId: "asc" },
     });
     for (const member of memberships) {

@@ -21,6 +21,11 @@ enum EmailTokenPurpose {
   PASSWORD_RESET
 }
 
+enum FriendshipStatus {
+  PENDING
+  ACCEPTED
+}
+
 enum SessionStatus {
   ACTIVE
   PAUSED
@@ -47,6 +52,10 @@ model User {
   recoveryCodes   RecoveryCode[]
   loginChallenges LoginChallenge[]
   ownedRooms      StudyRoom[]
+  invites         Invite[]
+  friendRequests  Friendship[]         @relation("FriendshipRequester")
+  friendInvites   Friendship[]         @relation("FriendshipAddressee")
+  messages        Message[]
   memberships     RoomMember[]
   studyHistory    SessionParticipant[]
   gameResults     GameResult[]
@@ -143,6 +152,7 @@ model GuestSession {
 
   memberships  RoomMember[]
   studyHistory SessionParticipant[]
+  messages     Message[]
 
   @@index([expiresAt])
 }
@@ -150,7 +160,6 @@ model GuestSession {
 model StudyRoom {
   id                    String            @id @default(uuid()) @db.Uuid
   name                  String
-  inviteCode            String            @unique
   ownerId               Int
   focusSeconds          Int               @default(1500)
   shortBreakSeconds     Int               @default(300)
@@ -162,9 +171,26 @@ model StudyRoom {
   closedAt              DateTime?
   owner                 User              @relation(fields: [ownerId], references: [id], onDelete: Restrict)
   members               RoomMember[]
+  invites               Invite[]
+  messages              Message[]
   sessions              PomodoroSession[]
 
   @@index([ownerId])
+}
+
+// One personal join code per registered member per room. Codes are random and
+// grow longer when the short ones start colliding, so there is no fixed length.
+model Invite {
+  id          String    @id @default(uuid()) @db.Uuid
+  roomId      String    @db.Uuid
+  createdById Int
+  code        String    @unique
+  createdAt   DateTime  @default(now())
+  room        StudyRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  createdBy   User      @relation(fields: [createdById], references: [id], onDelete: Cascade)
+
+  @@unique([roomId, createdById])
+  @@index([createdById])
 }
 
 model RoomMember {
@@ -174,16 +200,51 @@ model RoomMember {
   userId         Int?
   guestSessionId String?       @db.Uuid
   joinedAt       DateTime      @default(now())
-  leftAt         DateTime?
   room           StudyRoom     @relation(fields: [roomId], references: [id], onDelete: Cascade)
   user           User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
   guestSession   GuestSession? @relation(fields: [guestSessionId], references: [id], onDelete: Cascade)
 
-  // Rejoining updates leftAt on the same membership rather than adding a row.
+  // Membership lasts until the person leaves the server or is kicked (the row is
+  // deleted, so rejoining needs a code). Closing the app or disconnecting never
+  // touches it; presence in a timer is SessionParticipant.leftAt.
   @@unique([roomId, userId])
   @@unique([roomId, guestSessionId])
   @@index([userId])
   @@index([guestSessionId])
+}
+
+// A friend request from requester to addressee; ACCEPTED makes it mutual. A
+// declined, cancelled or removed friendship is simply deleted.
+model Friendship {
+  id          String           @id @default(uuid()) @db.Uuid
+  requesterId Int
+  addresseeId Int
+  status      FriendshipStatus @default(PENDING)
+  createdAt   DateTime         @default(now())
+  respondedAt DateTime?
+  requester   User             @relation("FriendshipRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  addressee   User             @relation("FriendshipAddressee", fields: [addresseeId], references: [id], onDelete: Cascade)
+
+  // A SQL unique index on the unordered pair also stops B->A once A->B exists.
+  @@unique([requesterId, addresseeId])
+  @@index([addresseeId, status])
+}
+
+// Chat for a server. Messages outlive their author, so the name is a snapshot
+// and the author link is cleared (not deleted) when the account or guest goes.
+model Message {
+  id             Int           @id @default(autoincrement())
+  roomId         String        @db.Uuid
+  userId         Int?
+  guestSessionId String?       @db.Uuid
+  authorName     String
+  content        String
+  createdAt      DateTime      @default(now())
+  room           StudyRoom     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user           User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  guestSession   GuestSession? @relation(fields: [guestSessionId], references: [id], onDelete: SetNull)
+
+  @@index([roomId, id])
 }
 
 model PomodoroSession {

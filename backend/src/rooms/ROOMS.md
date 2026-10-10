@@ -27,7 +27,6 @@ You type the code; I explain each step and the reasoning behind it.
 ### Step 2: REST for create + existence check
 
 - `POST /api/rooms` returns `{ code }`. `GET /api/rooms/:code` returns 200 or 404, so the join page can say "room not found" before opening a socket.
-- Follow the pattern in `backend/src/example/users/users.ts` (`runUsers(app)`), e.g. a `runRooms(app)` called from `index.ts`. You also need `app.use(express.json())` if it isn't there.
 - Learn: REST for one-off actions, sockets for live updates.
 
 ### Step 3: Socket.IO server

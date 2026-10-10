@@ -1,16 +1,18 @@
-import { type Express, type Request, type Response } from "express";
+import { Router, type Request, type Response } from "express";
 import { User } from "./User.js";
 import { writeFileSync } from "fs";
 import { readFile } from "fs/promises";
 
+export const usersRouter = Router();
+
+usersRouter.get("/", getUsers);
+usersRouter.post("/", createUser);
+
 const DB_PATH = "src/example/users/users.json";
 
-export function runUsers(app: Express) {
-  app.get("/api/example/users", async (req, res) => {
-    const users = await loadUsers(DB_PATH);
-    res.send(users);
-  });
-  app.post("/api/example/users", createUser);
+async function getUsers(req: Request, res: Response) {
+  const users = await loadUsers(DB_PATH);
+  res.send(users);
 }
 
 async function createUser(req: Request, res: Response) {

@@ -1,6 +1,7 @@
 import express, { type Express, type Request, type Response } from "express";
 
 import { usersRouter } from "./example/users/users.js";
+import { roomsRouter } from "./rooms/roomsRouter.js";
 
 const app: Express = express();
 const port = 3000;
@@ -8,6 +9,7 @@ const port = 3000;
 app.use(express.json());
 
 app.use("/api/example/users", usersRouter);
+app.use("/api/rooms", roomsRouter);
 
 app.get("/", (req: Request, res: Response) => {
   res.send("Hello World!");

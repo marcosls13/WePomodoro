@@ -10,6 +10,8 @@ import VerifyEmail from "./pages/VerifyEmail";
 import ForgotPassword from "./pages/ForgotPassword";
 import ResetPassword from "./pages/ResetPassword";
 import Me from "./pages/Me";
+import Profile from "./pages/Profile";
+import Admin from "./pages/Admin";
 import Tomato from "./Tomato";
 
 export default function App() {
@@ -43,6 +45,8 @@ export default function App() {
           <Route path="/about" element={<About />} />
           <Route path="/me" element={<Me />} />
           <Route path="/UserInfo" element={<UserInfo />} />
+          <Route path="/users/:id" element={<Profile />} />
+          <Route path="/admin" element={<Admin />} />
           <Route path="*" element={<NotFound />} />
           <Route path="/auth/signup" element={<SignUp />} />
           <Route path="/auth/login" element={<SignIn />} />

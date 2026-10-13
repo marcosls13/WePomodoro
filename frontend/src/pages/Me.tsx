@@ -1,12 +1,16 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import TwoFactorCard from "./TwoFactorCard";
+import Analytics from "./Analytics";
+import AvatarCard from "./AvatarCard";
 
 const API_URL = import.meta.env.VITE_API_URL as string;
 
 interface Me {
   type: "user" | "guest";
   profile: {
+    id?: number;
+    role?: "USER" | "MODERATOR" | "ADMIN";
     username?: string;
     displayName?: string;
     email?: string;
@@ -124,7 +128,18 @@ export default function Me() {
         <p className="eyebrow">Your profile</p>
         <h1>
           Hello, <span className="accent-text">{name}.</span>
+          {me.profile.role && me.profile.role !== "USER" && (
+            <span className="role-pill">{me.profile.role.toLowerCase()}</span>
+          )}
         </h1>
+        {me.profile.role && me.profile.role !== "USER" && (
+          <p>
+            <Link className="text-link" to="/admin">
+              Open the {me.profile.role === "ADMIN" ? "admin" : "moderator"}{" "}
+              area →
+            </Link>
+          </p>
+        )}
         {me.type === "user" ? (
           <p className="lead">
             {me.profile.email}
@@ -147,6 +162,8 @@ export default function Me() {
           </p>
         )}
       </div>
+      {me.profile.id !== undefined && <AvatarCard id={me.profile.id} />}
+      {me.type === "user" && <Analytics />}
       {me.type === "user" && (
         <div className="signup-card">
           <h2 className="signup-title">Password</h2>

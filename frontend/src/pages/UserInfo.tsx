@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
+import Avatar from "../Avatar";
 
 const API_URL = import.meta.env.VITE_API_URL as string;
 interface User {
@@ -8,12 +9,14 @@ interface User {
 }
 // /api/auth/me answers for both registered users and guests.
 interface Profile {
+  id?: number;
   name: string;
   email?: string;
   guest: boolean;
 }
 
 export default function UserInfo() {
+  const navigate = useNavigate();
   const [me, setMe] = useState<Profile | null>(null);
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
@@ -38,15 +41,26 @@ export default function UserInfo() {
             signal: controller.signal,
           }),
         ]);
+        // Unverified accounts are blocked everywhere but the verify page.
+        if (response.status === 403) {
+          void navigate("/auth/verify-email");
+          return;
+        }
         if (meResponse.status === 401 || response.status === 401)
           throw new Error("Please sign up or log in to see your profile.");
         if (!meResponse.ok || !response.ok)
           throw new Error("Could not load the community. Please try again.");
         const current = (await meResponse.json()) as {
           type: "user" | "guest";
-          profile: { username?: string; email?: string; displayName?: string };
+          profile: {
+            id?: number;
+            username?: string;
+            email?: string;
+            displayName?: string;
+          };
         };
         const profile: Profile = {
+          id: current.profile.id,
           name: current.profile.username ?? current.profile.displayName ?? "",
           email: current.profile.email,
           guest: current.type === "guest",
@@ -82,7 +96,7 @@ export default function UserInfo() {
     return () => {
       controller.abort();
     };
-  }, [attempt]);
+  }, [attempt, navigate]);
 
   return (
     <section className="section-page">
@@ -107,9 +121,13 @@ export default function UserInfo() {
       )}
       {!loading && !error && me && (
         <div className="user-card">
-          <span className="avatar" aria-hidden="true">
-            {me.name.slice(0, 1).toUpperCase()}
-          </span>
+          {me.id === undefined ? (
+            <span className="avatar" aria-hidden="true">
+              {me.name.slice(0, 1).toUpperCase()}
+            </span>
+          ) : (
+            <Avatar id={me.id} />
+          )}
           <div>
             <p className="eyebrow">Your profile</p>
             <h2>{me.name}</h2>
@@ -143,11 +161,11 @@ export default function UserInfo() {
         <ul className="user-grid">
           {users.map((user) => (
             <li key={user.id} className="user-card">
-              <span className="avatar" aria-hidden="true">
-                {user.username.slice(0, 1).toUpperCase()}
-              </span>
+              <Avatar id={user.id} />
               <div>
-                <h2>{user.username}</h2>
+                <h2>
+                  <Link to={`/users/${String(user.id)}`}>{user.username}</Link>
+                </h2>
               </div>
             </li>
           ))}

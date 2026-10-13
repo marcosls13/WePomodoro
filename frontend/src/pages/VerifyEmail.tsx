@@ -131,9 +131,6 @@ export default function VerifyEmail() {
             >
               Send me a new code
             </button>
-            <Link className="text-link" to="/UserInfo">
-              Skip for now
-            </Link>
           </form>
         )}
       </div>

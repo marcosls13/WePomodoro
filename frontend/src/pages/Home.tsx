@@ -24,14 +24,7 @@ export default function Home() {
           </Link>
         </div>
       </div>
-
-      {/* Columna Derecha: Contenedor del formulario */}
-      <div className="w-full max-w-md animate-slide-up [animation-delay:150ms]">
-        <div className="bg-white p-8 rounded-2xl shadow-xl border border-gray-100">
           <SignInForm />
-        </div>
-      </div>
-      
     </div>
   );
 }

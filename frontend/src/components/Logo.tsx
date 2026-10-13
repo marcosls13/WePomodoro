@@ -8,7 +8,7 @@ return (
 
   <path d="M25,120 C25,160 55,185 100,185 C145,185 175,160 175,120 C175,70 145,55 100,55 C55,55 25,70 25,120 Z" 
         fill="#FF4B40" 
-        stroke="#7A1C1C" stroke-width="6" stroke-linejoin="round" />
+        stroke="#7A1C1C" strokeWidth="6" strokeLinejoin="round" />
 
   <ellipse cx="55" cy="85" rx="20" ry="10" fill="#FFFFFF" opacity="0.5" transform="rotate(-30 55 85)" />
   <circle cx="45" cy="110" r="5" fill="#FFFFFF" opacity="0.4" />
@@ -16,13 +16,13 @@ return (
 
   <path d="M100,65 C90,40 55,45 55,45 C75,55 85,60 100,65 C115,60 125,55 145,45 C145,45 110,40 100,65 Z" 
         fill="#34C759" 
-        stroke="#175926" stroke-width="5" stroke-linejoin="round" />
+        stroke="#175926" strokeWidth="5" strokeLinejoin="round" />
   <path d="M100,65 C85,70 50,85 50,85 C70,80 85,70 100,65 C115,70 130,80 150,85 C150,85 115,70 100,65 Z" 
         fill="#28A745" 
-        stroke="#175926" stroke-width="5" stroke-linejoin="round" />
+        stroke="#175926" strokeWidth="5" strokeLinejoin="round" />
   <path d="M100,65 C95,50 95,30 105,25" 
         fill="none" 
-        stroke="#175926" stroke-width="6" stroke-linecap="round" />
+        stroke="#175926" strokeWidth="6" strokeLinecap="round" />
 
   <ellipse cx="60" cy="135" rx="12" ry="7" fill="#FF8A8A" opacity="0.7" />
   <ellipse cx="140" cy="135" rx="12" ry="7" fill="#FF8A8A" opacity="0.7" />
@@ -36,7 +36,7 @@ return (
   <circle cx="128" cy="117" r="2" fill="#FFFFFF" />
 
   <path d="M90,128 Q100,145 110,128" 
-        stroke="#3E2723" stroke-width="4.5" stroke-linecap="round" fill="none" />
+        stroke="#3E2723" strokeWidth="4.5" strokeLinecap="round" fill="none" />
 </svg>
 )
 }

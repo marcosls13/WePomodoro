@@ -1889,3 +1889,532 @@ void test("messages and members say whether the author is a guest", async () => 
     [false, true],
   );
 });
+
+// Smallest files with the right signature; the API checks format, not decoding.
+const png = Buffer.concat([
+  Buffer.from("\x89PNG\r\n\x1a\n", "latin1"),
+  randomBytes(32),
+]);
+const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), randomBytes(32)]);
+async function upload(token: string, type: string, data: Buffer) {
+  return fetch(`${base}/api/users/me/avatar`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": type },
+    body: new Uint8Array(data),
+  });
+}
+
+void test("avatars: validated upload, public image, default and removal", async () => {
+  const owner = await user();
+  const other = await user();
+  const unverified = await user(false);
+  const visitor = await guest();
+  const get = (id: number) => fetch(`${base}/api/users/${String(id)}/avatar`);
+
+  assert.equal((await upload(visitor.token, "image/png", png)).status, 403);
+  assert.equal((await upload(unverified.token, "image/png", png)).status, 403);
+  assert.equal((await upload(owner.token, "text/plain", png)).status, 415);
+  // The label must match the bytes, and SVG (scripts) is never accepted.
+  assert.equal((await upload(owner.token, "image/png", jpeg)).status, 400);
+  assert.equal((await upload(owner.token, "image/svg+xml", png)).status, 415);
+  const big = Buffer.concat([png, Buffer.alloc(513 * 1024)]);
+  assert.equal((await upload(owner.token, "image/png", big)).status, 413);
+
+  assert.equal((await upload(owner.token, "image/png", png)).status, 204);
+  assert.equal((await upload(owner.token, "image/jpeg", jpeg)).status, 204);
+  // Public: no token, readable from another origin, and the latest upload wins.
+  const shown = await get(owner.user.id);
+  assert.equal(shown.status, 200);
+  assert.equal(shown.headers.get("content-type"), "image/jpeg");
+  assert.equal(
+    shown.headers.get("cross-origin-resource-policy"),
+    "cross-origin",
+  );
+  assert.deepEqual(Buffer.from(await shown.arrayBuffer()), jpeg);
+
+  // No picture, or no such user: the same default, revealing nothing.
+  for (const id of [other.user.id, 2147483647]) {
+    const fallback = await get(id);
+    assert.equal(fallback.status, 200);
+    assert.match(
+      fallback.headers.get("content-type") ?? "",
+      /^image\/svg\+xml/,
+    );
+  }
+  await request("/api/users/me/avatar", "DELETE", owner.token, undefined, 204);
+  assert.match(
+    (await get(owner.user.id)).headers.get("content-type") ?? "",
+    /^image\/svg\+xml/,
+  );
+});
+
+void test("public profile shows safe fields and the friendship with the viewer", async () => {
+  const a = await user();
+  const b = await user();
+  const visitor = await guest();
+  interface View {
+    id: number;
+    username: string;
+    email?: string;
+    focusedSeconds: number;
+    friendship: { status: string; direction: string } | null;
+  }
+  const view = (token: string, id: number, expected = 200) =>
+    request<View>(
+      `/api/users/${String(id)}`,
+      "GET",
+      token,
+      undefined,
+      expected,
+    );
+
+  const seen = await view(a.token, b.user.id);
+  assert.equal(seen.username, b.user.username);
+  assert.equal(seen.email, undefined);
+  assert.equal(seen.focusedSeconds, 0);
+  assert.equal(seen.friendship, null);
+  await view(visitor.token, b.user.id);
+  await view(a.token, 2147483647, 404);
+  await request(
+    "/api/friends",
+    "POST",
+    a.token,
+    { username: b.user.username },
+    201,
+  );
+  assert.deepEqual(
+    (await view(a.token, b.user.id)).friendship?.direction,
+    "outgoing",
+  );
+  assert.deepEqual(
+    (await view(b.token, a.user.id)).friendship?.direction,
+    "incoming",
+  );
+  assert.equal((await view(a.token, a.user.id)).friendship, null);
+});
+
+void test("analytics: daily focus, streaks, averages and hours", async () => {
+  const account = await user();
+  const day = 86_400_000;
+  // Focus on today, yesterday, two days ago, then a gap and five days ago.
+  for (const ago of [0, 1, 2, 5]) {
+    const joinedAt = new Date(clock.getTime() - ago * day);
+    const session = await db.pomodoroSession.create({
+      data: {
+        phase: "FOCUS",
+        status: "COMPLETED",
+        plannedSeconds: 1500,
+        elapsedSeconds: 1500,
+        startedAt: joinedAt,
+        endedAt: new Date(joinedAt.getTime() + 1_500_000),
+      },
+    });
+    timerIds.push(session.id);
+    await db.sessionParticipant.create({
+      data: {
+        sessionId: session.id,
+        userId: account.user.id,
+        joinedAt,
+        creditedAt: joinedAt,
+        focusedSeconds: 1200 + ago * 60,
+        completedAt: new Date(joinedAt.getTime() + 1_500_000),
+      },
+    });
+  }
+  interface Report {
+    daily: {
+      date: string;
+      focusedSeconds: number;
+      completedSessions: number;
+    }[];
+    windowFocusedSeconds: number;
+    activeDays: number;
+    currentStreak: number;
+    longestStreak: number;
+    averageSessionSeconds: number;
+    bestDay: { date: string; focusedSeconds: number } | null;
+    focusedSecondsByHour: number[];
+  }
+  const report = await request<Report>(
+    "/api/users/me/analytics?days=7",
+    "GET",
+    account.token,
+  );
+  assert.equal(report.daily.length, 7);
+  assert.equal(report.daily.at(-1)?.date, clock.toISOString().slice(0, 10));
+  assert.deepEqual(
+    report.daily.map((d) => d.focusedSeconds),
+    [0, 1500, 0, 0, 1320, 1260, 1200],
+  );
+  assert.equal(report.windowFocusedSeconds, 1500 + 1320 + 1260 + 1200);
+  assert.equal(report.activeDays, 4);
+  assert.equal(report.currentStreak, 3);
+  assert.equal(report.longestStreak, 3);
+  assert.equal(report.averageSessionSeconds, Math.round(5280 / 4));
+  assert.equal(report.bestDay?.focusedSeconds, 1500);
+  assert.equal(report.focusedSecondsByHour.length, 24);
+  assert.equal(
+    report.focusedSecondsByHour.reduce((a, b) => a + b, 0),
+    5280,
+  );
+  const hour = clock.getUTCHours();
+  assert.ok((report.focusedSecondsByHour[hour] ?? 0) >= 1200);
+
+  const none = await request<Report>(
+    "/api/users/me/analytics",
+    "GET",
+    (await user()).token,
+  );
+  assert.equal(none.daily.length, 30);
+  assert.equal(none.currentStreak, 0);
+  assert.equal(none.bestDay, null);
+  for (const days of ["0", "366", "x"])
+    await request(
+      `/api/users/me/analytics?days=${days}`,
+      "GET",
+      account.token,
+      undefined,
+      400,
+    );
+});
+
+void test("admin: list, edit, delete and reset two-factor, never the last admin", async () => {
+  const admin = await user();
+  const plain = await user();
+  const target = await user();
+  const visitor = await guest();
+  await db.user.update({
+    where: { id: admin.user.id },
+    data: { role: "ADMIN" },
+  });
+  const api = (
+    path: string,
+    method = "GET",
+    token = admin.token,
+    input?: unknown,
+    expected = 200,
+  ) =>
+    request<Record<string, unknown>>(
+      `/api/admin${path}`,
+      method,
+      token,
+      input,
+      expected,
+    );
+
+  // Only admins get in; the role is visible on their own profile.
+  await api("/users", "GET", plain.token, undefined, 403);
+  await api("/users", "GET", visitor.token, undefined, 403);
+  const profile = await request<{ profile: { role: string } }>(
+    "/api/auth/me",
+    "GET",
+    admin.token,
+  );
+  assert.equal(profile.profile.role, "ADMIN");
+
+  const found = (await api(
+    `/users?q=${target.user.username.toUpperCase()}`,
+  )) as unknown as { id: number; email?: string; role: string }[];
+  assert.deepEqual(
+    found.map((u) => [u.id, u.role]),
+    [[target.user.id, "USER"]],
+  );
+  assert.equal(found[0]?.email, target.user.email);
+  assert.equal(
+    (await api(`/users/${String(target.user.id)}`)).twoFactorEnabled,
+    false,
+  );
+  await api("/users/2147483647", "GET", admin.token, undefined, 404);
+
+  const owned = await room(target.token);
+  // Edit: validation, collisions, and a new email must be verified again.
+  const path = `/users/${String(target.user.id)}`;
+  await api(path, "PATCH", admin.token, {}, 400);
+  await api(path, "PATCH", admin.token, { role: "ROOT" }, 400);
+  await api(path, "PATCH", admin.token, { username: plain.user.username }, 409);
+  const edited = await api(path, "PATCH", admin.token, {
+    email: `new-${target.user.email}`,
+    username: `${target.user.username}x`,
+  });
+  assert.equal(edited.emailVerifiedAt, null);
+  assert.equal(edited.username, `${target.user.username}x`);
+  assert.equal(mails.at(-1)?.to, `new-${target.user.email}`);
+
+  // Two-factor reset for someone locked out.
+  await api(`${path}/2fa`, "DELETE", admin.token, undefined, 404);
+  const enrolled = new Date();
+  await db.twoFactor.create({
+    data: {
+      userId: target.user.id,
+      secretCiphertext: "x",
+      createdAt: enrolled,
+      enabledAt: enrolled,
+    },
+  });
+  await db.recoveryCode.create({
+    data: { userId: target.user.id, codeHash: "x" },
+  });
+  await api(`${path}/2fa`, "DELETE", admin.token, undefined, 204);
+  assert.equal(
+    await db.twoFactor.count({ where: { userId: target.user.id } }),
+    0,
+  );
+  assert.equal(
+    await db.recoveryCode.count({ where: { userId: target.user.id } }),
+    0,
+  );
+
+  // Delete removes the account and its rooms; not yourself, not twice.
+  await api(path, "DELETE", admin.token, undefined, 204);
+  assert.equal(await db.user.count({ where: { id: target.user.id } }), 0);
+  assert.equal(await db.studyRoom.count({ where: { id: owned.id } }), 0);
+  await api(path, "DELETE", admin.token, undefined, 404);
+  await api(
+    `/users/${String(admin.user.id)}`,
+    "DELETE",
+    admin.token,
+    undefined,
+    409,
+  );
+
+  // The last admin can't step down; with a second admin they can.
+  await db.user.updateMany({
+    where: { role: "ADMIN", id: { not: admin.user.id } },
+    data: { role: "USER" },
+  });
+  const mine = `/users/${String(admin.user.id)}`;
+  await api(mine, "PATCH", admin.token, { role: "USER" }, 409);
+  await api(`/users/${String(plain.user.id)}`, "PATCH", admin.token, {
+    role: "ADMIN",
+  });
+  await api(mine, "PATCH", admin.token, { role: "USER" });
+  await api("/users", "GET", admin.token, undefined, 403);
+  await api("/users", "GET", plain.token);
+});
+
+void test("admin creates users and sets passwords; moderators only look", async () => {
+  const admin = await user();
+  const moderator = await user();
+  await db.user.update({
+    where: { id: admin.user.id },
+    data: { role: "ADMIN" },
+  });
+  await db.user.update({
+    where: { id: moderator.user.id },
+    data: { role: "MODERATOR" },
+  });
+  const name = `${prefix}made${String(++count)}`;
+  const fresh = {
+    username: name,
+    email: `${name}@example.test`,
+    password: "Initial-password-42",
+  };
+
+  // Creating is admin-only, validated, and the account starts verified.
+  await request("/api/admin/users", "POST", moderator.token, fresh, 403);
+  await request(
+    "/api/admin/users",
+    "POST",
+    admin.token,
+    { ...fresh, password: "short" },
+    400,
+  );
+  await request(
+    "/api/admin/users",
+    "POST",
+    admin.token,
+    { ...fresh, role: "BOSS" },
+    400,
+  );
+  const created = await request<{
+    id: number;
+    role: string;
+    emailVerifiedAt: string | null;
+  }>(
+    "/api/admin/users",
+    "POST",
+    admin.token,
+    { ...fresh, role: "MODERATOR" },
+    201,
+  );
+  assert.equal(created.role, "MODERATOR");
+  assert.ok(created.emailVerifiedAt);
+  await request("/api/admin/users", "POST", admin.token, fresh, 409);
+  const login = (password: string, expected = 200) =>
+    request<{ token: string }>(
+      "/api/auth/login",
+      "POST",
+      undefined,
+      { username: name, password },
+      expected,
+    );
+  const first = await login(fresh.password);
+  await request("/api/rooms", "GET", first.token);
+
+  // A new password replaces the old and signs the user out everywhere.
+  await request(
+    `/api/admin/users/${String(created.id)}`,
+    "PATCH",
+    admin.token,
+    { password: "Changed-by-admin-42" },
+  );
+  await request("/api/auth/me", "GET", first.token, undefined, 401);
+  await login(fresh.password, 401);
+  await login("Changed-by-admin-42");
+  await request(
+    `/api/admin/users/${String(created.id)}`,
+    "PATCH",
+    admin.token,
+    { password: "short" },
+    400,
+  );
+
+  // Moderators see the list without private details and can't change anything.
+  const list = await request<Record<string, unknown>[]>(
+    `/api/admin/users?q=${name}`,
+    "GET",
+    moderator.token,
+  );
+  assert.deepEqual(
+    list.map((u) => u.username),
+    [name],
+  );
+  assert.equal("email" in (list[0] ?? {}), false);
+  assert.equal(list[0]?.role, "MODERATOR");
+  const detail = await request<Record<string, unknown>>(
+    `/api/admin/users/${String(created.id)}`,
+    "GET",
+    moderator.token,
+  );
+  assert.equal("email" in detail, false);
+  await request(
+    `/api/admin/users/${String(created.id)}`,
+    "PATCH",
+    moderator.token,
+    { role: "USER" },
+    403,
+  );
+  await request(
+    `/api/admin/users/${String(created.id)}`,
+    "DELETE",
+    moderator.token,
+    undefined,
+    403,
+  );
+});
+
+void test("moderators moderate rooms they belong to, but not staff or the owner", async () => {
+  const owner = await user();
+  const moderator = await user();
+  const outsider = await user();
+  const member = await user();
+  const peer = await user();
+  const admin = await user();
+  await db.user.update({
+    where: { id: moderator.user.id },
+    data: { role: "MODERATOR" },
+  });
+  await db.user.update({
+    where: { id: peer.user.id },
+    data: { role: "MODERATOR" },
+  });
+  await db.user.update({
+    where: { id: admin.user.id },
+    data: { role: "ADMIN" },
+  });
+  const study = await room(owner.token);
+  const path = `/api/rooms/${study.id}`;
+  for (const who of [moderator, member, peer, admin])
+    await request("/api/rooms/join", "POST", who.token, {
+      inviteCode: study.inviteCode,
+    });
+  const full = await request<Room>(path, "GET", owner.token);
+  const memberOf = (id: number) =>
+    full.members.find((m) => m.userId === id)?.id ?? "";
+  const say = (token: string) =>
+    request<{ id: number }>(
+      `${path}/messages`,
+      "POST",
+      token,
+      { content: "hi" },
+      201,
+    );
+
+  // Not a member: a moderator has no say here, and a plain member neither.
+  await request(
+    `${path}/members/${memberOf(member.user.id)}/mute`,
+    "POST",
+    outsider.token,
+    { minutes: 5 },
+    403,
+  );
+  await request(
+    `${path}/members/${memberOf(member.user.id)}/mute`,
+    "POST",
+    member.token,
+    { minutes: 5 },
+    403,
+  );
+  const stray = await user();
+  await db.user.update({
+    where: { id: stray.user.id },
+    data: { role: "MODERATOR" },
+  });
+  await request(`${path}/bans`, "GET", stray.token, undefined, 403);
+
+  // As a member, a moderator can delete anyone's message, mute, kick and ban.
+  const note = await say(member.token);
+  await request(
+    `${path}/messages/${note.id}`,
+    "DELETE",
+    moderator.token,
+    undefined,
+    204,
+  );
+  await request(
+    `${path}/members/${memberOf(member.user.id)}/mute`,
+    "POST",
+    moderator.token,
+    { minutes: 5 },
+  );
+  await request(`${path}/bans`, "GET", moderator.token);
+
+  // Staff and the owner are out of a moderator's reach; an admin member can.
+  for (const target of [peer.user.id, admin.user.id, owner.user.id]) {
+    await request(
+      `${path}/members/${memberOf(target)}/mute`,
+      "POST",
+      moderator.token,
+      { minutes: 5 },
+      target === owner.user.id ? 409 : 403,
+    );
+    await request(
+      `${path}/members/${memberOf(target)}/ban`,
+      "POST",
+      moderator.token,
+      {},
+      target === owner.user.id ? 409 : 403,
+    );
+  }
+  await request(
+    `${path}/members/${memberOf(peer.user.id)}/mute`,
+    "POST",
+    admin.token,
+    { minutes: 5 },
+  );
+
+  await request(
+    `${path}/members/${memberOf(member.user.id)}/ban`,
+    "POST",
+    moderator.token,
+    { reason: "spam" },
+    204,
+  );
+  await request(
+    `${path}/bans/${member.user.id}`,
+    "DELETE",
+    moderator.token,
+    undefined,
+    204,
+  );
+});

@@ -21,6 +21,13 @@ enum EmailTokenPurpose {
   PASSWORD_RESET
 }
 
+enum Role {
+  USER
+  // Owner-like powers in rooms they are a member of, plus a read-only user list.
+  MODERATOR
+  ADMIN
+}
+
 enum FriendshipStatus {
   PENDING
   ACCEPTED
@@ -47,9 +54,13 @@ model User {
   // nobody can hold someone else's address. Null for older accounts and cleared
   // on verification. An email change does not set it.
   verifyBy        DateTime?
+  // Site-wide permission level. Granted with `npm run users:role`; only an admin
+  // can then change others through /api/admin.
+  role            Role      @default(USER)
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
+  avatar          UserAvatar?
   authSessions    AuthSession[]
   emailTokens     EmailToken[]
   twoFactor       TwoFactor?
@@ -68,6 +79,16 @@ model User {
   memberships     RoomMember[]
   studyHistory    SessionParticipant[]
   gameResults     GameResult[]
+}
+
+// Profile picture, stored in the database so it needs no file volume. The API
+// only accepts PNG, JPEG or WebP up to 512 KB; without a row a default is served.
+model UserAvatar {
+  userId      Int      @id
+  contentType String
+  data        Bytes
+  updatedAt   DateTime @updatedAt
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model AuthSession {

@@ -76,3 +76,84 @@ export async function getUserStatistics(
     })),
   };
 }
+
+const dayMs = 86_400_000;
+const dayNumber = (date: string) => Date.parse(`${date}T00:00:00Z`) / dayMs;
+
+// Insights over time for the dashboard. ponytail: days and hours are UTC and
+// a session counts on the day/hour the user joined it; add a client time zone
+// parameter if per-user local days matter.
+export async function getAnalytics(
+  db: Database,
+  userId: number,
+  now: Date,
+  days: number,
+) {
+  const rows = await db.$queryRaw<
+    { day: string; seconds: number; completed: number; sessions: number }[]
+  >`
+    SELECT to_char(p."joinedAt", 'YYYY-MM-DD') AS day,
+           SUM(p."focusedSeconds")::int AS seconds,
+           COUNT(*) FILTER (WHERE p."completedAt" IS NOT NULL)::int AS completed,
+           COUNT(*)::int AS sessions
+    FROM "SessionParticipant" p
+    JOIN "PomodoroSession" s ON s."id" = p."sessionId"
+    WHERE p."userId" = ${userId} AND s."phase" = 'FOCUS' AND p."focusedSeconds" > 0
+    GROUP BY 1 ORDER BY 1`;
+  const hours = await db.$queryRaw<{ hour: number; seconds: number }[]>`
+    SELECT EXTRACT(HOUR FROM p."joinedAt")::int AS hour,
+           SUM(p."focusedSeconds")::int AS seconds
+    FROM "SessionParticipant" p
+    JOIN "PomodoroSession" s ON s."id" = p."sessionId"
+    WHERE p."userId" = ${userId} AND s."phase" = 'FOCUS' AND p."focusedSeconds" > 0
+    GROUP BY 1`;
+
+  const byDay = new Map(rows.map((row) => [row.day, row]));
+  const today = Math.floor(now.getTime() / dayMs);
+  const daily = Array.from({ length: days }, (_, i) => {
+    const date = new Date((today - days + 1 + i) * dayMs)
+      .toISOString()
+      .slice(0, 10);
+    const row = byDay.get(date);
+    return {
+      date,
+      focusedSeconds: row?.seconds ?? 0,
+      completedSessions: row?.completed ?? 0,
+    };
+  });
+
+  // Streaks count consecutive days with focus. One that ended yesterday is
+  // still alive: today isn't over.
+  let longest = 0;
+  let run = 0;
+  let previous = NaN;
+  for (const { day } of rows) {
+    run = dayNumber(day) === previous + 1 ? run + 1 : 1;
+    longest = Math.max(longest, run);
+    previous = dayNumber(day);
+  }
+  let current = 0;
+  if (previous >= today - 1) current = run;
+
+  const seconds = rows.reduce((sum, row) => sum + row.seconds, 0);
+  const sessions = rows.reduce((sum, row) => sum + row.sessions, 0);
+  const best = rows.reduce<(typeof rows)[number] | null>(
+    (top, row) => (!top || row.seconds > top.seconds ? row : top),
+    null,
+  );
+  const byHour = Array.from(
+    { length: 24 },
+    (_, hour) => hours.find((row) => row.hour === hour)?.seconds ?? 0,
+  );
+  return {
+    days,
+    daily,
+    windowFocusedSeconds: daily.reduce((sum, d) => sum + d.focusedSeconds, 0),
+    activeDays: rows.length,
+    currentStreak: current,
+    longestStreak: longest,
+    averageSessionSeconds: sessions ? Math.round(seconds / sessions) : 0,
+    bestDay: best && { date: best.day, focusedSeconds: best.seconds },
+    focusedSecondsByHour: byHour,
+  };
+}

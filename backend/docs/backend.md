@@ -122,7 +122,7 @@ are integers.
 
 Access labels: **Public** = no token; **Authenticated** = registered user or
 guest; **Registered** = registered user; **Member** = room member;
-**Owner** = room owner; **Timer owner** = solo participant or shared room owner.
+**Owner** = room owner; **Owner/mod** = owner, or a moderator/admin who is a member (see 3.8); **Timer owner** = solo participant or shared room owner.
 
 ### 3.1 Service and authentication
 
@@ -232,7 +232,7 @@ would collide with another account).
 | GET    | `/api/users/me/study-sessions` | Registered    | Optional `skip`, `take`                         | 200 attendance array, each including `session` |
 | GET    | `/api/users/me/game-results`   | Registered    | Optional `skip`, `take`                         | 200 result array, each including `game`        |
 
-Profiles contain `id`, `username`, `email`, `createdAt` and `updatedAt`. Password
+Profiles contain `id`, `username`, `email`, `emailVerifiedAt`, `role`, `createdAt` and `updatedAt`. Password
 hashes, token hashes and other users' emails are never returned. Personal
 endpoints always derive the user ID from the token, never from the body or query.
 
@@ -263,6 +263,53 @@ Statistics response:
   ]
 }
 ```
+
+### 3.2a Avatars, public profiles and analytics
+
+| Method | Endpoint                  | Access        | Body / query                                        | Response                                                 |
+| ------ | ------------------------- | ------------- | --------------------------------------------------- | -------------------------------------------------------- |
+| PUT    | `/api/users/me/avatar`    | Registered    | Raw image, `Content-Type` PNG/JPEG/WebP, max 512 KB | 204; replaces the old picture                            |
+| DELETE | `/api/users/me/avatar`    | Registered    | None                                                | 204: back to the default                                 |
+| GET    | `/api/users/:id/avatar`   | **Public**    | None                                                | The image; a neutral default SVG if none or no such user |
+| GET    | `/api/users/:id`          | Authenticated | None                                                | 200 public profile; 404 if unknown                       |
+| GET    | `/api/users/me/analytics` | Registered    | Optional `days` (1–365, default 30)                 | 200 insights, see below                                  |
+
+**Avatar upload.** Send the file itself as the body, not JSON:
+`fetch(url, { method: "PUT", headers: { Authorization, "Content-Type": file.type }, body: file })`.
+The bytes must really be the declared format (415 for another type, 400 for a
+mismatch, 413 above 512 KB). SVG is refused because it can carry scripts. Images
+live in the `UserAvatar` table, so no file volume is needed. Use
+`<img src="/api/users/{id}/avatar">`: the route needs no token and sends
+`Cross-Origin-Resource-Policy: cross-origin` so the frontend origin can show it.
+It is cached for 60 s, so add `?v=<timestamp>` after an upload to see it at once.
+
+**Public profile.** `{ id, username, createdAt, focusedSeconds,
+completedFocusSessions, friendship }` — never the email. `friendship` is `null`,
+or `{ id, status, direction }` (`direction` is `outgoing` if you asked,
+`incoming` if they did) so the page can offer add, accept or remove; it is null
+for yourself and for guests. Friends' online state stays on `GET /api/friends`.
+
+**Analytics** (UTC days; a session counts on the day and hour it was joined):
+
+```json
+{
+  "days": 30,
+  "daily": [
+    { "date": "2026-10-13", "focusedSeconds": 1500, "completedSessions": 1 }
+  ],
+  "windowFocusedSeconds": 4500,
+  "activeDays": 6,
+  "currentStreak": 3,
+  "longestStreak": 5,
+  "averageSessionSeconds": 1320,
+  "bestDay": { "date": "2026-10-09", "focusedSeconds": 3000 },
+  "focusedSecondsByHour": [0, 0, "… 24 values, hour 0–23 UTC"]
+}
+```
+
+`daily` has one entry per day of the window, zero-filled, oldest first.
+Streaks and `bestDay` cover all history; a streak that ended yesterday is still
+current. A session in progress is counted once its time is settled.
 
 ### 3.2b Friends
 
@@ -300,27 +347,27 @@ Only registered users create and own rooms; guests join with a code. Room detail
 and member lists are visible only to members; each registered member fetches
 their own invite code. The room listing contains only the caller's open rooms.
 
-| Method | Endpoint                                    | Access          | JSON body                           | Response                                                |
-| ------ | ------------------------------------------- | --------------- | ----------------------------------- | ------------------------------------------------------- |
-| POST   | `/api/rooms`                                | Registered      | `{ "name" }` plus optional settings | 201 room with members and current timer                 |
-| GET    | `/api/rooms`                                | Authenticated   | None                                | 200 caller's active open rooms, up to 100               |
-| POST   | `/api/rooms/join`                           | Authenticated   | `{ "inviteCode" }`                  | 200 joined room; no-op if already a member              |
-| GET    | `/api/rooms/:roomId`                        | Member          | None                                | 200 room, safe member names, current timer              |
-| PATCH  | `/api/rooms/:roomId`                        | Owner           | At least one setting                | 200 updated room                                        |
-| POST   | `/api/rooms/:roomId/leave`                  | Member          | None                                | 204: leave the server; a code is needed to return       |
-| POST   | `/api/rooms/:roomId/close`                  | Owner           | None                                | 200 closed room; live timer cancelled                   |
-| POST   | `/api/rooms/:roomId/invite-code`            | Member (user)   | None, or `{ "rotate": true }`       | 200 `{ inviteCode }`: your own code                     |
-| GET    | `/api/rooms/:roomId/messages`               | Member          | `?after=<id>&limit=50`              | 200 chat messages, oldest first                         |
-| POST   | `/api/rooms/:roomId/messages`               | Member          | `{ "content" }` (≤ 2000 chars)      | 201 message; 10 per 10 s per sender                     |
-| POST   | `/api/rooms/:roomId/owner`                  | Owner           | `{ "userId": 2 }`                   | 200 room with transferred ownership                     |
-| DELETE | `/api/rooms/:roomId/members/:memberId`      | Owner           | None                                | 204: kick; a code is needed to return                   |
-| POST   | `/api/rooms/:roomId/members/:memberId/ban`  | Owner           | Optional `{ "reason" }`             | 204: kick and ban a registered user (guests: kick only) |
-| GET    | `/api/rooms/:roomId/bans`                   | Owner           | None                                | 200 `[{ userId, username, reason, createdAt }]`         |
-| DELETE | `/api/rooms/:roomId/bans/:userId`           | Owner           | None                                | 204: lift the ban; 404 if not banned                    |
-| POST   | `/api/rooms/:roomId/members/:memberId/mute` | Owner           | `{ "minutes": 1–10080 }`            | 200 `{ mutedUntil }`; can read chat, not post           |
-| DELETE | `/api/rooms/:roomId/members/:memberId/mute` | Owner           | None                                | 200 `{ mutedUntil: null }`                              |
-| DELETE | `/api/rooms/:roomId/messages/:messageId`    | Author or owner | None                                | 204: delete a chat message                              |
-| POST   | `/api/rooms/:roomId/timers`                 | Owner           | None                                | 201 next shared timer                                   |
+| Method | Endpoint                                    | Access             | JSON body                           | Response                                                |
+| ------ | ------------------------------------------- | ------------------ | ----------------------------------- | ------------------------------------------------------- |
+| POST   | `/api/rooms`                                | Registered         | `{ "name" }` plus optional settings | 201 room with members and current timer                 |
+| GET    | `/api/rooms`                                | Authenticated      | None                                | 200 caller's active open rooms, up to 100               |
+| POST   | `/api/rooms/join`                           | Authenticated      | `{ "inviteCode" }`                  | 200 joined room; no-op if already a member              |
+| GET    | `/api/rooms/:roomId`                        | Member             | None                                | 200 room, safe member names, current timer              |
+| PATCH  | `/api/rooms/:roomId`                        | Owner              | At least one setting                | 200 updated room                                        |
+| POST   | `/api/rooms/:roomId/leave`                  | Member             | None                                | 204: leave the server; a code is needed to return       |
+| POST   | `/api/rooms/:roomId/close`                  | Owner              | None                                | 200 closed room; live timer cancelled                   |
+| POST   | `/api/rooms/:roomId/invite-code`            | Member (user)      | None, or `{ "rotate": true }`       | 200 `{ inviteCode }`: your own code                     |
+| GET    | `/api/rooms/:roomId/messages`               | Member             | `?after=<id>&limit=50`              | 200 chat messages, oldest first                         |
+| POST   | `/api/rooms/:roomId/messages`               | Member             | `{ "content" }` (≤ 2000 chars)      | 201 message; 10 per 10 s per sender                     |
+| POST   | `/api/rooms/:roomId/owner`                  | Owner              | `{ "userId": 2 }`                   | 200 room with transferred ownership                     |
+| DELETE | `/api/rooms/:roomId/members/:memberId`      | Owner/mod          | None                                | 204: kick; a code is needed to return                   |
+| POST   | `/api/rooms/:roomId/members/:memberId/ban`  | Owner/mod          | Optional `{ "reason" }`             | 204: kick and ban a registered user (guests: kick only) |
+| GET    | `/api/rooms/:roomId/bans`                   | Owner/mod          | None                                | 200 `[{ userId, username, reason, createdAt }]`         |
+| DELETE | `/api/rooms/:roomId/bans/:userId`           | Owner/mod          | None                                | 204: lift the ban; 404 if not banned                    |
+| POST   | `/api/rooms/:roomId/members/:memberId/mute` | Owner/mod          | `{ "minutes": 1–10080 }`            | 200 `{ mutedUntil }`; can read chat, not post           |
+| DELETE | `/api/rooms/:roomId/members/:memberId/mute` | Owner/mod          | None                                | 200 `{ mutedUntil: null }`                              |
+| DELETE | `/api/rooms/:roomId/messages/:messageId`    | Author, owner, mod | None                                | 204: delete a chat message                              |
+| POST   | `/api/rooms/:roomId/timers`                 | Owner              | None                                | 201 next shared timer                                   |
 
 Room settings (creation and update):
 
@@ -434,6 +481,43 @@ A member fetches their own code with `POST /api/rooms/ROOM_UUID/invite-code`.
 Friends authenticate (or enter as guests), then call `/api/rooms/join` with it. The owner calls `/api/rooms/ROOM_UUID/timers` to start a
 shared interval. Solo callers use `/api/timers` instead.
 
+### 3.8 Administration and roles
+
+Site-wide roles (`User.role`, shown in `/auth/me`):
+
+| Role        | Can do                                                                                                                                                                                                                                                                              |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `USER`      | Everything normal; moderates only rooms they own.                                                                                                                                                                                                                                   |
+| `MODERATOR` | In rooms they are a **member** of: what an owner can for chat and people (delete any message, mute, kick, ban, unban, list bans), except against the owner or other staff. Plus a read-only list of users **without** emails or 2FA state. Not room settings, ownership or closing. |
+| `ADMIN`     | Everything a moderator can, plus full user management below. Like anyone, they act in a room only as a member; they can't read private rooms they haven't joined.                                                                                                                   |
+
+Nobody is admin by default. Make the first one on the server, then promote others
+through the API:
+
+```bash
+npm run users:role -- alice admin    # or: moderator | user
+```
+
+Moderators join rooms the normal way (an invite code), so private chats stay private.
+
+All `/api/admin/*` routes need a verified staff account; `GET`s are open to
+moderators (reduced view), everything else is admin-only (403 otherwise).
+
+| Method | Endpoint                   | Body / query                                            | Response                                                                   |
+| ------ | -------------------------- | ------------------------------------------------------- | -------------------------------------------------------------------------- |
+| GET    | `/api/admin/users`         | `skip`, `take`, optional `q` (name or email)            | 200 users: admins get `email`, `emailVerifiedAt`, `twoFactorEnabled` too   |
+| GET    | `/api/admin/users/:id`     | None                                                    | 200 one user (same views); 404                                             |
+| POST   | `/api/admin/users`         | `{ username, email, password, role? }`                  | 201 user; the email counts as verified; 409 if taken                       |
+| PATCH  | `/api/admin/users/:id`     | At least one of `username`, `email`, `password`, `role` | 200 updated user                                                           |
+| DELETE | `/api/admin/users/:id`     | None                                                    | 204: deletes the account and the rooms it owns; 409 for yourself           |
+| DELETE | `/api/admin/users/:id/2fa` | None                                                    | 204: removes two-factor and recovery codes (lost phone); 404 if not set up |
+
+Passwords can be **set** but never read: only a one-way scrypt hash is stored.
+Setting one (on create or `PATCH`) signs that user out of every session and
+cancels pending 2FA logins; tell them the new password out of band and have them
+change it. A changed email is unverified again and gets a code. Removing or
+demoting the last administrator returns 409.
+
 ---
 
 ## 4. Data model
@@ -444,6 +528,7 @@ Eighteen PostgreSQL tables. `TwoFactor`, `RecoveryCode` and `LoginChallenge` bac
 | -------------------- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | `User`               | Registered profile and optional password hash                          | Owns rooms; has login sessions, memberships, study history, and game results |
 | `AuthSession`        | A registered user's login, identified by a hashed token with an expiry | Belongs to one user                                                          |
+| `UserAvatar`         | Profile picture bytes (PNG/JPEG/WebP, max 512 KB)                      | One per user; deleted with the account                                       |
 | `GuestSession`       | Temporary guest identity, display name, hashed token and expiry        | Can join rooms and study sessions; cannot own rooms or save game results     |
 | `StudyRoom`          | Shared space with Pomodoro settings                                    | Owned by a registered user; has memberships and timer sessions               |
 | `RoomBan`            | Registered users banned from a room by its owner                       | One room and one user; checked when someone is added as a member             |
@@ -535,21 +620,25 @@ someone can belong to a room while running a solo timer.
 
 A permanent registered account. Guests have no `User` row.
 
-| Field             | Type        | Default / rule             | Meaning                                                         |
-| ----------------- | ----------- | -------------------------- | --------------------------------------------------------------- |
-| `id`              | `Int`       | Primary key; autoincrement | Stable registered-user identity                                 |
-| `email`           | `String`    | Unique; required           | Contact address; API trims/lowercases new values                |
-| `username`        | `String`    | Unique; required           | Public name; API lowercases new values                          |
-| `passwordHash`    | `String?`   | Null if omitted            | Salted scrypt hash; never a plain password                      |
-| `emailVerifiedAt` | `DateTime?` | Null until verified        | When the owner proved control of `email`; clear on change       |
-| `verifyBy`        | `DateTime?` | Set at signup (+30 min)    | Unverified past this, the account is deleted; cleared on verify |
-| `createdAt`       | `DateTime`  | `now()`                    | Account creation time                                           |
-| `updatedAt`       | `DateTime`  | `@updatedAt`               | Last account modification                                       |
+| Field             | Type        | Default / rule             | Meaning                                                                               |
+| ----------------- | ----------- | -------------------------- | ------------------------------------------------------------------------------------- |
+| `id`              | `Int`       | Primary key; autoincrement | Stable registered-user identity                                                       |
+| `email`           | `String`    | Unique; required           | Contact address; API trims/lowercases new values                                      |
+| `username`        | `String`    | Unique; required           | Public name; API lowercases new values                                                |
+| `passwordHash`    | `String?`   | Null if omitted            | Salted scrypt hash; never a plain password                                            |
+| `emailVerifiedAt` | `DateTime?` | Null until verified        | When the owner proved control of `email`; clear on change                             |
+| `verifyBy`        | `DateTime?` | Set at signup (+30 min)    | Unverified past this, the account is deleted; cleared on verify                       |
+| `role`            | `Role`      | `USER`                     | `USER`, `MODERATOR` or `ADMIN`; set with `npm run users:role`, then via the admin API |
+| `createdAt`       | `DateTime`  | `now()`                    | Account creation time                                                                 |
+| `updatedAt`       | `DateTime`  | `@updatedAt`               | Last account modification                                                             |
 
 Relations: `authSessions`, `ownedRooms`, `memberships`, `studyHistory`,
 `gameResults`. A null hash preserves pre-existing profiles and never grants
 login. Database uniqueness is case-sensitive; API normalization applies to new
 writes and does not rewrite older records.
+
+`UserAvatar`: `userId` (primary key, cascade), `contentType` (SQL allows only the
+three image types), `data` (1 byte to 512 KB, enforced by CHECK), `updatedAt`.
 
 ### 4.2 AuthSession
 
@@ -883,6 +972,9 @@ in future migrations. `prisma db push` is not a substitute.
 | `20261013120000_moderation`             | `RoomMember.mutedUntil`; `RoomBan`                                                              |
 | `20261013120100_lowercase_emails`       | Lowercases old mixed-case emails unless that would collide with another account                 |
 | `20261013130000_signup_verify_deadline` | `User.verifyBy`                                                                                 |
+| `20261013140000_message_is_guest`       | `Message.isGuest`                                                                               |
+| `20261013150000_avatar_roles`           | `Role` enum and `User.role`; `UserAvatar` with size and type CHECKs                             |
+| `20261013160000_moderator_role`         | Adds `MODERATOR` to `Role`                                                                      |
 
 The study-platform migration preserves existing profiles and never drops user
 data. The timer-accounting migration keeps original start times and gives
@@ -954,7 +1046,10 @@ exclusion. CI runs the full suite against its own PostgreSQL service.
 | `src/chat/chat.service.ts`                  | Server chat messages                                            |
 | `src/dev.ts`                                | Dev-only test console at `/dev` (not mounted in production)     |
 | `src/timers/timers.service.ts`              | Clock math, attendance, transitions, finalization               |
-| `src/stats/stats.service.ts`                | Stored and live focus statistics                                |
+| `src/stats/stats.service.ts`                | Stored and live focus statistics, analytics over time           |
+| `src/users/users.service.ts`                | Avatars and public profiles                                     |
+| `src/users/role.ts`                         | `users:role` CLI to grant or remove admin                       |
+| `src/admin/admin.service.ts`                | Admin guard and user management                                 |
 | `src/games/games.service.ts`                | Verified game result submission                                 |
 | `src/games/registry.ts`                     | Extension point for game verifiers                              |
 | `src/games/manage.ts`                       | Catalogue management CLI                                        |

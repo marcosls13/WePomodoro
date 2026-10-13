@@ -1,5 +1,6 @@
 import {
   Router,
+  raw,
   type NextFunction,
   type Request,
   type Response,
@@ -90,10 +91,34 @@ import {
   verifyResetCode,
 } from "../auth/reset.service.js";
 import { sendVerificationCode, verifyEmail } from "../auth/verify.service.js";
-import { getUserStatistics } from "../stats/stats.service.js";
+import { getAnalytics, getUserStatistics } from "../stats/stats.service.js";
+import {
+  avatarMaxBytes,
+  avatarTypes,
+  clearAvatar,
+  getAvatar,
+  publicProfile,
+  setAvatar,
+} from "../users/users.service.js";
+import {
+  deleteUser,
+  getUser,
+  listUsers,
+  createUser,
+  requireStaff,
+  resetTwoFactor,
+  updateUser,
+} from "../admin/admin.service.js";
 import { recordGame, type GameVerifiers } from "../games/games.service.js";
 import { endIdentity } from "./lifecycle.js";
 import { migrationsPending } from "./migrations.js";
+
+// Shown to users without a picture; deliberately says nothing about who it is.
+const defaultAvatar =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">' +
+  '<rect width="128" height="128" fill="#d1d5db"/>' +
+  '<circle cx="64" cy="50" r="24" fill="#9ca3af"/>' +
+  '<path d="M16 128c0-30 22-48 48-48s48 18 48 48z" fill="#9ca3af"/></svg>';
 
 function actor(res: Response): Actor {
   return res.locals.actor as Actor;
@@ -298,6 +323,18 @@ export function createRouter(
     res.json({ status: "ok" });
   });
 
+  // Public so <img> tags work (they can't send a token). Anyone without a
+  // picture, or who doesn't exist, gets the same default.
+  router.get("/users/:id/avatar", async (req, res) => {
+    const id = integer(Number(req.params.id), "id", 1, 2147483647);
+    const avatar = await getAvatar(ctx, id);
+    res.setHeader("Cache-Control", "public, max-age=60");
+    // helmet's default would stop the frontend (another origin) from showing it.
+    res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+    if (!avatar) res.type("image/svg+xml").send(defaultAvatar);
+    else res.type(avatar.contentType).send(Buffer.from(avatar.data));
+  });
+
   router.use(async (req, res, next) => {
     const as = req.headers["x-dev-user"];
     res.locals.actor =
@@ -485,6 +522,125 @@ export function createRouter(
         orderBy: [{ playedAt: "desc" }, { id: "desc" }],
       }),
     );
+  });
+
+  router.put(
+    "/users/me/avatar",
+    raw({ type: avatarTypes, limit: avatarMaxBytes }),
+    async (req, res) => {
+      const type = req.is(avatarTypes);
+      await setAvatar(
+        ctx,
+        actor(res),
+        typeof type === "string" ? type : "",
+        req.body,
+      );
+      res.sendStatus(204);
+    },
+  );
+
+  router.delete("/users/me/avatar", async (req, res) => {
+    await clearAvatar(ctx, actor(res));
+    res.sendStatus(204);
+  });
+
+  router.get("/users/me/analytics", async (req, res) => {
+    const { days } = req.query;
+    res.json(
+      await getAnalytics(
+        ctx.db,
+        registered(actor(res)),
+        ctx.now(),
+        days === undefined ? 30 : integer(Number(days), "days", 1, 365),
+      ),
+    );
+  });
+
+  router.get("/users/:id", async (req, res) => {
+    res.json(
+      await publicProfile(
+        ctx,
+        actor(res),
+        integer(Number(req.params.id), "id", 1, 2147483647),
+      ),
+    );
+  });
+
+  // Moderators may look (without private details); only admins change things.
+  router.use("/admin", async (req, res, next) => {
+    res.locals.staff = await requireStaff(
+      ctx,
+      actor(res),
+      req.method === "GET",
+    );
+    next();
+  });
+
+  const userId = (req: Request) =>
+    integer(Number(req.params.id), "id", 1, 2147483647);
+
+  router.get("/admin/users", async (req, res) => {
+    const { q } = req.query;
+    res.json(
+      await listUsers(
+        ctx,
+        pagination(req),
+        typeof q === "string" && q.trim() ? q.trim().slice(0, 100) : undefined,
+        res.locals.staff === "ADMIN",
+      ),
+    );
+  });
+
+  router.get("/admin/users/:id", async (req, res) => {
+    res.json(await getUser(ctx, userId(req), res.locals.staff === "ADMIN"));
+  });
+
+  const roles = ["USER", "MODERATOR", "ADMIN"] as const;
+  const roleOf = (value: unknown) => {
+    const role = roles.find((r) => r === value);
+    if (value !== undefined && !role)
+      throw new ApiError(400, "role must be USER, MODERATOR or ADMIN");
+    return role;
+  };
+
+  router.post("/admin/users", async (req, res) => {
+    const input = body(req);
+    res.status(201).json(
+      await createUser(ctx, {
+        username: username(input.username),
+        email: email(input.email),
+        password: password(input.password),
+        role: roleOf(input.role) ?? "USER",
+      }),
+    );
+  });
+
+  router.patch("/admin/users/:id", async (req, res) => {
+    const input = body(req);
+    const changes = {
+      username:
+        input.username === undefined ? undefined : username(input.username),
+      email: input.email === undefined ? undefined : email(input.email),
+      role: roleOf(input.role),
+      password:
+        input.password === undefined ? undefined : password(input.password),
+    };
+    if (Object.values(changes).every((value) => value === undefined))
+      throw new ApiError(
+        400,
+        "Provide username, email, password or role to update",
+      );
+    res.json(await updateUser(ctx, userId(req), changes));
+  });
+
+  router.delete("/admin/users/:id", async (req, res) => {
+    await deleteUser(ctx, actor(res), userId(req));
+    res.sendStatus(204);
+  });
+
+  router.delete("/admin/users/:id/2fa", async (req, res) => {
+    await resetTwoFactor(ctx, userId(req));
+    res.sendStatus(204);
   });
 
   router.get("/rooms", async (req, res) => {

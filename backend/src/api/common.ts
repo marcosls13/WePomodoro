@@ -128,6 +128,7 @@ export const profileSelect = {
   username: true,
   email: true,
   emailVerifiedAt: true,
+  role: true,
   createdAt: true,
   updatedAt: true,
 } as const;

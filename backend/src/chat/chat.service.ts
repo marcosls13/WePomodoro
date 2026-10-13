@@ -5,6 +5,7 @@ import {
   type Actor,
   type Context,
 } from "../api/common.js";
+import { moderatorOf } from "../rooms/rooms.service.js";
 import { activeMember } from "../timers/timers.service.js";
 
 /** Newest messages, or those after `after` (a message id) oldest first, for polling. */
@@ -63,7 +64,7 @@ export async function sendMessage(
   });
 }
 
-/** The author or the room owner can delete a message. */
+/** The author, the room owner or a moderator can delete a message. */
 export async function deleteMessage(
   ctx: Context,
   actor: Actor,
@@ -74,15 +75,14 @@ export async function deleteMessage(
     await activeMember(tx, actor, roomId);
     const message = await tx.message.findFirst({
       where: { id: messageId, roomId },
-      include: { room: { select: { ownerId: true } } },
+      include: { room: { select: { id: true, ownerId: true } } },
     });
     if (!message) throw new ApiError(404, "Message not found");
     const mine =
       (actor.userId !== null && message.userId === actor.userId) ||
       (actor.guestSessionId !== null &&
         message.guestSessionId === actor.guestSessionId);
-    if (!mine && message.room.ownerId !== actor.userId)
-      throw new ApiError(403, "Only the author or the owner can delete it");
+    if (!mine) await moderatorOf(tx, actor, message.room);
     await tx.message.delete({ where: { id: messageId } });
   });
 }

@@ -281,7 +281,49 @@ export async function manageRoom(
   });
 }
 
-/** Owner kicks a member; with `ban`, a registered user also can't come back. */
+/**
+ * Who may moderate a room: its owner, or a moderator/admin who is a member of
+ * it. Returns the capacity so callers can protect staff from moderators.
+ */
+export async function moderatorOf(
+  tx: Transaction,
+  actor: Actor,
+  room: { id: string; ownerId: number },
+) {
+  if (room.ownerId === actor.userId) return "OWNER" as const;
+  if (actor.userId !== null) {
+    const user = await tx.user.findUnique({
+      where: { id: actor.userId },
+      select: { role: true },
+    });
+    if (
+      user &&
+      user.role !== "USER" &&
+      (await tx.roomMember.findFirst({
+        where: { roomId: room.id, userId: actor.userId },
+      }))
+    )
+      return user.role;
+  }
+  throw new ApiError(403, "Only the owner or a moderator can do this");
+}
+
+// Moderators can't act on other staff; only the owner or an admin can.
+async function protectStaff(
+  tx: Transaction,
+  by: Awaited<ReturnType<typeof moderatorOf>>,
+  targetUserId: number | null,
+) {
+  if (by !== "MODERATOR" || targetUserId === null) return;
+  const target = await tx.user.findUnique({
+    where: { id: targetUserId },
+    select: { role: true },
+  });
+  if (target?.role !== "USER")
+    throw new ApiError(403, "Moderators can't act on other staff");
+}
+
+/** Owner or moderator kicks a member; with `ban`, a registered user also can't come back. */
 export async function removeMember(
   ctx: Context,
   actor: Actor,
@@ -291,14 +333,14 @@ export async function removeMember(
 ) {
   return transaction(ctx, async (tx) => {
     const room = await lockRoom(tx, roomId);
-    if (room.ownerId !== actor.userId)
-      throw new ApiError(403, "Only the owner can remove members");
+    const by = await moderatorOf(tx, actor, room);
     const member = await tx.roomMember.findFirst({
       where: { id: memberId, roomId },
     });
     if (!member) throw new ApiError(404, "Member not found");
     if (member.userId === room.ownerId)
       throw new ApiError(409, "The owner cannot be removed");
+    await protectStaff(tx, by, member.userId);
     const now = ctx.now();
     const session = await tx.pomodoroSession.findFirst({
       where: { roomId, status: { in: [...liveStatuses] } },
@@ -325,16 +367,14 @@ export async function removeMember(
   });
 }
 
-async function ownedRoom(tx: Transaction, actor: Actor, roomId: string) {
+async function moderatedRoom(tx: Transaction, actor: Actor, roomId: string) {
   const room = await lockRoom(tx, roomId);
-  if (room.ownerId !== actor.userId)
-    throw new ApiError(403, "Only the owner can moderate the room");
-  return room;
+  return { room, by: await moderatorOf(tx, actor, room) };
 }
 
 export async function listBans(ctx: Context, actor: Actor, roomId: string) {
   return transaction(ctx, async (tx) => {
-    await ownedRoom(tx, actor, roomId);
+    await moderatedRoom(tx, actor, roomId);
     const bans = await tx.roomBan.findMany({
       where: { roomId },
       orderBy: { createdAt: "desc" },
@@ -355,7 +395,7 @@ export async function unban(
   userId: number,
 ) {
   return transaction(ctx, async (tx) => {
-    await ownedRoom(tx, actor, roomId);
+    await moderatedRoom(tx, actor, roomId);
     const { count } = await tx.roomBan.deleteMany({
       where: { roomId, userId },
     });
@@ -363,7 +403,7 @@ export async function unban(
   });
 }
 
-/** Owner mutes a member for `minutes`, or unmutes with `null`. */
+/** Owner or moderator mutes a member for `minutes`, or unmutes with `null`. */
 export async function muteMember(
   ctx: Context,
   actor: Actor,
@@ -372,13 +412,14 @@ export async function muteMember(
   minutes: number | null,
 ) {
   return transaction(ctx, async (tx) => {
-    const room = await ownedRoom(tx, actor, roomId);
+    const { room, by } = await moderatedRoom(tx, actor, roomId);
     const member = await tx.roomMember.findFirst({
       where: { id: memberId, roomId },
     });
     if (!member) throw new ApiError(404, "Member not found");
     if (member.userId === room.ownerId)
       throw new ApiError(409, "The owner cannot be muted");
+    await protectStaff(tx, by, member.userId);
     const mutedUntil =
       minutes === null ? null : new Date(ctx.now().getTime() + minutes * 60000);
     await tx.roomMember.update({

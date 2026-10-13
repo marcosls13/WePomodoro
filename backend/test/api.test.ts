@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { mkdirSync, rmSync } from "node:fs";
 import type { Server } from "node:http";
 import { after, before, test } from "node:test";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -106,9 +107,10 @@ async function request<T>(
   );
   return result as T;
 }
-async function user() {
+// Accounts must verify their email to use the API; tests skip that unless asked.
+async function user(verified = true) {
   const name = `${prefix}${++count}`;
-  return request<Auth>(
+  const account = await request<Auth>(
     "/api/auth/signup",
     "POST",
     undefined,
@@ -119,6 +121,12 @@ async function user() {
     },
     201,
   );
+  if (verified)
+    await db.user.update({
+      where: { id: account.user.id },
+      data: { emailVerifiedAt: new Date(), verifyBy: null },
+    });
+  return account;
 }
 async function guest() {
   const result = await request<GuestAuth>(
@@ -1585,7 +1593,7 @@ void test("password reset requests are limited per address", async () => {
 
 void test("email verification: signup emails a code that proves the address", async () => {
   const before = mails.length;
-  const account = await user();
+  const account = await user(false);
   const mail = mails.slice(before).find((m) => m.to === account.user.email);
   assert.ok(mail);
   const code = /code is (\d{6})/.exec(mail.text)?.[1];
@@ -1644,4 +1652,240 @@ void test("email verification: signup emails a code that proves the address", as
   assert.ok(again);
   await post("", account.token, { code: again }, 204);
   assert.ok(await verified());
+});
+
+void test("unverified accounts can only verify, fix their email or leave", async () => {
+  const account = await user(false);
+  await request("/api/rooms", "GET", account.token, undefined, 403);
+  await request("/api/timers", "GET", account.token, undefined, 403);
+  await request("/api/auth/me", "GET", account.token);
+  await request("/api/users/me", "GET", account.token);
+  await request("/api/auth/logout", "POST", account.token, undefined, 204);
+});
+
+void test("moderation: ban, mute and deleting messages are owner powers", async () => {
+  const owner = await user();
+  const member = await user();
+  const other = await user();
+  const study = await room(owner.token);
+  const path = `/api/rooms/${study.id}`;
+  const join = async (token: string, expected = 200) =>
+    request<Room>(
+      "/api/rooms/join",
+      "POST",
+      token,
+      { inviteCode: study.inviteCode },
+      expected,
+    );
+  await join(member.token);
+  await join(other.token);
+  const memberId = (r: Room, id: number) =>
+    r.members.find((m) => m.userId === id)?.id ?? "";
+  const full = await request<Room>(path, "GET", owner.token);
+  const say = (token: string, expected = 201) =>
+    request<{ id: number }>(
+      `${path}/messages`,
+      "POST",
+      token,
+      { content: "hi" },
+      expected,
+    );
+
+  // Only the owner moderates; the owner can't be targeted.
+  const target = memberId(full, member.user.id);
+  await request(
+    `${path}/members/${target}/mute`,
+    "POST",
+    other.token,
+    { minutes: 5 },
+    403,
+  );
+  await request(`${path}/members/${target}/ban`, "POST", other.token, {}, 403);
+  await request(`${path}/bans`, "GET", other.token, undefined, 403);
+  await request(
+    `${path}/members/${memberId(full, owner.user.id)}/mute`,
+    "POST",
+    owner.token,
+    { minutes: 5 },
+    409,
+  );
+
+  // Muted members can read but not post; unmuting restores it.
+  await request(`${path}/members/${target}/mute`, "POST", owner.token, {
+    minutes: 5,
+  });
+  await say(member.token, 403);
+  await request(`${path}/messages`, "GET", member.token);
+  await request(`${path}/members/${target}/mute`, "DELETE", owner.token);
+  const mine = await say(member.token);
+
+  // Authors and the owner may delete a message; other members may not.
+  await request(
+    `${path}/messages/${mine.id}`,
+    "DELETE",
+    other.token,
+    undefined,
+    403,
+  );
+  await request(
+    `${path}/messages/${mine.id}`,
+    "DELETE",
+    member.token,
+    undefined,
+    204,
+  );
+  const again = await say(member.token);
+  await request(
+    `${path}/messages/${again.id}`,
+    "DELETE",
+    owner.token,
+    undefined,
+    204,
+  );
+  await request(
+    `${path}/messages/${again.id}`,
+    "DELETE",
+    owner.token,
+    undefined,
+    404,
+  );
+
+  // A banned user is removed and can't return with a code.
+  await request(
+    `${path}/members/${target}/ban`,
+    "POST",
+    owner.token,
+    { reason: "spam" },
+    204,
+  );
+  await request(path, "GET", member.token, undefined, 403);
+  await join(member.token, 403);
+  const bans = await request<
+    { userId: number; username: string; reason: string }[]
+  >(`${path}/bans`, "GET", owner.token);
+  assert.deepEqual(
+    bans.map((b) => [b.userId, b.username, b.reason]),
+    [[member.user.id, member.user.username, "spam"]],
+  );
+  await request(
+    `${path}/bans/${member.user.id}`,
+    "DELETE",
+    owner.token,
+    undefined,
+    204,
+  );
+  await request(
+    `${path}/bans/${member.user.id}`,
+    "DELETE",
+    owner.token,
+    undefined,
+    404,
+  );
+  await join(member.token);
+});
+
+void test("health reports pending migrations", async () => {
+  const name = "99999999999999_not_applied";
+  const dir = `prisma/migrations/${name}`;
+  mkdirSync(dir);
+  try {
+    assert.equal((await fetch(`${base}/api/health`)).status, 503);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+  assert.equal((await fetch(`${base}/api/health`)).status, 200);
+});
+
+void test("signups that never verify are deleted, freeing the email", async () => {
+  const stale = await user(false);
+  const kept = await user(false);
+  const changed = await user();
+  await db.user.update({
+    where: { id: changed.user.id },
+    data: { emailVerifiedAt: null },
+  });
+  const later = new Date(clock.getTime() + 31 * 60_000);
+  const saved = clock;
+  clock = later;
+  try {
+    await db.user.update({
+      where: { id: kept.user.id },
+      data: { verifyBy: null },
+    });
+    await cleanupExpiredSessions(ctx);
+  } finally {
+    clock = saved;
+  }
+  const exists = async (id: number) =>
+    (await db.user.count({ where: { id } })) === 1;
+  assert.equal(await exists(stale.user.id), false);
+  assert.equal(await exists(kept.user.id), true);
+  assert.equal(await exists(changed.user.id), true);
+  await request(
+    "/api/auth/signup",
+    "POST",
+    undefined,
+    {
+      username: `${prefix}re${count}`,
+      email: stale.user.email,
+      password: "Correct-password-42",
+    },
+    201,
+  );
+});
+
+void test("guests can't take a registered username", async () => {
+  const owner = await user();
+  for (const displayName of [
+    owner.user.username,
+    owner.user.username.toUpperCase(),
+  ])
+    await request("/api/auth/guest", "POST", undefined, { displayName }, 409);
+  await request(
+    "/api/auth/guest",
+    "POST",
+    undefined,
+    { displayName: `${owner.user.username}x` },
+    201,
+  ).then((g) => guestIds.push((g as GuestAuth).guest.id));
+});
+
+void test("messages and members say whether the author is a guest", async () => {
+  const owner = await user();
+  const visitor = await guest();
+  const study = await room(owner.token);
+  await request("/api/rooms/join", "POST", visitor.token, {
+    inviteCode: study.inviteCode,
+  });
+  const say = (token: string) =>
+    request<{ isGuest: boolean }>(
+      `/api/rooms/${study.id}/messages`,
+      "POST",
+      token,
+      { content: "hi" },
+      201,
+    );
+  assert.equal((await say(owner.token)).isGuest, false);
+  assert.equal((await say(visitor.token)).isGuest, true);
+  const view = await request<{
+    members: { userId: number | null; isGuest: boolean }[];
+  }>(`/api/rooms/${study.id}`, "GET", owner.token);
+  assert.deepEqual(
+    view.members.map((m) => [m.userId === null, m.isGuest]).sort(),
+    [
+      [false, false],
+      [true, true],
+    ],
+  );
+  // The flag outlives the guest identity.
+  await request("/api/auth/logout", "POST", visitor.token, undefined, 204);
+  const log = await request<{ isGuest: boolean }[]>(
+    `/api/rooms/${study.id}/messages`,
+    "GET",
+    owner.token,
+  );
+  assert.deepEqual(
+    log.map((m) => m.isGuest),
+    [false, true],
+  );
 });

@@ -43,7 +43,11 @@ import {
   twoFactorStatus,
 } from "../auth/twofactor.service.js";
 import { devActor } from "../dev.js";
-import { listMessages, sendMessage } from "../chat/chat.service.js";
+import {
+  deleteMessage,
+  listMessages,
+  sendMessage,
+} from "../chat/chat.service.js";
 import {
   acceptJoin,
   askToJoin,
@@ -63,9 +67,12 @@ import {
   getRoom,
   joinRoom,
   leaveRoom,
+  listBans,
   listRooms,
   manageRoom,
+  muteMember,
   removeMember,
+  unban,
   updateRoom,
   type RoomSettings,
 } from "../rooms/rooms.service.js";
@@ -86,6 +93,7 @@ import { sendVerificationCode, verifyEmail } from "../auth/verify.service.js";
 import { getUserStatistics } from "../stats/stats.service.js";
 import { recordGame, type GameVerifiers } from "../games/games.service.js";
 import { endIdentity } from "./lifecycle.js";
+import { migrationsPending } from "./migrations.js";
 
 function actor(res: Response): Actor {
   return res.locals.actor as Actor;
@@ -232,7 +240,7 @@ export function createRouter(
       username: username(input.username),
       password: password(input.password),
     });
-    // The account is usable immediately; verifying the address is a separate step.
+    // The session token works only for verifying the address until the code is entered.
     await sendVerificationCode(ctx, created.user.id);
     res.status(201).json(created);
   });
@@ -283,6 +291,10 @@ export function createRouter(
 
   router.get("/health", async (req, res) => {
     await ctx.db.$queryRaw`SELECT 1`;
+    if (await migrationsPending(ctx.db)) {
+      res.status(503).json({ status: "migrations pending; run db:deploy" });
+      return;
+    }
     res.json({ status: "ok" });
   });
 
@@ -292,6 +304,30 @@ export function createRouter(
       devAuth && typeof as === "string"
         ? await devActor(ctx, as)
         : await authenticate(ctx, req);
+    next();
+  });
+
+  // Registered accounts must prove their email before using anything but the
+  // routes needed to verify it, fix a mistyped address, or leave.
+  const unverifiedOk = new Set([
+    "GET /auth/me",
+    "POST /auth/logout",
+    "POST /auth/verify-email",
+    "POST /auth/verify-email/resend",
+    "GET /users/me",
+    "PATCH /users/me",
+    "DELETE /users/me",
+  ]);
+  router.use(async (req, res, next) => {
+    const { userId } = actor(res);
+    if (userId !== null && !unverifiedOk.has(`${req.method} ${req.path}`)) {
+      const user = await ctx.db.user.findUnique({
+        where: { id: userId },
+        select: { emailVerifiedAt: true },
+      });
+      if (!user?.emailVerifiedAt)
+        throw new ApiError(403, "Verify your email address first");
+    }
     next();
   });
 
@@ -389,19 +425,20 @@ export function createRouter(
       )
     )
       throw new ApiError(400, "Provide email, username or password to update");
-    res.json(
-      await updateProfile(ctx, actor(res), {
-        email: input.email === undefined ? undefined : email(input.email),
-        username:
-          input.username === undefined ? undefined : username(input.username),
-        password:
-          input.password === undefined ? undefined : password(input.password),
-        currentPassword:
-          input.currentPassword === undefined
-            ? undefined
-            : currentPassword(input.currentPassword),
-      }),
-    );
+    const updated = await updateProfile(ctx, actor(res), {
+      email: input.email === undefined ? undefined : email(input.email),
+      username:
+        input.username === undefined ? undefined : username(input.username),
+      password:
+        input.password === undefined ? undefined : password(input.password),
+      currentPassword:
+        input.currentPassword === undefined
+          ? undefined
+          : currentPassword(input.currentPassword),
+    });
+    // A new address starts unverified; mail it a code right away.
+    if (!updated.emailVerifiedAt) await sendVerificationCode(ctx, updated.id);
+    res.json(updated);
   });
 
   router.delete("/users/me", async (req, res) => {
@@ -527,6 +564,66 @@ export function createRouter(
       actor(res),
       uuid(req.params.roomId),
       uuid(req.params.memberId),
+    );
+    res.sendStatus(204);
+  });
+
+  router.post("/rooms/:roomId/members/:memberId/ban", async (req, res) => {
+    const { reason } = (req.body ?? {}) as Record<string, unknown>;
+    await removeMember(
+      ctx,
+      actor(res),
+      uuid(req.params.roomId),
+      uuid(req.params.memberId),
+      { reason: reason === undefined ? null : text(reason, "reason", 200) },
+    );
+    res.sendStatus(204);
+  });
+
+  router.get("/rooms/:roomId/bans", async (req, res) => {
+    res.json(await listBans(ctx, actor(res), uuid(req.params.roomId)));
+  });
+
+  router.delete("/rooms/:roomId/bans/:userId", async (req, res) => {
+    await unban(
+      ctx,
+      actor(res),
+      uuid(req.params.roomId),
+      integer(Number(req.params.userId), "userId", 1, 2147483647),
+    );
+    res.sendStatus(204);
+  });
+
+  router.post("/rooms/:roomId/members/:memberId/mute", async (req, res) => {
+    res.json(
+      await muteMember(
+        ctx,
+        actor(res),
+        uuid(req.params.roomId),
+        uuid(req.params.memberId),
+        integer(body(req).minutes, "minutes", 1, 10080),
+      ),
+    );
+  });
+
+  router.delete("/rooms/:roomId/members/:memberId/mute", async (req, res) => {
+    res.json(
+      await muteMember(
+        ctx,
+        actor(res),
+        uuid(req.params.roomId),
+        uuid(req.params.memberId),
+        null,
+      ),
+    );
+  });
+
+  router.delete("/rooms/:roomId/messages/:messageId", async (req, res) => {
+    await deleteMessage(
+      ctx,
+      actor(res),
+      uuid(req.params.roomId),
+      integer(Number(req.params.messageId), "messageId", 1, 2147483647),
     );
     res.sendStatus(204);
   });

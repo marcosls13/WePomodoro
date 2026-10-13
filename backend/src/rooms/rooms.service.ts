@@ -43,6 +43,7 @@ async function roomView(tx: Transaction, roomId: string, now: Date) {
       guestSessionId: true,
       joinedAt: true,
       invitedById: true,
+      mutedUntil: true,
       user: { select: { username: true } },
       guestSession: { select: { displayName: true } },
     },
@@ -56,6 +57,7 @@ async function roomView(tx: Transaction, roomId: string, now: Date) {
     ...room,
     members: members.map(({ user, guestSession, ...member }) => ({
       ...member,
+      isGuest: member.userId === null,
       displayName: user?.username ?? guestSession?.displayName,
     })),
     timer: current ? timerView(current, now) : null,
@@ -187,6 +189,13 @@ export async function addMember(
     where: { roomId, ...identity(actor) },
   });
   if (member) return;
+  if (
+    actor.userId !== null &&
+    (await tx.roomBan.findUnique({
+      where: { roomId_userId: { roomId, userId: actor.userId } },
+    }))
+  )
+    throw new ApiError(403, "You are banned from this room");
   await tx.roomMember.create({
     data: { roomId, ...identity(actor), joinedAt: now, invitedById },
   });
@@ -272,11 +281,13 @@ export async function manageRoom(
   });
 }
 
+/** Owner kicks a member; with `ban`, a registered user also can't come back. */
 export async function removeMember(
   ctx: Context,
   actor: Actor,
   roomId: string,
   memberId: string,
+  ban?: { reason: string | null },
 ) {
   return transaction(ctx, async (tx) => {
     const room = await lockRoom(tx, roomId);
@@ -295,9 +306,85 @@ export async function removeMember(
     if (session)
       await leaveTimer(tx, member, await settle(tx, session, now), now);
     await tx.roomMember.delete({ where: { id: memberId } });
-    if (member.userId)
+    if (member.userId) {
       await tx.invite.deleteMany({
         where: { roomId, createdById: member.userId },
       });
+      if (ban)
+        await tx.roomBan.upsert({
+          where: { roomId_userId: { roomId, userId: member.userId } },
+          create: {
+            roomId,
+            userId: member.userId,
+            reason: ban.reason,
+            createdAt: now,
+          },
+          update: { reason: ban.reason },
+        });
+    }
+  });
+}
+
+async function ownedRoom(tx: Transaction, actor: Actor, roomId: string) {
+  const room = await lockRoom(tx, roomId);
+  if (room.ownerId !== actor.userId)
+    throw new ApiError(403, "Only the owner can moderate the room");
+  return room;
+}
+
+export async function listBans(ctx: Context, actor: Actor, roomId: string) {
+  return transaction(ctx, async (tx) => {
+    await ownedRoom(tx, actor, roomId);
+    const bans = await tx.roomBan.findMany({
+      where: { roomId },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+      include: { user: { select: { username: true } } },
+    });
+    return bans.map(({ user, ...ban }) => ({
+      ...ban,
+      username: user.username,
+    }));
+  });
+}
+
+export async function unban(
+  ctx: Context,
+  actor: Actor,
+  roomId: string,
+  userId: number,
+) {
+  return transaction(ctx, async (tx) => {
+    await ownedRoom(tx, actor, roomId);
+    const { count } = await tx.roomBan.deleteMany({
+      where: { roomId, userId },
+    });
+    if (!count) throw new ApiError(404, "Ban not found");
+  });
+}
+
+/** Owner mutes a member for `minutes`, or unmutes with `null`. */
+export async function muteMember(
+  ctx: Context,
+  actor: Actor,
+  roomId: string,
+  memberId: string,
+  minutes: number | null,
+) {
+  return transaction(ctx, async (tx) => {
+    const room = await ownedRoom(tx, actor, roomId);
+    const member = await tx.roomMember.findFirst({
+      where: { id: memberId, roomId },
+    });
+    if (!member) throw new ApiError(404, "Member not found");
+    if (member.userId === room.ownerId)
+      throw new ApiError(409, "The owner cannot be muted");
+    const mutedUntil =
+      minutes === null ? null : new Date(ctx.now().getTime() + minutes * 60000);
+    await tx.roomMember.update({
+      where: { id: memberId },
+      data: { mutedUntil },
+    });
+    return { mutedUntil };
   });
 }

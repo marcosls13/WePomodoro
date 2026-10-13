@@ -85,7 +85,7 @@ export async function verifyEmail(ctx: Context, userId: number, code: string) {
     if (spent.count !== 1) throw invalidCode();
     await tx.user.update({
       where: { id: userId },
-      data: { emailVerifiedAt: now },
+      data: { emailVerifiedAt: now, verifyBy: null },
     });
     return true;
   });

@@ -108,7 +108,8 @@ Input rules:
 - Passwords: 8–128 characters; never trimmed. `currentPassword` and the password
   sent to `DELETE /api/users/me` are only checked for being a string of at most
   128 characters, so accounts with older, shorter passwords can still verify.
-- Guest names: 1–32 characters after trimming.
+- Guest names: 1–32 characters after trimming. A name equal to a registered
+  username (case-insensitive) is refused with 409, so a guest can't pose as that user.
 
 ---
 
@@ -127,7 +128,7 @@ guest; **Registered** = registered user; **Member** = room member;
 
 | Method | Endpoint                           | Access        | JSON body                                                                | Response                                                                                                                |
 | ------ | ---------------------------------- | ------------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
-| GET    | `/api/health`                      | Public        | None                                                                     | 200 `{ status: "ok" }`; database connectivity only                                                                      |
+| GET    | `/api/health`                      | Public        | None                                                                     | 200 `{ status: "ok" }`; 503 if the database is unreachable or a committed migration isn't applied                       |
 | POST   | `/api/auth/signup`                 | Public        | `{ "email", "username", "password" }`                                    | 201 `{ token, expiresAt, user }`                                                                                        |
 | POST   | `/api/users`                       | Public        | Same signup body                                                         | 201: alias of signup with the same response                                                                             |
 | POST   | `/api/auth/login`                  | Public        | `{ "username", "password" }`                                             | 200 `{ token, expiresAt, user }`; with two-factor on: `{ twoFactorRequired, challengeToken, expiresAt }` and no session |
@@ -168,7 +169,9 @@ codes require the account password; failed attempts on them are limited to 8 per
 changing the key makes every stored secret unreadable. Password reset ends all
 sessions but leaves two-factor on.
 
-The health check verifies connectivity, not whether all migrations are applied.
+The health check compares the `prisma/migrations` folders with the database's
+`_prisma_migrations` table, so a forgotten `db:deploy` shows up as 503. If the
+folder isn't shipped with the build the comparison is skipped.
 Authentication runs before protected routing, so unknown paths without a valid
 token may return 401 before 404.
 
@@ -177,9 +180,17 @@ token may return 401 before 404.
 Signup creates the account, returns the session token as before, and emails a
 six-digit code (valid 30 minutes, newest only, 5 wrong guesses kill it). The
 frontend then asks for it and calls `POST /api/auth/verify-email`. Verification
-is **not enforced anywhere yet**: unverified accounts can still use the API.
-Changing the email through `PATCH /api/users/me` clears `emailVerifiedAt`, and
-`/auth/me` and the profile endpoints now include `emailVerifiedAt`.
+is **enforced**: until `emailVerifiedAt` is set, a registered account's token only
+works on `GET /auth/me`, `POST /auth/logout`, `POST /auth/verify-email`,
+`POST /auth/verify-email/resend`, and `GET`/`PATCH`/`DELETE /users/me` (so a
+mistyped address can be fixed or the account deleted). Everything else answers
+403 `Verify your email address first`. Guests have no email and are not affected.
+Changing the email through `PATCH /api/users/me` clears `emailVerifiedAt`, emails
+a code to the new address and puts the account back in this state. A signup that
+isn't verified within 30 minutes (`User.verifyBy`) is deleted by the minute-by-minute
+cleanup, so nobody can hold an address or username they don't own. Accounts that
+only changed their email, and older accounts, have no deadline and are kept.
+`/auth/me` and the profile endpoints include `emailVerifiedAt`.
 
 ### Password recovery flow
 
@@ -206,7 +217,8 @@ settings. At startup it checks the SMTP login and logs `Email ready: sending as
 …` or the error. Gmail needs 2-Step Verification and an
 [App Password](https://myaccount.google.com/apppasswords); it caps ordinary
 accounts at roughly 500 messages a day. Note that lookup is by the stored email, which new signups
-lowercase; older mixed-case emails may not match.
+lowercase; a migration lowercased older mixed-case emails (skipping any that
+would collide with another account).
 
 ### 3.2 Users and statistics
 
@@ -288,21 +300,27 @@ Only registered users create and own rooms; guests join with a code. Room detail
 and member lists are visible only to members; each registered member fetches
 their own invite code. The room listing contains only the caller's open rooms.
 
-| Method | Endpoint                               | Access        | JSON body                           | Response                                          |
-| ------ | -------------------------------------- | ------------- | ----------------------------------- | ------------------------------------------------- |
-| POST   | `/api/rooms`                           | Registered    | `{ "name" }` plus optional settings | 201 room with members and current timer           |
-| GET    | `/api/rooms`                           | Authenticated | None                                | 200 caller's active open rooms, up to 100         |
-| POST   | `/api/rooms/join`                      | Authenticated | `{ "inviteCode" }`                  | 200 joined room; no-op if already a member        |
-| GET    | `/api/rooms/:roomId`                   | Member        | None                                | 200 room, safe member names, current timer        |
-| PATCH  | `/api/rooms/:roomId`                   | Owner         | At least one setting                | 200 updated room                                  |
-| POST   | `/api/rooms/:roomId/leave`             | Member        | None                                | 204: leave the server; a code is needed to return |
-| POST   | `/api/rooms/:roomId/close`             | Owner         | None                                | 200 closed room; live timer cancelled             |
-| POST   | `/api/rooms/:roomId/invite-code`       | Member (user) | None, or `{ "rotate": true }`       | 200 `{ inviteCode }`: your own code               |
-| GET    | `/api/rooms/:roomId/messages`          | Member        | `?after=<id>&limit=50`              | 200 chat messages, oldest first                   |
-| POST   | `/api/rooms/:roomId/messages`          | Member        | `{ "content" }` (≤ 2000 chars)      | 201 message; 10 per 10 s per sender               |
-| POST   | `/api/rooms/:roomId/owner`             | Owner         | `{ "userId": 2 }`                   | 200 room with transferred ownership               |
-| DELETE | `/api/rooms/:roomId/members/:memberId` | Owner         | None                                | 204: kick; a code is needed to return             |
-| POST   | `/api/rooms/:roomId/timers`            | Owner         | None                                | 201 next shared timer                             |
+| Method | Endpoint                                    | Access          | JSON body                           | Response                                                |
+| ------ | ------------------------------------------- | --------------- | ----------------------------------- | ------------------------------------------------------- |
+| POST   | `/api/rooms`                                | Registered      | `{ "name" }` plus optional settings | 201 room with members and current timer                 |
+| GET    | `/api/rooms`                                | Authenticated   | None                                | 200 caller's active open rooms, up to 100               |
+| POST   | `/api/rooms/join`                           | Authenticated   | `{ "inviteCode" }`                  | 200 joined room; no-op if already a member              |
+| GET    | `/api/rooms/:roomId`                        | Member          | None                                | 200 room, safe member names, current timer              |
+| PATCH  | `/api/rooms/:roomId`                        | Owner           | At least one setting                | 200 updated room                                        |
+| POST   | `/api/rooms/:roomId/leave`                  | Member          | None                                | 204: leave the server; a code is needed to return       |
+| POST   | `/api/rooms/:roomId/close`                  | Owner           | None                                | 200 closed room; live timer cancelled                   |
+| POST   | `/api/rooms/:roomId/invite-code`            | Member (user)   | None, or `{ "rotate": true }`       | 200 `{ inviteCode }`: your own code                     |
+| GET    | `/api/rooms/:roomId/messages`               | Member          | `?after=<id>&limit=50`              | 200 chat messages, oldest first                         |
+| POST   | `/api/rooms/:roomId/messages`               | Member          | `{ "content" }` (≤ 2000 chars)      | 201 message; 10 per 10 s per sender                     |
+| POST   | `/api/rooms/:roomId/owner`                  | Owner           | `{ "userId": 2 }`                   | 200 room with transferred ownership                     |
+| DELETE | `/api/rooms/:roomId/members/:memberId`      | Owner           | None                                | 204: kick; a code is needed to return                   |
+| POST   | `/api/rooms/:roomId/members/:memberId/ban`  | Owner           | Optional `{ "reason" }`             | 204: kick and ban a registered user (guests: kick only) |
+| GET    | `/api/rooms/:roomId/bans`                   | Owner           | None                                | 200 `[{ userId, username, reason, createdAt }]`         |
+| DELETE | `/api/rooms/:roomId/bans/:userId`           | Owner           | None                                | 204: lift the ban; 404 if not banned                    |
+| POST   | `/api/rooms/:roomId/members/:memberId/mute` | Owner           | `{ "minutes": 1–10080 }`            | 200 `{ mutedUntil }`; can read chat, not post           |
+| DELETE | `/api/rooms/:roomId/members/:memberId/mute` | Owner           | None                                | 200 `{ mutedUntil: null }`                              |
+| DELETE | `/api/rooms/:roomId/messages/:messageId`    | Author or owner | None                                | 204: delete a chat message                              |
+| POST   | `/api/rooms/:roomId/timers`                 | Owner           | None                                | 201 next shared timer                                   |
 
 Room settings (creation and update):
 
@@ -428,6 +446,7 @@ Eighteen PostgreSQL tables. `TwoFactor`, `RecoveryCode` and `LoginChallenge` bac
 | `AuthSession`        | A registered user's login, identified by a hashed token with an expiry | Belongs to one user                                                          |
 | `GuestSession`       | Temporary guest identity, display name, hashed token and expiry        | Can join rooms and study sessions; cannot own rooms or save game results     |
 | `StudyRoom`          | Shared space with Pomodoro settings                                    | Owned by a registered user; has memberships and timer sessions               |
+| `RoomBan`            | Registered users banned from a room by its owner                       | One room and one user; checked when someone is added as a member             |
 | `RoomMember`         | Who belongs to a room until they leave or are kicked                   | One room and exactly one user OR guest; optional inviter                     |
 | `Invite`             | A member's personal join code for a room                               | One room and one registered user                                             |
 | `PomodoroSession`    | One focus or break interval, solo or shared                            | Optional room; has participant records                                       |
@@ -516,15 +535,16 @@ someone can belong to a room while running a solo timer.
 
 A permanent registered account. Guests have no `User` row.
 
-| Field             | Type        | Default / rule             | Meaning                                                   |
-| ----------------- | ----------- | -------------------------- | --------------------------------------------------------- |
-| `id`              | `Int`       | Primary key; autoincrement | Stable registered-user identity                           |
-| `email`           | `String`    | Unique; required           | Contact address; API trims/lowercases new values          |
-| `username`        | `String`    | Unique; required           | Public name; API lowercases new values                    |
-| `passwordHash`    | `String?`   | Null if omitted            | Salted scrypt hash; never a plain password                |
-| `emailVerifiedAt` | `DateTime?` | Null until verified        | When the owner proved control of `email`; clear on change |
-| `createdAt`       | `DateTime`  | `now()`                    | Account creation time                                     |
-| `updatedAt`       | `DateTime`  | `@updatedAt`               | Last account modification                                 |
+| Field             | Type        | Default / rule             | Meaning                                                         |
+| ----------------- | ----------- | -------------------------- | --------------------------------------------------------------- |
+| `id`              | `Int`       | Primary key; autoincrement | Stable registered-user identity                                 |
+| `email`           | `String`    | Unique; required           | Contact address; API trims/lowercases new values                |
+| `username`        | `String`    | Unique; required           | Public name; API lowercases new values                          |
+| `passwordHash`    | `String?`   | Null if omitted            | Salted scrypt hash; never a plain password                      |
+| `emailVerifiedAt` | `DateTime?` | Null until verified        | When the owner proved control of `email`; clear on change       |
+| `verifyBy`        | `DateTime?` | Set at signup (+30 min)    | Unverified past this, the account is deleted; cleared on verify |
+| `createdAt`       | `DateTime`  | `now()`                    | Account creation time                                           |
+| `updatedAt`       | `DateTime`  | `@updatedAt`               | Last account modification                                       |
 
 Relations: `authSessions`, `ownedRooms`, `memberships`, `studyHistory`,
 `gameResults`. A null hash preserves pre-existing profiles and never grants
@@ -593,6 +613,7 @@ Prefer closing over deleting a room to keep its history and name.
 | `guestSessionId` | UUID `String?` | Foreign key → `GuestSession.id`       | Guest member, if applicable                                                             |
 | `joinedAt`       | `DateTime`     | `now()`                               | First membership creation time                                                          |
 | `invitedById`    | `Int?`         | Foreign key → `User.id`, set null     | Who let them in (code owner or the friend who accepted a request); null for the creator |
+| `mutedUntil`     | `DateTime?`    | Null                                  | While in the future, sending chat messages is refused (403)                             |
 
 Unique pairs `(roomId, userId)` and `(roomId, guestSessionId)`; PostgreSQL permits
 nulls in those pairs, so the exactly-one-identity CHECK closes the both-empty
@@ -704,6 +725,11 @@ and challenges are removed by `cleanupExpiredSessions`.
 (nonblank), `createdAt`. Unique `(roomId, createdById)`: one code per member per
 room. Leaving or being kicked deletes the member's invite.
 
+`RoomBan`: primary key `(roomId, userId)` (both cascade), `reason?`, `createdAt`.
+`addMember` refuses a banned user, so neither a code nor an accepted join request
+works; the owner lifts it with `DELETE /rooms/:roomId/bans/:userId`. Only
+registered users are banned, since a guest can just create a new identity.
+
 `Friendship`: `requesterId` → `addresseeId`, `status` `PENDING`/`ACCEPTED`,
 `createdAt`, `respondedAt`. Both users cascade. SQL rejects a friendship with
 yourself and a second row for the same pair in either direction. Declining,
@@ -711,7 +737,8 @@ cancelling and unfriending delete the row.
 
 `Message`: integer `id` (the polling cursor), `roomId` (cascade), `userId?` /
 `guestSessionId?` (set null when the author goes), `authorName` snapshot,
-`content` (1–2000 chars, not blank), `createdAt`.
+`isGuest` (snapshot, so the badge survives the guest expiring), `content`
+(1–2000 chars, not blank), `createdAt`.
 
 `Presence`: one row per user (`userId`, `roomId?`, `seenAt`). A `seenAt` older than
 60 s means offline; the room is set null if the room is deleted.
@@ -853,6 +880,9 @@ in future migrations. `prisma db push` is not a substitute.
 | `20261009130000_servers_friends_chat`   | Drops `RoomMember.leftAt` (deleting rows that had left); `Friendship`, `Message` with CHECKs    |
 | `20261009140000_presence_join_requests` | `Presence`, `JoinRequest` with CHECK                                                            |
 | `20261009150000_member_invited_by`      | `RoomMember.invitedById`                                                                        |
+| `20261013120000_moderation`             | `RoomMember.mutedUntil`; `RoomBan`                                                              |
+| `20261013120100_lowercase_emails`       | Lowercases old mixed-case emails unless that would collide with another account                 |
+| `20261013130000_signup_verify_deadline` | `User.verifyBy`                                                                                 |
 
 The study-platform migration preserves existing profiles and never drops user
 data. The timer-accounting migration keeps original start times and gives

@@ -43,6 +43,10 @@ model User {
   // Set when the owner proves they control `email`; clear it whenever the
   // email changes. Null means unverified (all pre-existing accounts).
   emailVerifiedAt DateTime?
+  // Set at signup; the account is deleted if the email isn't verified by then, so
+  // nobody can hold someone else's address. Null for older accounts and cleared
+  // on verification. An email change does not set it.
+  verifyBy        DateTime?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
@@ -52,6 +56,7 @@ model User {
   recoveryCodes   RecoveryCode[]
   loginChallenges LoginChallenge[]
   ownedRooms      StudyRoom[]
+  roomBans        RoomBan[]
   invites         Invite[]
   friendRequests  Friendship[]         @relation("FriendshipRequester")
   friendInvites   Friendship[]         @relation("FriendshipAddressee")
@@ -179,6 +184,7 @@ model StudyRoom {
   messages              Message[]
   presence              Presence[]
   joinRequests          JoinRequest[]
+  bans                  RoomBan[]
   sessions              PomodoroSession[]
 
   @@index([ownerId])
@@ -209,6 +215,8 @@ model RoomMember {
   // Who let this person in: the owner of the code used, or the friend who
   // accepted a join request. Null for the room creator; cleared if that user is deleted.
   invitedById    Int?
+  // While in the future the member can read the chat but not post.
+  mutedUntil     DateTime?
   invitedBy      User?         @relation("MemberInvitedBy", fields: [invitedById], references: [id], onDelete: SetNull)
   room           StudyRoom     @relation(fields: [roomId], references: [id], onDelete: Cascade)
   user           User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -221,6 +229,21 @@ model RoomMember {
   @@unique([roomId, guestSessionId])
   @@index([userId])
   @@index([guestSessionId])
+}
+
+// Registered users the owner has banned from a room. addMember refuses them, so
+// neither a code nor an accepted join request lets them back in. Guests can only
+// be kicked: a new guest identity is free.
+model RoomBan {
+  roomId    String    @db.Uuid
+  userId    Int
+  reason    String?
+  createdAt DateTime  @default(now())
+  room      StudyRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([roomId, userId])
+  @@index([userId])
 }
 
 // A friend request from requester to addressee; ACCEPTED makes it mutual. A
@@ -248,6 +271,8 @@ model Message {
   userId         Int?
   guestSessionId String?       @db.Uuid
   authorName     String
+  // Snapshot, like authorName: still known after the guest identity expires.
+  isGuest        Boolean       @default(false)
   content        String
   createdAt      DateTime      @default(now())
   room           StudyRoom     @relation(fields: [roomId], references: [id], onDelete: Cascade)

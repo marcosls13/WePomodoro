@@ -11,6 +11,9 @@ import {
 } from "../api/common.js";
 import { startChallenge } from "./twofactor.service.js";
 
+// Matches the lifetime of the emailed code.
+const VERIFY_WINDOW_MS = 30 * 60_000;
+
 export function password(value: unknown): string {
   if (typeof value !== "string" || value.length < 8 || value.length > 128)
     throw new ApiError(400, "Password must be 8–128 characters");
@@ -68,6 +71,7 @@ export async function signup(
         email: input.email,
         username: input.username,
         passwordHash: hash,
+        verifyBy: new Date(now.getTime() + VERIFY_WINDOW_MS),
       },
       select: profileSelect,
     });
@@ -118,6 +122,13 @@ export async function login(ctx: Context, address: string, value: string) {
 }
 
 export async function createGuest(ctx: Context, displayName: string) {
+  // A guest must not pose as a registered user in chat or member lists.
+  if (
+    await ctx.db.user.findUnique({
+      where: { username: displayName.toLowerCase() },
+    })
+  )
+    throw new ApiError(409, "That name belongs to a registered user");
   const bearer = token();
   const now = ctx.now();
   const expiresAt = new Date(now.getTime() + 86400000);

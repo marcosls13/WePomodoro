@@ -94,6 +94,10 @@ export async function cleanupExpiredSessions(ctx: Context) {
   await ctx.db.joinRequest.deleteMany({
     where: { createdAt: { lte: new Date(ctx.now().getTime() - 86_400_000) } },
   });
+  // Signups that never proved their email free the address for its real owner.
+  await ctx.db.user.deleteMany({
+    where: { emailVerifiedAt: null, verifyBy: { lte: ctx.now() } },
+  });
   await ctx.db.emailToken.deleteMany({
     where: { expiresAt: { lte: ctx.now() } },
   });

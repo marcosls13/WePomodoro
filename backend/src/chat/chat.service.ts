@@ -1,4 +1,5 @@
 import {
+  ApiError,
   identity,
   transaction,
   type Actor,
@@ -39,6 +40,8 @@ export async function sendMessage(
 ) {
   return transaction(ctx, async (tx) => {
     const member = await activeMember(tx, actor, roomId);
+    if (member.mutedUntil && member.mutedUntil > ctx.now())
+      throw new ApiError(403, "You are muted in this room");
     const author = member.userId
       ? (await tx.user.findUniqueOrThrow({ where: { id: member.userId } }))
           .username
@@ -52,9 +55,34 @@ export async function sendMessage(
         roomId,
         ...identity(actor),
         authorName: author,
+        isGuest: actor.userId === null,
         content,
         createdAt: ctx.now(),
       },
     });
+  });
+}
+
+/** The author or the room owner can delete a message. */
+export async function deleteMessage(
+  ctx: Context,
+  actor: Actor,
+  roomId: string,
+  messageId: number,
+) {
+  return transaction(ctx, async (tx) => {
+    await activeMember(tx, actor, roomId);
+    const message = await tx.message.findFirst({
+      where: { id: messageId, roomId },
+      include: { room: { select: { ownerId: true } } },
+    });
+    if (!message) throw new ApiError(404, "Message not found");
+    const mine =
+      (actor.userId !== null && message.userId === actor.userId) ||
+      (actor.guestSessionId !== null &&
+        message.guestSessionId === actor.guestSessionId);
+    if (!mine && message.room.ownerId !== actor.userId)
+      throw new ApiError(403, "Only the author or the owner can delete it");
+    await tx.message.delete({ where: { id: messageId } });
   });
 }

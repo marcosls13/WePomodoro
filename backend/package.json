@@ -11,7 +11,8 @@
     "format:check": "prettier --check ."
   },
   "dependencies": {
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "socket.io": "^4.8.4"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

@@ -1,10 +1,8 @@
-import { useState, useEffect } from "react";
-
 // const FOCUS_SEC = 50 * 60;
 // const BREAK_SEC = 10 * 60;
-const FOCUS_SEC = 5;
-const BREAK_SEC = 2;
-const CYCLE_SEC = FOCUS_SEC + BREAK_SEC;
+const FOCUS_SEC = 7;
+const BREAK_SEC = 5;
+export const CYCLE_SEC = FOCUS_SEC + BREAK_SEC;
 
 type Mode = "waiting" | "focus" | "break";
 const MODE_BG: Record<Mode, string> = {
@@ -24,27 +22,23 @@ function formatTime(totalSeconds: number): string {
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
-function getMode(elapsed: number, position: number): Mode {
+export function getMode(elapsed: number, position: number): Mode {
   if (elapsed === 0) return "waiting";
   if (position < FOCUS_SEC) return "focus";
   return "break";
 }
 
-export default function Timer() {
-  const [elapsed, setElapsed] = useState(0);
-  const [running, setRunning] = useState(false);
+export default function Timer({
+  elapsed,
+  running,
+  onBegin,
+}: {
+  elapsed: number;
+  running: boolean;
+  onBegin: () => void;
+}) {
   const position = elapsed % CYCLE_SEC;
   const mode = getMode(elapsed, position);
-
-  useEffect(() => {
-    if (!running) return;
-    const id = setInterval(() => {
-      setElapsed((e) => e + 1);
-    }, 1000);
-    return () => {
-      clearInterval(id);
-    };
-  }, [running]);
 
   return (
     <div
@@ -55,9 +49,7 @@ export default function Timer() {
       </h1>
       <button
         className={`${running ? "opacity-0 pointer-events-none" : ""} transition-opacity duration-500 rounded-lg border px-4 py-2 bg-gray-200`}
-        onClick={() => {
-          setRunning(true);
-        }}
+        onClick={onBegin}
       >
         Begin
       </button>

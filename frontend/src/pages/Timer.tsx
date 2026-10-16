@@ -8,7 +8,7 @@ const CYCLE_SEC = FOCUS_SEC + BREAK_SEC;
 
 type Mode = "waiting" | "focus" | "break";
 const MODE_BG: Record<Mode, string> = {
-  waiting: "bg-gray-200",
+  waiting: "bg-gray-100",
   focus: "bg-red-200",
   break: "bg-green-200",
 };
@@ -47,20 +47,20 @@ export default function Timer() {
   }, [running]);
 
   return (
-    <main
-      className={`flex flex-col min-h-screen items-center justify-center text-5xl gap-32 transition-colors duration-500 ${MODE_BG[mode]}`}
+    <div
+      className={`max-h-70 flex flex-col items-center justify-center text-5xl gap-16 transition-colors duration-500 ${MODE_BG[mode]}`}
     >
-      <h1 className="text-9xl">
+      <h1 className="text-8xl">
         {formatTime(calculateRemainingTime(position))}
       </h1>
       <button
-        className={`${running ? "opacity-0 pointer-events-none" : ""} transition-opacity duration-500 w-48 shrink-0 rounded-lg border px-4 py-2 bg-gray-200`}
+        className={`${running ? "opacity-0 pointer-events-none" : ""} transition-opacity duration-500 rounded-lg border px-4 py-2 bg-gray-200`}
         onClick={() => {
           setRunning(true);
         }}
       >
         Begin
       </button>
-    </main>
+    </div>
   );
 }

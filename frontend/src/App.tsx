@@ -5,6 +5,7 @@ import NotFound from "./pages/NotFound";
 import SignUp from "./pages/SignUp";
 import Timer from "./pages/Timer";
 import Chat from "./pages/Chat";
+import Room from "./pages/Room";
 
 function App() {
   return (
@@ -14,6 +15,7 @@ function App() {
       <Route path="/signup" element={<SignUp />} />
       <Route path="/timer" element={<Timer />} />
       <Route path="/chat" element={<Chat />} />
+      <Route path="/room" element={<Room />} />
       <Route path="*" element={<NotFound />} />
     </Routes>
   );

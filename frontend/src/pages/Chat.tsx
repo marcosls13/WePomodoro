@@ -19,7 +19,7 @@ export default function Chat() {
     };
   }, []);
   return (
-    <main className="flex flex-col h-screen max-w-2xl mx-auto bg-gray-100">
+    <div className="flex flex-col max-w-2xl mx-auto bg-gray-100">
       <ul className="flex-1 overflow-y-auto flex flex-col gap-2 p-4">
         {messages.map((msg) => (
           <li
@@ -51,6 +51,6 @@ export default function Chat() {
           Send
         </button>
       </form>
-    </main>
+    </div>
   );
 }

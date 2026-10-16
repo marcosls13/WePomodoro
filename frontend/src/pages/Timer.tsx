@@ -8,9 +8,9 @@ const CYCLE_SEC = FOCUS_SEC + BREAK_SEC;
 
 type Mode = "waiting" | "focus" | "break";
 const MODE_BG: Record<Mode, string> = {
-  waiting: "bg-gray-100",
-  focus: "bg-red-200",
-  break: "bg-green-200",
+  waiting: "bg-yellow-500",
+  focus: "bg-red-500",
+  break: "bg-green-500",
 };
 
 function calculateRemainingTime(position: number): number {
@@ -48,9 +48,9 @@ export default function Timer() {
 
   return (
     <div
-      className={`max-h-70 flex flex-col items-center justify-center text-5xl gap-16 transition-colors duration-500 ${MODE_BG[mode]}`}
+      className={`flex flex-col items-center justify-center text-2xl gap-16 transition-colors duration-500 ${MODE_BG[mode]} flex-1 rounded-2xl`}
     >
-      <h1 className="text-8xl">
+      <h1 className="text-6xl md:text-8xl">
         {formatTime(calculateRemainingTime(position))}
       </h1>
       <button

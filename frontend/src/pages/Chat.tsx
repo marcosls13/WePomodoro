@@ -19,7 +19,7 @@ export default function Chat() {
     };
   }, []);
   return (
-    <div className="flex flex-col max-w-2xl mx-auto bg-gray-100">
+    <div className="flex flex-col bg-blue-500 flex-1 rounded-2xl min-h-0">
       <ul className="flex-1 overflow-y-auto flex flex-col gap-2 p-4">
         {messages.map((msg) => (
           <li
@@ -41,13 +41,13 @@ export default function Chat() {
         }}
       >
         <input
-          className="flex-1 rounded-lg border px-3 py-2"
+          className="flex-1 rounded-lg border px-3 py-2 bg-white"
           value={text}
           onChange={(e) => {
             setText(e.target.value);
           }}
         />
-        <button type="submit" className="border rounded-lg px-3 py-2">
+        <button type="submit" className="border rounded-lg px-3 py-2 bg-white">
           Send
         </button>
       </form>

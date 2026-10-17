@@ -41,13 +41,16 @@ export default function Chat() {
         }}
       >
         <input
-          className="flex-1 rounded-lg border px-3 py-2 bg-white"
+          className="flex-1 rounded-lg border px-3 py-2 bg-white hover:bg-gray-300"
           value={text}
           onChange={(e) => {
             setText(e.target.value);
           }}
         />
-        <button type="submit" className="border rounded-lg px-3 py-2 bg-white">
+        <button
+          type="submit"
+          className="border rounded-lg px-3 py-2 bg-white hover:bg-gray-300"
+        >
           Send
         </button>
       </form>

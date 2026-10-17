@@ -13,9 +13,9 @@ export default function Chat() {
     function onMessage(msg: ChatMessage) {
       setMessages((prev) => [...prev, msg]);
     }
-    socket.on("chat message", onMessage);
+    socket.on("chat:message", onMessage);
     return () => {
-      socket.off("chat message", onMessage);
+      socket.off("chat:message", onMessage);
     };
   }, []);
   return (
@@ -36,7 +36,7 @@ export default function Chat() {
           e.preventDefault();
           const trimmed = text.trim();
           if (!trimmed) return;
-          socket.emit("chat message", trimmed);
+          socket.emit("chat:message", trimmed);
           setText("");
         }}
       >

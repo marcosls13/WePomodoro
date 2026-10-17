@@ -1,32 +1,16 @@
-// const FOCUS_SEC = 50 * 60;
-// const BREAK_SEC = 10 * 60;
-const FOCUS_SEC = 7;
-const BREAK_SEC = 5;
-export const CYCLE_SEC = FOCUS_SEC + BREAK_SEC;
+import {
+  CYCLE_SEC,
+  type Mode,
+  calculateRemainingTime,
+  formatTime,
+  getMode,
+} from "../lib/timer";
 
-type Mode = "waiting" | "focus" | "break";
 const MODE_BG: Record<Mode, string> = {
   waiting: "bg-yellow-500",
   focus: "bg-red-500",
   break: "bg-green-500",
 };
-
-function calculateRemainingTime(position: number): number {
-  if (position < FOCUS_SEC) return FOCUS_SEC - position;
-  else return CYCLE_SEC - position;
-}
-
-function formatTime(totalSeconds: number): string {
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-}
-
-export function getMode(elapsed: number, position: number): Mode {
-  if (elapsed === 0) return "waiting";
-  if (position < FOCUS_SEC) return "focus";
-  return "break";
-}
 
 export default function Timer({
   elapsed,

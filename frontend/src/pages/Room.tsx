@@ -1,6 +1,7 @@
 import Chat from "./Chat";
 import { useState, useEffect } from "react";
-import Timer, { CYCLE_SEC, getMode } from "./Timer";
+import Timer from "./Timer";
+import { CYCLE_SEC, getMode } from "../lib/timer";
 
 export default function Room() {
   const [elapsed, setElapsed] = useState(0);

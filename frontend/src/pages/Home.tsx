@@ -7,8 +7,8 @@ export default function Home() {
       <Link to="/about" className="text-blue-600 underline hover:text-blue-800">
         About
       </Link>
-      <Link to="/timer" className="text-blue-600 underline hover:text-blue-800">
-        Timer
+      <Link to="/room" className="text-blue-600 underline hover:text-blue-800">
+        Room
       </Link>
     </main>
   );

@@ -32,7 +32,7 @@ export default function Timer({
         {formatTime(calculateRemainingTime(position))}
       </h1>
       <button
-        className={`${running ? "opacity-0 pointer-events-none" : ""} transition-opacity duration-500 rounded-lg border px-4 py-2 bg-gray-200`}
+        className={`${running ? "opacity-0 pointer-events-none" : ""} transition-opacity duration-500 rounded-lg border px-4 py-2 bg-gray-200 hover:bg-gray-300`}
         onClick={onBegin}
       >
         Begin

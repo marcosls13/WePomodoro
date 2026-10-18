@@ -4,10 +4,11 @@ import { roomsRouter } from "./rooms/roomsRouter.js";
 import { createServer } from "node:http";
 import { Server } from "socket.io";
 import { registerSocketHandlers } from "./sockets/registerSocketHandlers.js";
+import type { TypedServer } from "./sockets/types.js";
 
 const app: Express = express();
 const httpServer = createServer(app);
-const io = new Server(httpServer);
+const io: TypedServer = new Server(httpServer);
 
 app.use(express.json());
 

@@ -4,14 +4,13 @@ import Timer from "./Timer";
 import { CYCLE_SEC, getMode } from "../lib/timer";
 import { useParams } from "react-router";
 import NotFound from "./NotFound";
+import { useRoom } from "../hooks/useRoom";
 
 export default function Room() {
   const [elapsed, setElapsed] = useState(0);
   const [running, setRunning] = useState(false);
   const { code } = useParams();
-  const [status, setStatus] = useState<"loading" | "found" | "missing">(
-    "loading",
-  );
+  const status = useRoom(code);
 
   const mode = getMode(elapsed, elapsed % CYCLE_SEC);
 
@@ -24,19 +23,6 @@ export default function Room() {
       clearInterval(id);
     };
   }, [running]);
-
-  useEffect(() => {
-    async function check() {
-      try {
-        if (!code) return;
-        const res = await fetch(`/api/rooms/${code}`);
-        setStatus(res.ok ? "found" : "missing");
-      } catch {
-        setStatus("missing");
-      }
-    }
-    void check();
-  }, [code]);
 
   if (!code || status === "missing") return <NotFound />;
   if (status === "loading") return <p>Loading...</p>;

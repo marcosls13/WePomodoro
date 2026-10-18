@@ -10,7 +10,7 @@ export default function JoinRoom() {
     try {
       const res = await fetch(`/api/rooms/${code.trim()}`);
       if (!res.ok) {
-        alert("error joining room");
+        alert("room not found");
         return;
       }
       const data = (await res.json()) as { code: string };

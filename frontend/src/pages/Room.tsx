@@ -5,12 +5,14 @@ import { CYCLE_SEC, getMode } from "../lib/timer";
 import { useParams } from "react-router";
 import NotFound from "./NotFound";
 import { useRoom } from "../hooks/useRoom";
+import { useRoomSocket } from "../hooks/useRoomSocket";
 
 export default function Room() {
   const [elapsed, setElapsed] = useState(0);
   const [running, setRunning] = useState(false);
   const { code } = useParams();
   const status = useRoom(code);
+  useRoomSocket(code);
 
   const mode = getMode(elapsed, elapsed % CYCLE_SEC);
 

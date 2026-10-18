@@ -9,6 +9,9 @@ export default function Room() {
   const [elapsed, setElapsed] = useState(0);
   const [running, setRunning] = useState(false);
   const { code } = useParams();
+  const [status, setStatus] = useState<"loading" | "found" | "missing">(
+    "loading",
+  );
 
   const mode = getMode(elapsed, elapsed % CYCLE_SEC);
 
@@ -22,7 +25,21 @@ export default function Room() {
     };
   }, [running]);
 
-  if (!code) return <NotFound />;
+  useEffect(() => {
+    async function check() {
+      try {
+        if (!code) return;
+        const res = await fetch(`/api/rooms/${code}`);
+        setStatus(res.ok ? "found" : "missing");
+      } catch {
+        setStatus("missing");
+      }
+    }
+    void check();
+  }, [code]);
+
+  if (!code || status === "missing") return <NotFound />;
+  if (status === "loading") return <p>Loading...</p>;
 
   return (
     <main className="flex flex-col md:flex-row bg-gray-200 h-dvh p-4">

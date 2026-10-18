@@ -2,10 +2,13 @@ import Chat from "./Chat";
 import { useState, useEffect } from "react";
 import Timer from "./Timer";
 import { CYCLE_SEC, getMode } from "../lib/timer";
+import { useParams } from "react-router";
+import NotFound from "./NotFound";
 
 export default function Room() {
   const [elapsed, setElapsed] = useState(0);
   const [running, setRunning] = useState(false);
+  const { code } = useParams();
 
   const mode = getMode(elapsed, elapsed % CYCLE_SEC);
 
@@ -19,11 +22,14 @@ export default function Room() {
     };
   }, [running]);
 
+  if (!code) return <NotFound />;
+
   return (
     <main className="flex flex-col md:flex-row bg-gray-200 h-dvh p-4">
       <Timer
         elapsed={elapsed}
         running={running}
+        code={code}
         onBegin={() => {
           setRunning(true);
         }}

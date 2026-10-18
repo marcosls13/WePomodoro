@@ -15,10 +15,12 @@ const MODE_BG: Record<Mode, string> = {
 export default function Timer({
   elapsed,
   running,
+  code,
   onBegin,
 }: {
   elapsed: number;
   running: boolean;
+  code: string;
   onBegin: () => void;
 }) {
   const position = elapsed % CYCLE_SEC;
@@ -31,6 +33,7 @@ export default function Timer({
       <h1 className="text-6xl md:text-8xl">
         {formatTime(calculateRemainingTime(position))}
       </h1>
+      <p>Room code: {code}</p>
       <button
         className={`${running ? "opacity-0 pointer-events-none" : ""} transition-opacity duration-500 rounded-lg border px-4 py-2 bg-gray-200 hover:bg-gray-300`}
         onClick={onBegin}

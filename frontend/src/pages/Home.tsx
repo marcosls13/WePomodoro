@@ -11,7 +11,6 @@ export default function Home() {
         return;
       }
       const data = (await res.json()) as { code: string };
-      alert(`Your room code is ${data.code}`);
       void navigate(`/room/${data.code}`);
     } catch {
       alert("error");

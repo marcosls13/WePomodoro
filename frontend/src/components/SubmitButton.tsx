@@ -15,4 +15,3 @@ export function SubmitButton({ children, ...props }: SubmitButtonProps) {
     </button>
   );
 }
-

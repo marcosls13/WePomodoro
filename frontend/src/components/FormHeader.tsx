@@ -3,7 +3,7 @@ interface FormHeaderProps {
   subtitle: string;
 }
 
-export function FormHeader ({title, subtitle}: FormHeaderProps) {
+export function FormHeader({ title, subtitle }: FormHeaderProps) {
   return (
     <div className="mb-8 text-center">
       <h2 className="text-2xl font-bold text-gray-900">{title}</h2>

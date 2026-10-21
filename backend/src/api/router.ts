@@ -36,11 +36,10 @@ import {
   verifyPassword,
 } from "../auth/auth.service.js";
 import {
-  confirmSetup,
-  disableTwoFactor,
+  resendChallenge,
+  requestToggleCode,
+  confirmToggleCode,
   finishChallenge,
-  regenerateRecoveryCodes,
-  startSetup,
   twoFactorStatus,
 } from "../auth/twofactor.service.js";
 import { devActor } from "../dev.js";
@@ -245,6 +244,15 @@ export function createRouter(
     handler: tooMany("Too many reset requests for this address; try later"),
   });
 
+  const perChallenge = rateLimit({
+    windowMs: 15 * 60_000,
+    limit: limits.resetRequests,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    keyGenerator: bodyKey("challengeToken", "2fa", 128),
+    handler: tooMany("Too many attempts; try again later"),
+  });
+
   router.use(
     [
       "/auth/signup",
@@ -279,8 +287,12 @@ export function createRouter(
 
   // Password recovery: email a code, verify it, then set a new password.
   router.post("/auth/login/2fa", async (req, res) => {
-    const input = body(req);
-    res.json(await finishChallenge(ctx, input.challengeToken, input));
+    res.json(await finishChallenge(ctx, body(req).challengeToken, body(req)));
+  });
+
+  router.post("/auth/login/2fa/resend", perChallenge, async (req, res) => {
+    await resendChallenge(ctx, body(req).challengeToken);
+    res.sendStatus(204);
   });
 
   router.post("/auth/password-reset/request", async (req, res) => {
@@ -407,23 +419,24 @@ export function createRouter(
     res.json(await twoFactorStatus(ctx, actor(res)));
   });
 
-  router.post("/auth/2fa/setup", perUser2fa, async (req, res) => {
-    res.json(await startSetup(ctx, actor(res), body(req).password));
-  });
-
-  router.post("/auth/2fa/enable", perUser2fa, async (req, res) => {
-    res.json(await confirmSetup(ctx, actor(res), body(req).code));
-  });
-
-  router.post("/auth/2fa/disable", perUser2fa, async (req, res) => {
-    await disableTwoFactor(ctx, actor(res), body(req));
+  router.post("/auth/2fa/enable/request", perUser2fa, async (req, res) => {
+    await requestToggleCode(ctx, actor(res), "enable", body(req).password);
     res.sendStatus(204);
   });
 
-  router.post("/auth/2fa/recovery-codes", perUser2fa, async (req, res) => {
-    res.json(
-      await regenerateRecoveryCodes(ctx, actor(res), body(req).password),
-    );
+  router.post("/auth/2fa/enable", perUser2fa, async (req, res) => {
+    await confirmToggleCode(ctx, actor(res), "enable", body(req));
+    res.sendStatus(204);
+  });
+
+  router.post("/auth/2fa/disable/request", perUser2fa, async (req, res) => {
+    await requestToggleCode(ctx, actor(res), "disable", body(req).password);
+    res.sendStatus(204);
+  });
+
+  router.post("/auth/2fa/disable", perUser2fa, async (req, res) => {
+    await confirmToggleCode(ctx, actor(res), "disable", body(req));
+    res.sendStatus(204);
   });
 
   router.get("/auth/me", async (req, res) => {

@@ -11,7 +11,6 @@ import { cleanupExpiredSessions } from "../src/api/lifecycle.js";
 import { createApp } from "../src/app.js";
 import { PrismaClient } from "../src/generated/prisma/client.js";
 import { tokenHash } from "../src/auth/auth.service.js";
-import { base32Decode, stepOf, totp } from "../src/auth/twofactor.service.js";
 import { sweepTimers } from "../src/timers/timers.service.js";
 
 const url = new URL(
@@ -30,7 +29,6 @@ if (
 const connectionString = url.toString();
 const db = new PrismaClient({ adapter: new PrismaPg({ connectionString }) });
 const prefix = `api${randomBytes(5).toString("hex")}`;
-process.env.TWO_FACTOR_KEY ??= randomBytes(32).toString("base64");
 let clock = new Date();
 const mails: { to: string; text: string }[] = [];
 const ctx = {
@@ -1283,53 +1281,37 @@ void test("dev auth acts as a user without a token, only when switched on", asyn
   }
 });
 
-void test("two-factor: setup, login challenge, replay protection, recovery codes, disable", async () => {
+void test("two-factor by email: enable, sign-in code, resend, limits, disable", async () => {
   const account = await user();
   const password = "Correct-password-42";
   const status = () =>
-    request<{ enabled: boolean; recoveryCodesLeft: number }>(
-      "/api/auth/2fa",
-      "GET",
-      account.token,
+    request<{ enabled: boolean }>("/api/auth/2fa", "GET", account.token);
+  const flag = async () =>
+    (await db.user.findUniqueOrThrow({ where: { id: account.user.id } }))
+      .twoFactorEnabledAt;
+  const emailed = () => {
+    const mail = mails.at(-1);
+    assert.ok(mail);
+    assert.equal(mail.to, account.user.email);
+    const code = /code is (\d{6})/.exec(mail.text)?.[1];
+    assert.ok(code);
+    return code;
+  };
+  const wrong = (code: string) => (code === "000000" ? "111111" : "000000");
+  const toggle = (
+    action: "enable" | "disable",
+    step: "request" | "confirm",
+    input: object,
+    expected: number,
+    token = account.token,
+  ) =>
+    request(
+      `/api/auth/2fa/${action}${step === "request" ? "/request" : ""}`,
+      "POST",
+      token,
+      input,
+      expected,
     );
-  assert.equal((await status()).enabled, false);
-  await request(
-    "/api/auth/2fa/setup",
-    "POST",
-    account.token,
-    { password: "wrong-password" },
-    401,
-  );
-  const setup = await request<{ secret: string; otpauthUri: string }>(
-    "/api/auth/2fa/setup",
-    "POST",
-    account.token,
-    { password },
-  );
-  assert.ok(setup.otpauthUri.startsWith("otpauth://totp/WePomodoro"));
-  const secret = base32Decode(setup.secret);
-  const codeNow = () => totp(secret, stepOf(clock));
-  // Not on until a code from the app confirms it.
-  await request("/api/auth/login", "POST", undefined, {
-    username: account.user.username,
-    password,
-  });
-  await request(
-    "/api/auth/2fa/enable",
-    "POST",
-    account.token,
-    { code: "000000" },
-    400,
-  );
-  const enabled = await request<{ recoveryCodes: string[] }>(
-    "/api/auth/2fa/enable",
-    "POST",
-    account.token,
-    { code: codeNow() },
-  );
-  assert.equal(enabled.recoveryCodes.length, 10);
-  assert.deepEqual(await status(), { enabled: true, recoveryCodesLeft: 10 });
-
   const challenge = async () => {
     const result = await request<{
       twoFactorRequired: true;
@@ -1342,77 +1324,133 @@ void test("two-factor: setup, login challenge, replay protection, recovery codes
     assert.ok(!("token" in result));
     return result.challengeToken;
   };
-  const second = (challengeToken: string, input: object, expected: number) =>
+  const second = (challengeToken: string, code: string, expected: number) =>
     request<Auth>(
       "/api/auth/login/2fa",
       "POST",
       undefined,
-      { challengeToken, ...input },
+      { challengeToken, code },
       expected,
     );
+  const resend = (challengeToken: string) =>
+    request(
+      "/api/auth/login/2fa/resend",
+      "POST",
+      undefined,
+      { challengeToken },
+      204,
+    );
 
-  // The code that confirmed setup can't be replayed; a later step works once.
-  await second(await challenge(), { code: codeNow() }, 401);
-  advance(30);
-  const good = await second(await challenge(), { code: codeNow() }, 200);
-  await request("/api/auth/me", "GET", good.token);
-  await second(await challenge(), { code: codeNow() }, 401);
+  // Off by default; asking for a code needs the password.
+  assert.deepEqual(await status(), { enabled: false });
+  await toggle("enable", "request", { password: "wrong-password" }, 401);
+  await toggle("disable", "request", { password }, 409);
 
-  // Recovery codes work once each.
-  const [first] = enabled.recoveryCodes;
-  await second(await challenge(), { recoveryCode: first }, 200);
-  await second(await challenge(), { recoveryCode: first }, 401);
-  assert.equal((await status()).recoveryCodesLeft, 9);
+  // A newer code replaces the older one; only a hash of the code is stored.
+  const before = mails.length;
+  await toggle("enable", "request", { password }, 204);
+  assert.equal(mails.length, before + 1);
+  const stale = emailed();
+  await toggle("enable", "request", { password }, 204);
+  const code = emailed();
+  const rows = await db.emailToken.findMany({
+    where: {
+      userId: account.user.id,
+      purpose: "TWO_FACTOR_ENABLE_CODE",
+      usedAt: null,
+    },
+  });
+  assert.equal(rows.length, 1);
+  assert.notEqual(rows[0]?.tokenHash, code);
 
-  // Five wrong codes burn the challenge, even for the right code afterwards.
-  advance(30);
-  const burned = await challenge();
-  for (let i = 0; i < 5; i++) await second(burned, { code: "000000" }, 401);
-  await second(burned, { code: codeNow() }, 401);
-
-  // New recovery codes replace the old ones.
-  const fresh = await request<{ recoveryCodes: string[] }>(
-    "/api/auth/2fa/recovery-codes",
-    "POST",
-    good.token,
-    { password },
-  );
-  await second(
-    await challenge(),
-    { recoveryCode: enabled.recoveryCodes[1] },
-    401,
-  );
-  assert.equal(fresh.recoveryCodes.length, 10);
-
-  // Turning it off needs the password and a code.
-  await request(
-    "/api/auth/2fa/disable",
-    "POST",
-    good.token,
-    { password, code: "000000" },
-    401,
-  );
-  advance(30);
-  await request(
-    "/api/auth/2fa/disable",
-    "POST",
-    good.token,
-    { password, code: codeNow() },
-    204,
-  );
-  assert.equal((await status()).enabled, false);
+  // Not on until the code is confirmed: sign-in still gives a session.
   const plain = await request<Auth>("/api/auth/login", "POST", undefined, {
     username: account.user.username,
     password,
   });
   assert.ok(plain.token);
-  await request(
-    "/api/auth/2fa/setup",
-    "POST",
-    (await guest()).token,
-    { password },
-    403,
+  await toggle("enable", "confirm", { password, code: "12" }, 400);
+  await toggle("enable", "confirm", { password, code: wrong(code) }, 400);
+  if (stale !== code)
+    await toggle("enable", "confirm", { password, code: stale }, 400);
+  await toggle("enable", "confirm", { password: "nope", code }, 401);
+  await toggle("enable", "confirm", { password, code }, 204);
+  assert.deepEqual(await status(), { enabled: true });
+  assert.ok(await flag());
+  // The code is spent, and it can't be asked for twice.
+  await toggle("enable", "confirm", { password, code }, 409);
+  await toggle("enable", "request", { password }, 409);
+
+  // Signing in now needs the emailed code.
+  const first = await challenge();
+  const signIn = emailed();
+  await second(first, wrong(signIn), 401);
+  const good = await second(first, signIn, 200);
+  await request("/api/auth/me", "GET", good.token);
+  // The challenge is spent; the token itself is not a code.
+  await second(first, signIn, 401);
+  await second(await challenge(), first, 401);
+
+  // Resend replaces the code; the old one stops working.
+  const again = await challenge();
+  const oldCode = emailed();
+  await resend(again);
+  const newCode = emailed();
+  if (oldCode !== newCode) await second(again, oldCode, 401);
+  await second(again, newCode, 200);
+
+  // Five wrong codes burn the challenge, and a resend doesn't reset the count.
+  const burned = await challenge();
+  const burnedCode = emailed();
+  for (let i = 0; i < 5; i++) await second(burned, wrong(burnedCode), 401);
+  await second(burned, burnedCode, 401);
+  const partly = await challenge();
+  for (let i = 0; i < 4; i++) await second(partly, "000000", 401);
+  await resend(partly);
+  await second(partly, "000000", 401);
+  await second(partly, emailed(), 401);
+
+  // A sign-in code expires.
+  const expiring = await challenge();
+  const expiringCode = emailed();
+  advance(6 * 60);
+  await second(expiring, expiringCode, 401);
+
+  // Turning it off needs the password and an emailed code of its own.
+  await toggle("disable", "confirm", { password }, 400, good.token);
+  await toggle("disable", "request", { password: "wrong-password" }, 401);
+  await toggle("disable", "request", { password }, 204, good.token);
+  const off = emailed();
+  // A sign-in code can't turn it off, nor a disable code sign you in.
+  const forLogin = await challenge();
+  const loginCode = emailed();
+  await toggle("disable", "confirm", { password, code: loginCode }, 400);
+  await second(forLogin, off, 401);
+  // Five wrong codes lock that code; a fresh request works.
+  for (let i = 0; i < 5; i++)
+    await toggle("disable", "confirm", { password, code: wrong(off) }, 400);
+  await toggle("disable", "confirm", { password, code: off }, 400);
+  await toggle("disable", "request", { password }, 204);
+  await toggle("disable", "confirm", { password, code: emailed() }, 204);
+  assert.deepEqual(await status(), { enabled: false });
+  assert.equal(await flag(), null);
+  // Pending sign-ins are cancelled, and sign-in is plain again.
+  assert.equal(
+    await db.loginChallenge.count({ where: { userId: account.user.id } }),
+    0,
   );
+  assert.ok(
+    (
+      await request<Auth>("/api/auth/login", "POST", undefined, {
+        username: account.user.username,
+        password,
+      })
+    ).token,
+  );
+
+  // Guests have no account to protect.
+  const visitor = (await guest()).token;
+  await toggle("enable", "request", { password }, 403, visitor);
 });
 
 void test("password reset: emailed code, verified, then a new password ends every session", async () => {
@@ -1531,11 +1569,11 @@ void test("password reset: emailed code, verified, then a new password ends ever
   // Other accounts are untouched.
   await request("/api/auth/me", "GET", other.token, undefined, 200);
 
-  // Codes expire after 10 minutes.
+  // Codes expire after 15 minutes.
   await post("request", { email: account.user.email }, 202);
   const stale = lastCode();
   const now = clock;
-  clock = new Date(now.getTime() + 11 * 60_000);
+  clock = new Date(now.getTime() + 16 * 60_000);
   try {
     await post("verify", { email: account.user.email, code: stale.code }, 400);
     await cleanupExpiredSessions(ctx);
@@ -2142,27 +2180,30 @@ void test("admin: list, edit, delete and reset two-factor, never the last admin"
 
   // Two-factor reset for someone locked out.
   await api(`${path}/2fa`, "DELETE", admin.token, undefined, 404);
-  const enrolled = new Date();
-  await db.twoFactor.create({
+  await db.user.update({
+    where: { id: target.user.id },
+    data: { twoFactorEnabledAt: new Date() },
+  });
+  await db.loginChallenge.create({
     data: {
       userId: target.user.id,
-      secretCiphertext: "x",
-      createdAt: enrolled,
-      enabledAt: enrolled,
+      tokenHash: "x",
+      codeHash: "x",
+      expiresAt: new Date(Date.now() + 300000),
     },
   });
-  await db.recoveryCode.create({
-    data: { userId: target.user.id, codeHash: "x" },
-  });
+  assert.equal((await api(path)).twoFactorEnabled, true);
   await api(`${path}/2fa`, "DELETE", admin.token, undefined, 204);
   assert.equal(
-    await db.twoFactor.count({ where: { userId: target.user.id } }),
-    0,
+    (await db.user.findUniqueOrThrow({ where: { id: target.user.id } }))
+      .twoFactorEnabledAt,
+    null,
   );
   assert.equal(
-    await db.recoveryCode.count({ where: { userId: target.user.id } }),
+    await db.loginChallenge.count({ where: { userId: target.user.id } }),
     0,
   );
+  await api(`${path}/2fa`, "DELETE", admin.token, undefined, 404);
 
   // Delete removes the account and its rooms; not yourself, not twice.
   await api(path, "DELETE", admin.token, undefined, 204);

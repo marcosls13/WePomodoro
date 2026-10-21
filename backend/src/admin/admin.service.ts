@@ -35,24 +35,24 @@ const adminSelect = {
   role: true,
   createdAt: true,
   updatedAt: true,
-  twoFactor: { select: { enabledAt: true } },
+  twoFactorEnabledAt: true,
 } as const;
 
 function view<
   T extends {
     email: string;
     emailVerifiedAt: Date | null;
-    twoFactor: { enabledAt: Date | null } | null;
+    twoFactorEnabledAt: Date | null;
   },
 >(user: T, full = true) {
-  const { twoFactor, email, emailVerifiedAt, ...rest } = user;
+  const { twoFactorEnabledAt, email, emailVerifiedAt, ...rest } = user;
   // Moderators see who is who, not private account details.
   return full
     ? {
         ...rest,
         email,
         emailVerifiedAt,
-        twoFactorEnabled: Boolean(twoFactor?.enabledAt),
+        twoFactorEnabled: Boolean(twoFactorEnabledAt),
       }
     : rest;
 }
@@ -168,13 +168,15 @@ export async function deleteUser(ctx: Context, actor: Actor, id: number) {
   await endIdentity(ctx, { userId: id, guestSessionId: null }, true);
 }
 
-/** For a user who lost both their authenticator and recovery codes. */
 export async function resetTwoFactor(ctx: Context, id: number) {
   await transaction(ctx, async (tx) => {
-    const { count } = await tx.twoFactor.deleteMany({ where: { userId: id } });
-    if (!count)
+    const current = await tx.user.findUnique({
+      where: { id },
+      select: { twoFactorEnabledAt: true },
+    });
+    if (!current?.twoFactorEnabledAt)
       throw new ApiError(404, "Two-factor is not set up for this user");
-    await tx.recoveryCode.deleteMany({ where: { userId: id } });
+    await tx.user.update({ where: { id }, data: { twoFactorEnabledAt: null } });
     await tx.loginChallenge.deleteMany({ where: { userId: id } });
   });
 }

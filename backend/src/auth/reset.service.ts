@@ -7,8 +7,8 @@ import {
 import { ApiError, transaction, type Context } from "../api/common.js";
 import { hashPassword, tokenHash } from "./auth.service.js";
 
-const CODE_TTL_MS = 10 * 60_000;
-const RESET_TTL_MS = 15 * 60_000;
+const CODE_EXPIRES_AT = 15 * 60_000;
+const RESET_TOKEN_EXPIRES_AT = 15 * 60_000;
 const MAX_CODE_ATTEMPTS = 5;
 
 const invalidCode = () =>
@@ -49,7 +49,7 @@ export async function requestPasswordReset(ctx: Context, address: string) {
         email: user.email,
         tokenHash: codeHash(user.id, code),
         createdAt: now,
-        expiresAt: new Date(now.getTime() + CODE_TTL_MS),
+        expiresAt: new Date(now.getTime() + CODE_EXPIRES_AT),
       },
     });
   });
@@ -57,7 +57,7 @@ export async function requestPasswordReset(ctx: Context, address: string) {
     await ctx.mailer.send(
       user.email,
       "Your WePomodoro password reset code",
-      `Your password reset code is ${code}. It expires in 10 minutes.\n` +
+      `Your password reset code is ${code}. It expires in 15 minutes.\n` +
         "If you didn't ask for this, you can ignore this email.",
     );
   } catch (error) {
@@ -103,7 +103,7 @@ export async function verifyResetCode(
     });
     if (spent.count !== 1) throw invalidCode();
     const resetToken = randomBytes(32).toString("base64url");
-    const expiresAt = new Date(now.getTime() + RESET_TTL_MS);
+    const expiresAt = new Date(now.getTime() + RESET_TOKEN_EXPIRES_AT);
     await tx.emailToken.create({
       data: {
         userId: user.id,

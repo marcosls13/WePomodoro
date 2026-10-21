@@ -384,7 +384,7 @@ void test("deleting a room keeps its study history", async () => {
   });
 });
 
-void test("deleting a user cascades recovery and two-factor records", async () => {
+void test("deleting a user cascades email tokens and login challenges", async () => {
   await isolated(async (tx) => {
     const { friend } = await fixtures(tx);
     const expiresAt = new Date(Date.now() + 3600000);
@@ -397,20 +397,26 @@ void test("deleting a user cascades recovery and two-factor records", async () =
         expiresAt,
       },
     });
-    await tx.twoFactor.create({
-      data: { userId: friend.id, secretCiphertext: "ciphertext" },
-    });
-    await tx.recoveryCode.create({
-      data: { userId: friend.id, codeHash: randomUUID() },
+    await tx.emailToken.create({
+      data: {
+        userId: friend.id,
+        purpose: "TWO_FACTOR_ENABLE_CODE",
+        email: friend.email,
+        tokenHash: randomUUID(),
+        expiresAt,
+      },
     });
     await tx.loginChallenge.create({
-      data: { userId: friend.id, tokenHash: randomUUID(), expiresAt },
+      data: {
+        userId: friend.id,
+        tokenHash: randomUUID(),
+        codeHash: randomUUID(),
+        expiresAt,
+      },
     });
     await tx.user.delete({ where: { id: friend.id } });
     const where = { userId: friend.id };
     assert.equal(await tx.emailToken.count({ where }), 0);
-    assert.equal(await tx.twoFactor.count({ where }), 0);
-    assert.equal(await tx.recoveryCode.count({ where }), 0);
     assert.equal(await tx.loginChallenge.count({ where }), 0);
   });
 });
@@ -689,43 +695,6 @@ const invalidCases: {
     },
   },
   {
-    name: "a second two-factor enrolment for one user",
-    error: knownError("P2002"),
-    run: async (tx) => {
-      const { user } = await fixtures(tx);
-      await tx.twoFactor.create({
-        data: { userId: user.id, secretCiphertext: "ciphertext" },
-      });
-      return tx.twoFactor.create({
-        data: { userId: user.id, secretCiphertext: "ciphertext" },
-      });
-    },
-  },
-  {
-    name: "a used two-factor step before the enrolment is confirmed",
-    error: constraintError("TwoFactor_state_check"),
-    run: async (tx) => {
-      const { user } = await fixtures(tx);
-      return tx.twoFactor.create({
-        data: {
-          userId: user.id,
-          secretCiphertext: "ciphertext",
-          lastUsedStep: 5,
-        },
-      });
-    },
-  },
-  {
-    name: "duplicate recovery codes for one user",
-    error: knownError("P2002"),
-    run: async (tx) => {
-      const { user } = await fixtures(tx);
-      const data = { userId: user.id, codeHash: randomUUID() };
-      await tx.recoveryCode.create({ data });
-      return tx.recoveryCode.create({ data });
-    },
-  },
-  {
     name: "a login challenge with negative failed attempts",
     error: constraintError("LoginChallenge_validity_check"),
     run: async (tx) => {
@@ -734,6 +703,7 @@ const invalidCases: {
         data: {
           userId: user.id,
           tokenHash: randomUUID(),
+          codeHash: randomUUID(),
           expiresAt: new Date(Date.now() + 300000),
           failedAttempts: -1,
         },

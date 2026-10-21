@@ -13,6 +13,8 @@ import { startChallenge } from "./twofactor.service.js";
 
 // Matches the lifetime of the emailed code.
 const VERIFY_WINDOW_MS = 30 * 60_000;
+const DAY_IN_MS = 86400000;
+export const SESSION_EXPIRES_AT = 7 * DAY_IN_MS; // 7 days, for auth sessions
 
 export function password(value: unknown): string {
   if (typeof value !== "string" || value.length < 8 || value.length > 128)
@@ -64,7 +66,7 @@ export async function signup(
   const hash = await hashPassword(input.password);
   const bearer = token();
   const now = ctx.now();
-  const expiresAt = new Date(now.getTime() + 7 * 86400000);
+  const expiresAt = new Date(now.getTime() + SESSION_EXPIRES_AT);
   const user = await transaction(ctx, async (tx) => {
     const created = await tx.user.create({
       data: {
@@ -93,13 +95,10 @@ export async function login(ctx: Context, address: string, value: string) {
   const valid = await verifyPassword(value, user?.passwordHash ?? null);
   if (!user || !valid) throw new ApiError(401, "Invalid username or password");
   // With two-factor on, the password only earns a challenge, not a session.
-  const second = await ctx.db.twoFactor.findUnique({
-    where: { userId: user.id },
-  });
-  if (second?.enabledAt) return startChallenge(ctx, user.id);
+  if (user.twoFactorEnabledAt) return startChallenge(ctx, user.id, user.email);
   const bearer = token();
   const now = ctx.now();
-  const expiresAt = new Date(now.getTime() + 7 * 86400000);
+  const expiresAt = new Date(now.getTime() + SESSION_EXPIRES_AT);
   // Check the hash again inside the write transaction to avoid a password-change race.
   const profile = await transaction(ctx, async (tx) => {
     const current = await tx.user.findUnique({ where: { id: user.id } });
@@ -131,7 +130,7 @@ export async function createGuest(ctx: Context, displayName: string) {
     throw new ApiError(409, "That name belongs to a registered user");
   const bearer = token();
   const now = ctx.now();
-  const expiresAt = new Date(now.getTime() + 86400000);
+  const expiresAt = new Date(now.getTime() + DAY_IN_MS);
   const guest = await ctx.db.guestSession.create({
     data: {
       displayName,

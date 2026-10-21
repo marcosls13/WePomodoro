@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { useRedirectIfSignedIn } from "../useRedirectIfSignedIn";
 
@@ -11,10 +11,23 @@ export default function SignIn() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
-  // Set when the account has two-factor on: the password step is done and a
-  // code from the authenticator app (or a recovery code) finishes the login.
+  // Set when the account has two-factor on: the password step is done and the
+  // code we emailed finishes the login.
   const [challenge, setChallenge] = useState("");
   const [code, setCode] = useState("");
+  const [notice, setNotice] = useState("");
+  // Seconds until another code can be requested (each one is an email).
+  const [cooldown, setCooldown] = useState(0);
+
+  useEffect(() => {
+    if (!cooldown) return;
+    const id = setTimeout(() => {
+      setCooldown(cooldown - 1);
+    }, 1000);
+    return () => {
+      clearTimeout(id);
+    };
+  }, [cooldown]);
 
   async function handleSubmit(e: React.SubmitEvent) {
     e.preventDefault();
@@ -54,6 +67,8 @@ export default function SignIn() {
       };
       if (body.twoFactorRequired && body.challengeToken) {
         setChallenge(body.challengeToken);
+        setNotice("We emailed you a sign-in code.");
+        setCooldown(30);
         return;
       }
       // The API returns a bearer token; later requests send it as
@@ -70,17 +85,10 @@ export default function SignIn() {
   async function finish() {
     setPending(true);
     try {
-      // A 6-digit number is an app code; anything else is a recovery code.
-      const value = code.trim();
       const res = await fetch(`${API_URL}/api/auth/login/2fa`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          challengeToken: challenge,
-          ...(/^\d{6}$/.test(value)
-            ? { code: value }
-            : { recoveryCode: value }),
-        }),
+        body: JSON.stringify({ challengeToken: challenge, code: code.trim() }),
       });
       const body = (await res.json().catch(() => ({}))) as {
         token?: string;
@@ -92,11 +100,45 @@ export default function SignIn() {
         if (res.status === 401 && body.error?.includes("expired")) {
           setChallenge("");
           setPassword("");
+          setCode("");
+          setNotice("");
         }
         return;
       }
       localStorage.setItem("token", body.token);
       void navigate("/UserInfo");
+    } catch {
+      setError("Could not reach the server. Please try again.");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function resend() {
+    if (pending || cooldown) return;
+    setError("");
+    setNotice("");
+    setPending(true);
+    try {
+      const res = await fetch(`${API_URL}/api/auth/login/2fa/resend`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ challengeToken: challenge }),
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        setError(body.error ?? `Request failed (${String(res.status)})`);
+        // The sign-in attempt is gone; start again from the password.
+        if (res.status === 401) {
+          setChallenge("");
+          setPassword("");
+          setCode("");
+        }
+        return;
+      }
+      setCode("");
+      setNotice("We emailed you a new code.");
+      setCooldown(30);
     } catch {
       setError("Could not reach the server. Please try again.");
     } finally {
@@ -137,12 +179,15 @@ export default function SignIn() {
             <>
               <div className="signup-field">
                 <label htmlFor="code" className="signup-label">
-                  Authenticator or recovery code
+                  6-digit code from your email
                 </label>
                 <input
                   id="code"
                   name="code"
+                  inputMode="numeric"
                   autoComplete="one-time-code"
+                  pattern="\d{6}"
+                  maxLength={6}
                   placeholder="123456"
                   required
                   value={code}
@@ -194,6 +239,11 @@ export default function SignIn() {
             </>
           )}
 
+          {notice && !error && (
+            <p className="form-description" role="status">
+              {notice}
+            </p>
+          )}
           {error && (
             <p className="signup-error" role="alert">
               {error}
@@ -206,6 +256,18 @@ export default function SignIn() {
           >
             {pending ? "Signin in" : "Sign In"}
           </button>
+          {challenge && (
+            <button
+              type="button"
+              className="text-link"
+              disabled={pending || cooldown > 0}
+              onClick={() => {
+                void resend();
+              }}
+            >
+              {cooldown ? `Resend code (${String(cooldown)}s)` : "Resend code"}
+            </button>
+          )}
           <Link className="text-link" to="/auth/forgot-password">
             Forgot your password?
           </Link>

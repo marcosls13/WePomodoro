@@ -281,6 +281,16 @@ export async function manageRoom(
   });
 }
 
+export async function deleteRoom(ctx: Context, actor: Actor, roomId: string) {
+  await transaction(ctx, async (tx) => {
+    const room = await lockRoom(tx, roomId);
+    if (room.ownerId !== actor.userId)
+      throw new ApiError(403, "Only the owner can delete the room");
+    await cancelRoomTimer(tx, roomId, ctx.now());
+    await tx.studyRoom.delete({ where: { id: roomId } });
+  });
+}
+
 /**
  * Who may moderate a room: its owner, or a moderator/admin who is a member of
  * it. Returns the capacity so callers can protect staff from moderators.

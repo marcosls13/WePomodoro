@@ -63,6 +63,7 @@ import {
 } from "../friends/friends.service.js";
 import {
   createRoom,
+  deleteRoom,
   getInvite,
   getRoom,
   joinRoom,
@@ -702,6 +703,11 @@ export function createRouter(
     res.json(
       await manageRoom(ctx, actor(res), uuid(req.params.roomId), "close"),
     );
+  });
+
+  router.delete("/rooms/:roomId", async (req, res) => {
+    await deleteRoom(ctx, actor(res), uuid(req.params.roomId));
+    res.sendStatus(204);
   });
 
   router.post("/rooms/:roomId/invite-code", async (req, res) => {

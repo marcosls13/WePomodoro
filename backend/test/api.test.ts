@@ -959,6 +959,90 @@ void test("closing a room cancels its timer and keeps partial study time", async
   assert.equal(stats.focusedSeconds, 3);
   assert.equal(stats.completedFocusSessions, 0);
 });
+void test("only the owner can delete a room, which removes it but keeps study time", async () => {
+  const owner = await user();
+  const friend = await user();
+  const visitor = await guest();
+  const study = await room(owner.token);
+  for (const token of [friend.token, visitor.token])
+    await request("/api/rooms/join", "POST", token, {
+      inviteCode: study.inviteCode,
+    });
+  await request(
+    `/api/rooms/${study.id}/messages`,
+    "POST",
+    friend.token,
+    { content: "hello" },
+    201,
+  );
+  const timer = await shared(owner.token, study.id);
+  advance(3);
+  for (const token of [friend.token, visitor.token])
+    await request(`/api/rooms/${study.id}`, "DELETE", token, undefined, 403);
+  assert.equal(await db.studyRoom.count({ where: { id: study.id } }), 1);
+
+  await request(
+    `/api/rooms/${study.id}`,
+    "DELETE",
+    owner.token,
+    undefined,
+    204,
+  );
+  assert.equal(await db.studyRoom.count({ where: { id: study.id } }), 0);
+  for (const table of [db.roomMember, db.invite, db.message])
+    assert.equal(
+      await (
+        table as unknown as {
+          count: (args: { where: { roomId: string } }) => Promise<number>;
+        }
+      ).count({ where: { roomId: study.id } }),
+      0,
+    );
+  await request(`/api/rooms/${study.id}`, "GET", owner.token, undefined, 404);
+  await request(
+    "/api/rooms/join",
+    "POST",
+    friend.token,
+    { inviteCode: study.inviteCode },
+    404,
+  );
+  const listed = await request<Room[]>("/api/rooms", "GET", owner.token);
+  assert.ok(!listed.some((item) => item.id === study.id));
+  // Repeating the request, or deleting an unknown room, is a 404.
+  await request(
+    `/api/rooms/${study.id}`,
+    "DELETE",
+    owner.token,
+    undefined,
+    404,
+  );
+
+  const stopped = await request<Timer>(
+    `/api/timers/${timer.id}`,
+    "GET",
+    owner.token,
+  );
+  assert.equal(stopped.status, "CANCELLED");
+  const stats = await request<{ focusedSeconds: number }>(
+    "/api/users/me/stats",
+    "GET",
+    friend.token,
+  );
+  assert.equal(stats.focusedSeconds, 3);
+});
+void test("a closed room can still be deleted by its owner", async () => {
+  const owner = await user();
+  const study = await room(owner.token);
+  await request(`/api/rooms/${study.id}/close`, "POST", owner.token);
+  await request(
+    `/api/rooms/${study.id}`,
+    "DELETE",
+    owner.token,
+    undefined,
+    204,
+  );
+  assert.equal(await db.studyRoom.count({ where: { id: study.id } }), 0);
+});
 void test("guests can study solo and logout removes their temporary identity", async () => {
   const visitor = await guest();
   const timer = await solo(visitor.token);

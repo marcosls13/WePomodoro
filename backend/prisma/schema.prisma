@@ -169,7 +169,8 @@ model StudyRoom {
   cyclesBeforeLongBreak Int               @default(4)
   createdAt             DateTime          @default(now())
   updatedAt             DateTime          @updatedAt
-  // Close rooms instead of deleting them to preserve study history.
+  // Closing keeps a room's data. The owner can also delete it for good; study
+  // history survives either way (sessions keep their rows with a null room).
   closedAt              DateTime?
   owner                 User              @relation(fields: [ownerId], references: [id], onDelete: Restrict)
   members               RoomMember[]

@@ -22,7 +22,8 @@ export async function endIdentity(
 ) {
   if (deleteAccount) {
     const userId = registered(actor);
-    // Delete rooms only on explicit account deletion. Closing a room alone keeps it.
+    // Account deletion also deletes the rooms the user owns, like an owner's
+    // DELETE /rooms/:id. Closing a room alone keeps it.
     await transaction(ctx, async (tx) => {
       const rooms = await tx.studyRoom.findMany({
         where: { ownerId: userId },

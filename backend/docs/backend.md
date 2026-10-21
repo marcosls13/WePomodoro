@@ -368,6 +368,7 @@ their own invite code. The room listing contains only the caller's open rooms.
 | PATCH  | `/api/rooms/:roomId`                        | Owner              | At least one setting                | 200 updated room                                        |
 | POST   | `/api/rooms/:roomId/leave`                  | Member             | None                                | 204: leave the server; a code is needed to return       |
 | POST   | `/api/rooms/:roomId/close`                  | Owner              | None                                | 200 closed room; live timer cancelled                   |
+| DELETE | `/api/rooms/:roomId`                        | Owner              | None                                | 204 server deleted for good; members keep study history |
 | POST   | `/api/rooms/:roomId/invite-code`            | Member (user)      | None, or `{ "rotate": true }`       | 200 `{ inviteCode }`: your own code                     |
 | GET    | `/api/rooms/:roomId/messages`               | Member             | `?after=<id>&limit=50`              | 200 chat messages, oldest first                         |
 | POST   | `/api/rooms/:roomId/messages`               | Member             | `{ "content" }` (≤ 2000 chars)      | 201 message; 10 per 10 s per sender                     |
@@ -403,6 +404,11 @@ Room settings (creation and update):
   to new timers or shown as members.
 - Owners must transfer ownership or close the room before leaving. The new owner
   must be a registered member.
+- Only the owner can delete a server, open or closed. It cancels the live timer
+  (crediting partial time) and then removes the server with its memberships,
+  invites, chat, bans and join requests. Past timers stay with a null room, so
+  everyone's study totals are unchanged. This cannot be undone; closing is the
+  reversible-looking alternative that keeps the data.
 - Kicking is not a permanent ban: they can rejoin with a current code. Rotating
   your code invalidates the previous one.
 - Closed rooms reject joining, updates, transfers and new timers.
@@ -930,7 +936,7 @@ entries that have results.
 | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
 | Delete User            | Cascade logins, memberships, invites, friendships, presence, join requests, attendance, results; chat messages keep their text with the author cleared; owned rooms block deletion | Account deletion cancels/deletes owned rooms first, then the user        |
 | Delete GuestSession    | Cascade guest memberships and attendance; chat messages keep their text                                                                                                            | Logout/cleanup also cancels solo timers and settles shared attendance    |
-| Delete StudyRoom       | Cascade memberships, invites, messages, join requests; set historical session room IDs to null                                                                                     | Prefer close; account deletion physically removes owned rooms            |
+| Delete StudyRoom       | Cascade memberships, invites, messages, join requests; set historical session room IDs to null                                                                                     | Owner `DELETE /rooms/:id` or account deletion; close keeps the data      |
 | Delete PomodoroSession | Cascade attendance                                                                                                                                                                 | Ordinary cancellation retains the session and partial history            |
 | Delete MiniGame        | Blocked if results reference it                                                                                                                                                    | CLI disables instead                                                     |
 | Close StudyRoom        | SQL only stores a timestamp                                                                                                                                                        | Cancels the live timer, saves partial time, rejects new joins and timers |

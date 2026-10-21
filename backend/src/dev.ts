@@ -108,6 +108,7 @@ const presets = [
   ["Rooms", "Get room", "GET", "/rooms/{roomId}", null],
   ["Rooms", "Leave room", "POST", "/rooms/{roomId}/leave", null],
   ["Rooms", "Close room", "POST", "/rooms/{roomId}/close", null],
+  ["Rooms", "Delete room", "DELETE", "/rooms/{roomId}", null],
   ["Timers", "Start room timer", "POST", "/rooms/{roomId}/timers", null],
   [
     "Timers",

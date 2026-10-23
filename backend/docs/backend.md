@@ -36,16 +36,22 @@ Production transport should provide HTTPS so bearer tokens aren't sent in clear.
 
 Environment variables:
 
-| Variable       | Default                 | Meaning                                               |
-| -------------- | ----------------------- | ----------------------------------------------------- |
-| `DATABASE_URL` | none (required)         | PostgreSQL connection string                          |
-| `PORT`         | `3000`                  | Listening port (1–65535)                              |
-| `CORS_ORIGIN`  | `http://localhost:5173` | Comma-separated exact origins allowed to call the API |
+| Variable                                                                         | Default                 | Meaning                                                              |
+| -------------------------------------------------------------------------------- | ----------------------- | -------------------------------------------------------------------- |
+| `DATABASE_URL`                                                                   | none (required)         | PostgreSQL connection string                                         |
+| `PORT`                                                                           | `3000`                  | Listening port (1–65535)                                             |
+| `CORS_ORIGIN`                                                                    | `http://localhost:5173` | Comma-separated exact origins allowed to call the API                |
+| `OAUTH_REDIRECT_BASE`                                                            | `http://localhost:3000` | Public URL of this API; the provider callback URLs are built from it |
+| `FRONTEND_URL`                                                                   | `http://localhost:5173` | Where the browser is sent after a provider sign-in (one origin)      |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` (same for `GITHUB_` and `FORTY_TWO_`) | empty                   | Both set enables that provider; empty disables it                    |
 
 In development (`NODE_ENV` not `production`) the API also serves a test console at
 `http://localhost:3000/dev`: presets for the main endpoints, with the token, room,
 timer, invite and request IDs filled in from earlier responses. It is not mounted
-in production.
+in production. The OAuth redirect flow itself can't run there: sign in with a
+provider in a browser, paste the `code` from the redirect URL
+(`/auth/oauth?code=…`) into the `oauthCode` variable, and send "Swap the
+one-time code for a session" to get a token.
 
 To skip tokens in the console, set `DEV_AUTH=true` in `backend/.env` and restart. A
 "no token, act as" checkbox then appears in the console header with a list of
@@ -95,6 +101,10 @@ Authorization: Bearer <token>
   recreate accounts or let someone claim a passwordless profile by supplying its
   email; they need an explicit provisioning/recovery flow (email delivery and
   verification are not implemented). New signups require a password.
+- Accounts created through OAuth also have a null `passwordHash`: they can't
+  password-login, and `PATCH /users/me` and the two-factor toggle (which ask for
+  the current password) don't work for them until they add a password with the
+  forgot-password flow.
 - Registered logout revokes the current token and leaves timers running. Guest
   logout cancels solo timers and removes the temporary identity and its
   participation; registered users' shared history is preserved.
@@ -126,22 +136,26 @@ guest; **Registered** = registered user; **Member** = room member;
 
 ### 3.1 Service and authentication
 
-| Method | Endpoint                           | Access        | JSON body                             | Response                                                                                                                |
-| ------ | ---------------------------------- | ------------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| GET    | `/api/health`                      | Public        | None                                  | 200 `{ status: "ok" }`; 503 if the database is unreachable or a committed migration isn't applied                       |
-| POST   | `/api/auth/signup`                 | Public        | `{ "email", "username", "password" }` | 201 `{ token, expiresAt, user }`                                                                                        |
-| POST   | `/api/users`                       | Public        | Same signup body                      | 201: alias of signup with the same response                                                                             |
-| POST   | `/api/auth/login`                  | Public        | `{ "username", "password" }`          | 200 `{ token, expiresAt, user }`; with two-factor on: `{ twoFactorRequired, challengeToken, expiresAt }` and no session |
-| POST   | `/api/auth/login/2fa`              | Public        | `{ "challengeToken", "code" }`        | 200 `{ token, expiresAt, user }`; 401 on a wrong code                                                                   |
-| POST   | `/api/auth/login/2fa/resend`       | Public        | `{ "challengeToken" }`                | 204: emails a new code (3 per 15 minutes per sign-in); 401 if the attempt expired                                       |
-| POST   | `/api/auth/guest`                  | Public        | `{ "displayName" }`                   | 201 `{ token, guest: { id, displayName, expiresAt } }`                                                                  |
-| POST   | `/api/auth/password-reset/request` | Public        | `{ "email" }`                         | 202 same message whether or not the account exists; emails a 6-digit code                                               |
-| POST   | `/api/auth/password-reset/verify`  | Public        | `{ "email", "code" }`                 | 200 `{ resetToken, expiresAt }`; the code is spent                                                                      |
-| POST   | `/api/auth/password-reset/confirm` | Public        | `{ "resetToken", "password" }`        | 204; sets the password and signs out every session                                                                      |
-| POST   | `/api/auth/verify-email`           | Registered    | `{ "code" }`                          | 204: confirms the address; sets `emailVerifiedAt`                                                                       |
-| POST   | `/api/auth/verify-email/resend`    | Registered    | None                                  | 202: emails a new code (3 per 15 minutes); 409 if already verified                                                      |
-| GET    | `/api/auth/me`                     | Authenticated | None                                  | 200 `{ type: "user" or "guest", profile }`                                                                              |
-| POST   | `/api/auth/logout`                 | Authenticated | None                                  | 204: revoke login or delete temporary guest identity                                                                    |
+| Method | Endpoint                             | Access        | JSON body                             | Response                                                                                                                |
+| ------ | ------------------------------------ | ------------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/health`                        | Public        | None                                  | 200 `{ status: "ok" }`; 503 if the database is unreachable or a committed migration isn't applied                       |
+| POST   | `/api/auth/signup`                   | Public        | `{ "email", "username", "password" }` | 201 `{ token, expiresAt, user }`                                                                                        |
+| POST   | `/api/users`                         | Public        | Same signup body                      | 201: alias of signup with the same response                                                                             |
+| POST   | `/api/auth/login`                    | Public        | `{ "username", "password" }`          | 200 `{ token, expiresAt, user }`; with two-factor on: `{ twoFactorRequired, challengeToken, expiresAt }` and no session |
+| POST   | `/api/auth/login/2fa`                | Public        | `{ "challengeToken", "code" }`        | 200 `{ token, expiresAt, user }`; 401 on a wrong code                                                                   |
+| POST   | `/api/auth/login/2fa/resend`         | Public        | `{ "challengeToken" }`                | 204: emails a new code (3 per 15 minutes per sign-in); 401 if the attempt expired                                       |
+| POST   | `/api/auth/guest`                    | Public        | `{ "displayName" }`                   | 201 `{ token, guest: { id, displayName, expiresAt } }`                                                                  |
+| GET    | `/api/auth/oauth`                    | Public        | None                                  | 200 `{ providers: ["google", ...] }`: the enabled providers                                                             |
+| GET    | `/api/auth/oauth/:provider`          | Public        | None                                  | 302 to the provider and sets the `oauth_state` cookie; 404 for an unknown or disabled provider                          |
+| GET    | `/api/auth/oauth/:provider/callback` | Public        | None                                  | 302 to `FRONTEND_URL/auth/oauth?code=…` or `?error=…`; never JSON                                                       |
+| POST   | `/api/auth/oauth/exchange`           | Public        | `{ "code" }`                          | 200 `{ token, expiresAt, user }`; 401 for a used, unknown or expired code                                               |
+| POST   | `/api/auth/password-reset/request`   | Public        | `{ "email" }`                         | 202 same message whether or not the account exists; emails a 6-digit code                                               |
+| POST   | `/api/auth/password-reset/verify`    | Public        | `{ "email", "code" }`                 | 200 `{ resetToken, expiresAt }`; the code is spent                                                                      |
+| POST   | `/api/auth/password-reset/confirm`   | Public        | `{ "resetToken", "password" }`        | 204; sets the password and signs out every session                                                                      |
+| POST   | `/api/auth/verify-email`             | Registered    | `{ "code" }`                          | 204: confirms the address; sets `emailVerifiedAt`                                                                       |
+| POST   | `/api/auth/verify-email/resend`      | Registered    | None                                  | 202: emails a new code (3 per 15 minutes); 409 if already verified                                                      |
+| GET    | `/api/auth/me`                       | Authenticated | None                                  | 200 `{ type: "user" or "guest", profile }`                                                                              |
+| POST   | `/api/auth/logout`                   | Authenticated | None                                  | 204: revoke login or delete temporary guest identity                                                                    |
 
 ### Two-factor authentication (email code)
 
@@ -186,6 +200,55 @@ The health check compares the `prisma/migrations` folders with the database's
 folder isn't shipped with the build the comparison is skipped.
 Authentication runs before protected routing, so unknown paths without a valid
 token may return 401 before 404.
+
+### Sign in with OAuth (Google, GitHub, 42)
+
+Optional per provider: one whose client id and secret are empty is disabled.
+Signup and login are the same flow, because the backend decides between them.
+
+1. The frontend sends the browser (a full page navigation, not `fetch`) to
+   `GET /api/auth/oauth/:provider`. The API sets an `oauth_state` cookie (random,
+   `HttpOnly`, `SameSite=Lax`, scoped to `/api/auth/oauth`, 10 minutes, `Secure`
+   in production) and redirects to the provider.
+2. The provider redirects to `GET /api/auth/oauth/:provider/callback?code&state`.
+   The API compares `state` with the cookie, swaps the code for a token, reads
+   the profile (`fetch`, 5 second timeout), finds or creates the user and issues
+   a **one-time code** (60 seconds, stored hashed in `OAuthCode`). The callback
+   is a page navigation, so it always redirects to the frontend:
+   `FRONTEND_URL/auth/oauth?code=…` on success or `?error=…` on failure
+   (`state`, `denied`, `no_email`, `email_taken`, `failed`).
+3. The frontend sends the code to `POST /api/auth/oauth/exchange` and receives
+   `{ token, expiresAt, user }`, like a successful password login. A code works
+   once. The session token never appears in a URL.
+
+Which user the sign-in resolves to:
+
+- A linked identity, matched by `(provider, providerUserId)` only (never by email
+  after the first link), signs in as its user.
+- Otherwise, if the provider **vouches for the email** (Google `email_verified`,
+  GitHub's primary verified email): an existing account with that email that is
+  verified gets the provider linked; an existing **fresh unverified signup**
+  (`verifyBy` set) is deleted and replaced, so nobody can pre-register a victim's
+  address and share the account; an unverified account with no deadline (older
+  accounts) is left alone and the redirect carries `error=email_taken`. With no
+  existing account a new one is created, already verified.
+- If the provider **doesn't vouch** for the email (42, or GitHub without a
+  verified email): the email is never linked to an existing account
+  (`error=email_taken`). A new account is created **unverified**, like a password
+  signup: `verifyBy` is set, the six-digit code is emailed, and the token is
+  limited to the verification routes until the code is entered.
+- A new username comes from the provider's login (lowercased, other characters
+  replaced by `_`); on a clash a random four-character suffix is added.
+
+OAuth login does not ask for the email two-factor code: the provider is the
+second factor. A user with a password and two-factor who also linked a provider
+can therefore sign in with the provider without the code. OAuth-only accounts
+have no password (see section 2).
+
+The `/api/auth/oauth` routes are limited to 20 requests per IP per minute, for
+every method (the signup and login limiter only counts `POST`). Provider
+failures (timeout, non-2xx, malformed answer) become `error=failed` and are
+logged.
 
 ### Email verification
 
@@ -540,7 +603,8 @@ demoting the last administrator returns 409.
 
 ## 4. Data model
 
-Eighteen PostgreSQL tables. `LoginChallenge` backs two-factor login.
+Twenty PostgreSQL tables. `LoginChallenge` backs two-factor login; `OAuthAccount`
+and `OAuthCode` back OAuth sign-in.
 
 | Table                | Purpose                                                                | Main relationships                                                           |
 | -------------------- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
@@ -558,6 +622,8 @@ Eighteen PostgreSQL tables. `LoginChallenge` backs two-factor login.
 | `GameResult`         | One registered user's verified game attempt                            | A user and a game                                                            |
 | `EmailToken`         | One-time email codes: verification, password reset, 2FA on/off         | Belongs to one user                                                          |
 | `LoginChallenge`     | Short-lived step between password and session; holds the code's hash   | Belongs to one user                                                          |
+| `OAuthAccount`       | A Google, GitHub or 42 identity linked to a user                       | Belongs to one user; unique per provider identity and per user and provider  |
+| `OAuthCode`          | One-time code (about a minute) swapped for a session after OAuth       | Belongs to one user                                                          |
 | `Friendship`         | A friend request between two registered users, pending or accepted     | Two users                                                                    |
 | `Message`            | A chat message in a server                                             | One room; author is a user or guest, cleared if they are deleted             |
 | `Presence`           | A registered user's last heartbeat and the server they are in          | One user, optional room                                                      |
@@ -566,6 +632,7 @@ Eighteen PostgreSQL tables. `LoginChallenge` backs two-factor login.
 ```mermaid
 erDiagram
   User ||--o{ AuthSession : authenticates
+  User ||--o{ OAuthAccount : signs_in_with
   User ||--o{ StudyRoom : owns
   StudyRoom ||--o{ RoomMember : includes
   StudyRoom ||--o{ Invite : has
@@ -641,7 +708,7 @@ A permanent registered account. Guests have no `User` row.
 | `id`                 | `Int`       | Primary key; autoincrement | Stable registered-user identity                                                       |
 | `email`              | `String`    | Unique; required           | Contact address; API trims/lowercases new values                                      |
 | `username`           | `String`    | Unique; required           | Public name; API lowercases new values                                                |
-| `passwordHash`       | `String?`   | Null if omitted            | Salted scrypt hash; never a plain password                                            |
+| `passwordHash`       | `String?`   | Null if omitted            | Salted scrypt hash; never a plain password; null for OAuth-only accounts              |
 | `emailVerifiedAt`    | `DateTime?` | Null until verified        | When the owner proved control of `email`; clear on change                             |
 | `twoFactorEnabledAt` | `DateTime?` | Null = off                 | When emailed-code two-factor was turned on; sign-in asks for a code while it is set   |
 | `verifyBy`           | `DateTime?` | Set at signup (+30 min)    | Unverified past this, the account is deleted; cleared on verify                       |
@@ -649,9 +716,9 @@ A permanent registered account. Guests have no `User` row.
 | `createdAt`          | `DateTime`  | `now()`                    | Account creation time                                                                 |
 | `updatedAt`          | `DateTime`  | `@updatedAt`               | Last account modification                                                             |
 
-Relations: `authSessions`, `ownedRooms`, `memberships`, `studyHistory`,
-`gameResults`. A null hash preserves pre-existing profiles and never grants
-login. Database uniqueness is case-sensitive; API normalization applies to new
+Relations: `authSessions`, `oAuthAccounts`, `oAuthCodes`, `ownedRooms`,
+`memberships`, `studyHistory`, `gameResults`. A null hash preserves pre-existing
+profiles and OAuth-only accounts and never grants password login. Database uniqueness is case-sensitive; API normalization applies to new
 writes and does not rewrite older records.
 
 `UserAvatar`: `userId` (primary key, cascade), `contentType` (SQL allows only the
@@ -794,10 +861,11 @@ who left early or arrived late completed the interval.
 `(userId, playedAt)`, `(userId, gameId, score)`, `gameId`. There is no guest
 relation; persistent scores require registration.
 
-### 4.10 Account recovery and two-factor tables
+### 4.10 Account recovery, two-factor and OAuth tables
 
 `EmailToken` backs email verification, password reset and the codes for turning
-two-factor on or off; `LoginChallenge` backs two-factor sign-in. Every table cascades on user deletion, and
+two-factor on or off; `LoginChallenge` backs two-factor sign-in; `OAuthAccount`
+and `OAuthCode` back OAuth sign-in. Every table cascades on user deletion, and
 tokens are stored as hashes, as with `AuthSession`.
 
 - **`EmailToken`**: `purpose` is `EMAIL_VERIFICATION`, `PASSWORD_RESET_CODE` (the emailed six-digit code) `PASSWORD_RESET` (the long token a verified code is exchanged for), `TWO_FACTOR_ENABLE_CODE` or `TWO_FACTOR_DISABLE_CODE` (emailed six-digit codes; the hash includes the user and the action). `failedAttempts` counts wrong guesses at a code. It
@@ -811,6 +879,16 @@ tokens are stored as hashes, as with `AuthSession`.
   and the purpose `login`) and is replaced by a resend. `expiresAt` is minutes,
   not days, and is the code's expiry too; `failedAttempts` lets the service
   delete the challenge after a few misses.
+- **`OAuthAccount`**: links a user to a provider identity. `provider` is the enum
+  `OAuthProvider` (`GOOGLE`, `GITHUB`, `FORTY_TWO`) and `providerUserId` is the
+  provider's stable id as text (Google `sub`, the numeric GitHub and 42 ids).
+  Unique `(provider, providerUserId)` means one identity belongs to one user;
+  unique `(userId, provider)` means a user links each provider at most once.
+  Sign-in looks the identity up by this pair and never by email.
+- **`OAuthCode`**: the one-time code that replaces a session token in the
+  redirect URL. `codeHash` is unique, `expiresAt` is about a minute, and the row
+  is deleted when exchanged (single use); expired rows are swept by
+  `cleanupExpiredSessions`.
 
 Password reset creates a `PASSWORD_RESET` token; consuming it sets a new hash, deletes
 the user's `AuthSession` rows and login challenges, and marks the token used, in one
@@ -932,14 +1010,14 @@ entries that have results.
 
 ## 7. Deletion and lifecycle
 
-| Parent action          | Database behavior                                                                                                                                                                  | Implemented API behavior                                                 |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| Delete User            | Cascade logins, memberships, invites, friendships, presence, join requests, attendance, results; chat messages keep their text with the author cleared; owned rooms block deletion | Account deletion cancels/deletes owned rooms first, then the user        |
-| Delete GuestSession    | Cascade guest memberships and attendance; chat messages keep their text                                                                                                            | Logout/cleanup also cancels solo timers and settles shared attendance    |
-| Delete StudyRoom       | Cascade memberships, invites, messages, join requests; set historical session room IDs to null                                                                                     | Owner `DELETE /rooms/:id` or account deletion; close keeps the data      |
-| Delete PomodoroSession | Cascade attendance                                                                                                                                                                 | Ordinary cancellation retains the session and partial history            |
-| Delete MiniGame        | Blocked if results reference it                                                                                                                                                    | CLI disables instead                                                     |
-| Close StudyRoom        | SQL only stores a timestamp                                                                                                                                                        | Cancels the live timer, saves partial time, rejects new joins and timers |
+| Parent action          | Database behavior                                                                                                                                                                                         | Implemented API behavior                                                 |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Delete User            | Cascade logins, OAuth links and codes, memberships, invites, friendships, presence, join requests, attendance, results; chat messages keep their text with the author cleared; owned rooms block deletion | Account deletion cancels/deletes owned rooms first, then the user        |
+| Delete GuestSession    | Cascade guest memberships and attendance; chat messages keep their text                                                                                                                                   | Logout/cleanup also cancels solo timers and settles shared attendance    |
+| Delete StudyRoom       | Cascade memberships, invites, messages, join requests; set historical session room IDs to null                                                                                                            | Owner `DELETE /rooms/:id` or account deletion; close keeps the data      |
+| Delete PomodoroSession | Cascade attendance                                                                                                                                                                                        | Ordinary cancellation retains the session and partial history            |
+| Delete MiniGame        | Blocked if results reference it                                                                                                                                                                           | CLI disables instead                                                     |
+| Close StudyRoom        | SQL only stores a timestamp                                                                                                                                                                               | Cancels the live timer, saves partial time, rejects new joins and timers |
 
 Expiry is not an automatic SQL deletion. Authentication checks it on every
 request and `cleanupExpiredSessions()` removes expired identities periodically.
@@ -1029,7 +1107,10 @@ serve Express on an ephemeral loopback port, use a controlled clock (no sleeping
 and clean their own fixtures.
 
 Coverage includes email-code two-factor (turning it on and off, sign-in
-codes, resend, attempt limits and expiry), room joins for users and guests, personal invite codes,
+codes, resend, attempt limits and expiry), OAuth sign-in against fake providers
+(state cookie and mismatch, first sign-in, replay and expiry of the one-time
+code, unverified provider emails, linking, replacing an unverified signup,
+username clashes, no password login for OAuth-only accounts), room joins for users and guests, personal invite codes,
 permanent membership with leave and kick, friends, presence, join requests, server
 chat, solo and shared
 timers, pause/resume/completion, snapshot settings, late joins, expiry,
@@ -1052,6 +1133,8 @@ exclusion. CI runs the full suite against its own PostgreSQL service.
 | `src/auth/auth.service.ts`                  | Passwords, token issuance/authentication, profiles              |
 | `src/rooms/rooms.service.ts`                | Memberships, settings, owner actions                            |
 | `src/auth/twofactor.service.ts`             | Emailed codes: sign-in challenge, turning two-factor on/off     |
+| `src/auth/oauth.providers.ts`               | Google, GitHub and 42: token swap and profile fetch             |
+| `src/auth/oauth.service.ts`                 | OAuth state, link or create the user, one-time code exchange    |
 | `src/friends/friends.service.ts`            | Friend requests, accept, list, remove                           |
 | `src/friends/social.service.ts`             | Presence heartbeat, join requests                               |
 | `src/chat/chat.service.ts`                  | Server chat messages                                            |

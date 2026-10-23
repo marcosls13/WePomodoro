@@ -12,7 +12,7 @@ import {
 import { startChallenge } from "./twofactor.service.js";
 
 // Matches the lifetime of the emailed code.
-const VERIFY_WINDOW_MS = 30 * 60_000;
+export const VERIFY_WINDOW_MS = 30 * 60_000;
 const DAY_IN_MS = 86400000;
 export const SESSION_EXPIRES_AT = 7 * DAY_IN_MS; // 7 days, for auth sessions
 

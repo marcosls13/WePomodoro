@@ -1,6 +1,7 @@
 import { cleanupExpiredSessions } from "./api/lifecycle.js";
 import { createApp } from "./app.js";
 import { gameVerifiers } from "./games/registry.js";
+import { providersFromEnv } from "./auth/oauth.providers.js";
 import { consoleMailer, type Mailer } from "./mail/mailer.js";
 import { createSmtpMailer, smtpConfigFromEnv } from "./mail/smtp.js";
 import { prisma } from "./prisma.js";
@@ -34,7 +35,14 @@ function createMailer(): Mailer {
   return smtp.mailer;
 }
 
-const ctx = { db: prisma, now: () => new Date(), mailer: createMailer() };
+new URL(process.env.FRONTEND_URL ?? "http://localhost:5173");
+const ctx = {
+  db: prisma,
+  now: () => new Date(),
+  mailer: createMailer(),
+  oauth: providersFromEnv(process.env),
+};
+
 const app = createApp(ctx, {
   gameVerifiers,
   trustProxy,

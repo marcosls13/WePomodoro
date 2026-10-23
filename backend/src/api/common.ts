@@ -1,4 +1,5 @@
 import type { Request } from "express";
+import type { OAuthProviderConfig } from "../auth/oauth.providers.js";
 import type { Mailer } from "../mail/mailer.js";
 import type { Prisma, PrismaClient } from "../generated/prisma/client.js";
 
@@ -21,6 +22,7 @@ export interface Context {
   db: PrismaClient;
   now: () => Date;
   mailer: Mailer;
+  oauth: ReadonlyMap<string, OAuthProviderConfig>;
 }
 
 export type Transaction = Prisma.TransactionClient;

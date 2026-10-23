@@ -105,6 +105,9 @@ export async function cleanupExpiredSessions(ctx: Context) {
   await ctx.db.loginChallenge.deleteMany({
     where: { expiresAt: { lte: ctx.now() } },
   });
+  await ctx.db.oAuthCode.deleteMany({
+    where: { expiresAt: { lte: ctx.now() } },
+  });
   const guests = await ctx.db.guestSession.findMany({
     where: { expiresAt: { lte: ctx.now() } },
     take: 100,

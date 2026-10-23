@@ -66,6 +66,8 @@ model User {
   authSessions       AuthSession[]
   emailTokens        EmailToken[]
   twoFactorEnabledAt DateTime?
+  oAuthAccounts      OAuthAccount[]
+  oAuthCodes         OAuthCode[]
   loginChallenges    LoginChallenge[]
   ownedRooms         StudyRoom[]
   roomBans           RoomBan[]
@@ -370,4 +372,35 @@ model GameResult {
   @@index([userId, playedAt])
   @@index([userId, gameId, score])
   @@index([gameId])
+}
+
+enum OAuthProvider {
+  GOOGLE
+  GITHUB
+  FORTY_TWO
+}
+
+model OAuthAccount {
+  id             String        @id @default(uuid()) @db.Uuid
+  userId         Int
+  provider       OAuthProvider
+  providerUserId String
+  createdAt      DateTime      @default(now())
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerUserId])
+  @@unique([userId, provider])
+  @@index([userId])
+}
+
+model OAuthCode {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    Int
+  codeHash  String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
 }

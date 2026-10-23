@@ -414,10 +414,22 @@ void test("deleting a user cascades email tokens and login challenges", async ()
         expiresAt,
       },
     });
+    await tx.oAuthAccount.create({
+      data: {
+        userId: friend.id,
+        provider: "GITHUB",
+        providerUserId: randomUUID(),
+      },
+    });
+    await tx.oAuthCode.create({
+      data: { userId: friend.id, codeHash: randomUUID(), expiresAt },
+    });
     await tx.user.delete({ where: { id: friend.id } });
     const where = { userId: friend.id };
     assert.equal(await tx.emailToken.count({ where }), 0);
     assert.equal(await tx.loginChallenge.count({ where }), 0);
+    assert.equal(await tx.oAuthAccount.count({ where }), 0);
+    assert.equal(await tx.oAuthCode.count({ where }), 0);
   });
 });
 
@@ -692,6 +704,41 @@ const invalidCases: {
       };
       await tx.emailToken.create({ data });
       return tx.emailToken.create({ data });
+    },
+  },
+  {
+    name: "the same provider identity linked to two users",
+    error: knownError("P2002"),
+    run: async (tx) => {
+      const { user, friend } = await fixtures(tx);
+      const providerUserId = randomUUID();
+      await tx.oAuthAccount.create({
+        data: { userId: user.id, provider: "GOOGLE", providerUserId },
+      });
+      return tx.oAuthAccount.create({
+        data: { userId: friend.id, provider: "GOOGLE", providerUserId },
+      });
+    },
+  },
+  {
+    name: "a second link to the same provider for one user",
+    error: knownError("P2002"),
+    run: async (tx) => {
+      const { user } = await fixtures(tx);
+      await tx.oAuthAccount.create({
+        data: {
+          userId: user.id,
+          provider: "GOOGLE",
+          providerUserId: randomUUID(),
+        },
+      });
+      return tx.oAuthAccount.create({
+        data: {
+          userId: user.id,
+          provider: "GOOGLE",
+          providerUserId: randomUUID(),
+        },
+      });
     },
   },
   {

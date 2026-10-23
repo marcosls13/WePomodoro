@@ -36,6 +36,12 @@ import {
   verifyPassword,
 } from "../auth/auth.service.js";
 import {
+  OAuthError,
+  oauthCallback,
+  oauthExchange,
+  oauthStart,
+} from "../auth/oauth.service.js";
+import {
   resendChallenge,
   requestToggleCode,
   confirmToggleCode,
@@ -317,6 +323,72 @@ export function createRouter(
       throw new ApiError(400, "A reset token is required");
     await confirmPasswordReset(ctx, input.resetToken, password(input.password));
     res.sendStatus(204);
+  });
+
+  // Limits every method on the OAuth routes (the perIp limiter only counts POST,
+  // and these are mostly browser GET navigations).
+  router.use(
+    "/auth/oauth",
+    rateLimit({
+      windowMs: 60_000,
+      limit: limits.authPerMinute,
+      standardHeaders: "draft-7",
+      legacyHeaders: false,
+      keyGenerator: (req) => ipKeyGenerator(req.ip ?? "unknown"),
+      handler: tooMany("Too many authentication attempts; try again shortly"),
+    }),
+  );
+
+  // Lists the enabled providers so the frontend draws only those buttons.
+  router.get("/auth/oauth", (req, res) => {
+    res.json({ providers: [...ctx.oauth.keys()] });
+  });
+
+  // Starts a sign-in: stores a random state in a cookie, then redirects the
+  // browser to the provider.
+  router.get("/auth/oauth/:provider", (req, res) => {
+    const { url, state } = oauthStart(ctx, req.params.provider);
+    res.cookie("oauth_state", state, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      path: "/api/auth/oauth",
+      maxAge: 10 * 60_000,
+    });
+    res.redirect(url);
+  });
+
+  // Where the provider sends the browser back. Always redirects to the frontend
+  // (`?code=` or `?error=`) and never answers JSON, since it is a page navigation.
+  router.get("/auth/oauth/:provider/callback", async (req, res) => {
+    const frontend = (
+      process.env.FRONTEND_URL ?? "http://localhost:5173"
+    ).replace(/\/$/, "");
+    const cookieState = /(?:^|;\s*)oauth_state=([^;]*)/.exec(
+      req.headers.cookie ?? "",
+    )?.[1];
+    res.clearCookie("oauth_state", { path: "/api/auth/oauth" });
+    try {
+      if (typeof req.query.error === "string") throw new OAuthError("denied");
+      const code = await oauthCallback(
+        ctx,
+        req.params.provider,
+        req.query.code,
+        cookieState,
+        req.query.state,
+      );
+      res.redirect(`${frontend}/auth/oauth?code=${encodeURIComponent(code)}`);
+    } catch (error) {
+      if (!(error instanceof OAuthError))
+        console.error("OAuth callback failed", error);
+      const reason = error instanceof OAuthError ? error.code : "failed";
+      res.redirect(`${frontend}/auth/oauth?error=${reason}`);
+    }
+  });
+
+  // The frontend swaps the one-time code for a session token, like a login.
+  router.post("/auth/oauth/exchange", async (req, res) => {
+    res.json(await oauthExchange(ctx, body(req).code));
   });
 
   router.post("/auth/guest", async (req, res) => {

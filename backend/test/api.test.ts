@@ -11,6 +11,10 @@ import { cleanupExpiredSessions } from "../src/api/lifecycle.js";
 import { createApp } from "../src/app.js";
 import { PrismaClient } from "../src/generated/prisma/client.js";
 import { tokenHash } from "../src/auth/auth.service.js";
+import type {
+  OAuthProfile,
+  OAuthProviderConfig,
+} from "../src/auth/oauth.providers.js";
 import { sweepTimers } from "../src/timers/timers.service.js";
 
 const url = new URL(
@@ -31,6 +35,22 @@ const db = new PrismaClient({ adapter: new PrismaPg({ connectionString }) });
 const prefix = `api${randomBytes(5).toString("hex")}`;
 let clock = new Date();
 const mails: { to: string; text: string }[] = [];
+// Fake providers: the profile comes from a table keyed by the "code".
+const profiles = new Map<string, OAuthProfile>();
+const fake = (
+  id: OAuthProviderConfig["id"],
+  dbValue: OAuthProviderConfig["dbValue"],
+): OAuthProviderConfig => ({
+  id,
+  dbValue,
+  authorizeUrl: (state) => `http://provider.test/${id}?state=${state}`,
+  profile: (code) => {
+    const profile = profiles.get(code);
+    return profile
+      ? Promise.resolve(profile)
+      : Promise.reject(new Error("Unknown fake code"));
+  },
+});
 const ctx = {
   db,
   now: () => new Date(clock),
@@ -40,6 +60,10 @@ const ctx = {
       return Promise.resolve();
     },
   },
+  oauth: new Map([
+    ["google", fake("google", "GOOGLE")],
+    ["42", fake("42", "FORTY_TWO")],
+  ]),
 };
 let server: Server;
 let base: string;
@@ -2542,4 +2566,190 @@ void test("moderators moderate rooms they belong to, but not staff or the owner"
     undefined,
     204,
   );
+});
+
+// --- OAuth ------------------------------------------------------------------
+// Drives the browser flow against a fake provider and returns the final redirect.
+async function oauth(provider: string, profile: OAuthProfile, state?: string) {
+  const code = `code-${randomBytes(6).toString("hex")}`;
+  profiles.set(code, profile);
+  const start = await fetch(`${base}/api/auth/oauth/${provider}`, {
+    redirect: "manual",
+  });
+  assert.equal(start.status, 302);
+  const sent = new URL(start.headers.get("location") ?? "").searchParams.get(
+    "state",
+  );
+  const cookie = (start.headers.get("set-cookie") ?? "").split(";")[0] ?? "";
+  const done = await fetch(
+    `${base}/api/auth/oauth/${provider}/callback?code=${code}&state=${state ?? sent ?? ""}`,
+    { redirect: "manual", headers: { cookie } },
+  );
+  assert.equal(done.status, 302);
+  return new URL(done.headers.get("location") ?? "");
+}
+function who(name: string, over: Partial<OAuthProfile> = {}): OAuthProfile {
+  const login = `${prefix}${name}`;
+  return {
+    providerUserId: login,
+    email: `${login}@example.test`,
+    emailVerified: true,
+    login,
+    ...over,
+  };
+}
+const exchange = (done: URL, expected = 200) =>
+  request<Auth>(
+    "/api/auth/oauth/exchange",
+    "POST",
+    undefined,
+    { code: done.searchParams.get("code") },
+    expected,
+  );
+
+void test("OAuth: providers, state cookie and a first verified sign-in", async () => {
+  const listed = await request<{ providers: string[] }>(
+    "/api/auth/oauth",
+    "GET",
+  );
+  assert.deepEqual(listed.providers, ["google", "42"]);
+  const missing = await fetch(`${base}/api/auth/oauth/github`, {
+    redirect: "manual",
+  });
+  assert.equal(missing.status, 404);
+  const start = await fetch(`${base}/api/auth/oauth/google`, {
+    redirect: "manual",
+  });
+  assert.match(start.headers.get("set-cookie") ?? "", /oauth_state=.*HttpOnly/);
+
+  const profile = who("first");
+  const done = await oauth("google", profile);
+  assert.ok(done.searchParams.get("code"));
+  const session = await exchange(done);
+  const stored = await db.user.findUniqueOrThrow({
+    where: { id: session.user.id },
+    include: { oAuthAccounts: true },
+  });
+  assert.equal(stored.passwordHash, null);
+  assert.ok(stored.emailVerifiedAt);
+  assert.equal(stored.oAuthAccounts.length, 1);
+  await request("/api/auth/me", "GET", session.token);
+  // A one-time code works once.
+  await exchange(done, 401);
+
+  // Signing in again finds the same user.
+  const again = await exchange(await oauth("google", profile));
+  assert.equal(again.user.id, session.user.id);
+  assert.equal(
+    await db.oAuthAccount.count({ where: { userId: stored.id } }),
+    1,
+  );
+  // No password login, and no way to change the password without one.
+  await request(
+    "/api/auth/login",
+    "POST",
+    undefined,
+    { username: stored.username, password: "Correct-password-42" },
+    401,
+  );
+  await request(
+    "/api/users/me",
+    "PATCH",
+    session.token,
+    { password: "Another-password-42", currentPassword: "Correct-password-42" },
+    401,
+  );
+  // The code expires after a minute.
+  const stale = await oauth("google", profile);
+  advance(61);
+  await exchange(stale, 401);
+  // Deleting the user removes its OAuth rows.
+  await db.user.delete({ where: { id: stored.id } });
+  assert.equal(
+    await db.oAuthAccount.count({ where: { userId: stored.id } }),
+    0,
+  );
+  assert.equal(await db.oAuthCode.count({ where: { userId: stored.id } }), 0);
+});
+
+void test("OAuth: a wrong state is refused and creates nothing", async () => {
+  const profile = who("badstate");
+  const done = await oauth("google", profile, "not-the-state");
+  assert.equal(done.searchParams.get("error"), "state");
+  assert.equal(
+    await db.user.count({ where: { email: profile.email ?? "" } }),
+    0,
+  );
+});
+
+void test("OAuth: an email the provider doesn't vouch for must be verified with a code", async () => {
+  const profile = who("fortytwo", { emailVerified: false });
+  const session = await exchange(await oauth("42", profile));
+  const stored = await db.user.findUniqueOrThrow({
+    where: { id: session.user.id },
+  });
+  assert.equal(stored.emailVerifiedAt, null);
+  assert.ok(stored.verifyBy);
+  // Limited to the verify routes until the emailed code is entered.
+  await request("/api/rooms", "GET", session.token, undefined, 403);
+  const mail = mails.at(-1);
+  assert.equal(mail?.to, profile.email);
+  const code = /code is (\d{6})/.exec(mail.text)?.[1];
+  assert.ok(code);
+  await request("/api/auth/verify-email", "POST", session.token, { code }, 204);
+  await request("/api/rooms", "GET", session.token);
+});
+
+void test("OAuth: links a verified email, refuses unverified ones, and replaces squatters", async () => {
+  // Verified provider email + verified password account: same user.
+  const owner = await user();
+  const linked = await exchange(
+    await oauth("google", who("link", { email: owner.user.email })),
+  );
+  assert.equal(linked.user.id, owner.user.id);
+
+  // A provider that doesn't vouch never links to an existing email.
+  const refused = await oauth(
+    "42",
+    who("nolink", { email: owner.user.email, emailVerified: false }),
+  );
+  assert.equal(refused.searchParams.get("error"), "email_taken");
+
+  // A fresh unverified signup is replaced by the verified provider login.
+  const squatter = await user(false);
+  const claimed = await exchange(
+    await oauth("google", who("squat", { email: squatter.user.email })),
+  );
+  assert.notEqual(claimed.user.id, squatter.user.id);
+  assert.equal(await db.user.count({ where: { id: squatter.user.id } }), 0);
+  await request("/api/auth/me", "GET", squatter.token, undefined, 401);
+
+  // An unverified account with no deadline may hold data: never touched.
+  const legacy = await user(false);
+  await db.user.update({
+    where: { id: legacy.user.id },
+    data: { verifyBy: null },
+  });
+  const kept = await oauth(
+    "google",
+    who("legacy", { email: legacy.user.email }),
+  );
+  assert.equal(kept.searchParams.get("error"), "email_taken");
+  assert.equal(await db.user.count({ where: { id: legacy.user.id } }), 1);
+});
+
+void test("OAuth: a username clash gets a random suffix", async () => {
+  const first = await exchange(await oauth("google", who("same")));
+  const second = await exchange(
+    await oauth(
+      "google",
+      who("same", {
+        providerUserId: `${prefix}other`,
+        email: `${prefix}other@example.test`,
+      }),
+    ),
+  );
+  assert.notEqual(first.user.id, second.user.id);
+  assert.notEqual(first.user.username, second.user.username);
+  assert.match(second.user.username, /^[a-z0-9_-]{3,32}$/);
 });

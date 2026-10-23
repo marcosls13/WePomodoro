@@ -22,6 +22,14 @@ const presets = [
   ],
   ["Auth", "Me", "GET", "/auth/me", null],
   ["Auth", "Log out", "POST", "/auth/logout", null],
+  ["OAuth", "Enabled providers", "GET", "/auth/oauth", null],
+  [
+    "OAuth",
+    "Swap the one-time code for a session",
+    "POST",
+    "/auth/oauth/exchange",
+    { code: "{oauthCode}" },
+  ],
   ["2FA", "Status", "GET", "/auth/2fa", null],
   [
     "2FA",
@@ -235,7 +243,7 @@ pre{margin:0;padding:10px;background:var(--code);border-radius:6px;overflow:auto
 
 const script = `
 const presets = ${JSON.stringify(presets)};
-const names = ["token", "roomId", "timerId", "inviteCode", "resetToken", "friendshipId", "joinRequestId", "challengeToken"];
+const names = ["token", "roomId", "timerId", "inviteCode", "resetToken", "friendshipId", "joinRequestId", "challengeToken", "oauthCode"];
 const $ = (id) => document.getElementById(id);
 const vars = {};
 for (const n of names) {

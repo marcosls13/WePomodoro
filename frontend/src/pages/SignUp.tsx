@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router";
+import OAuthButtons from "../OAuthButtons";
 import Tomato from "../Tomato";
 import { useRedirectIfSignedIn } from "../useRedirectIfSignedIn";
 
@@ -184,6 +185,7 @@ export default function SignUp() {
             Continue as Guest
           </Link>
         </form>
+        <OAuthButtons />
       </div>
     </section>
   );

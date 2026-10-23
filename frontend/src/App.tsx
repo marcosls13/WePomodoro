@@ -7,6 +7,7 @@ import SignUp from "./pages/SignUp";
 import SignIn from "./pages/SignIn";
 import SignGuest from "./pages/SignGuest";
 import VerifyEmail from "./pages/VerifyEmail";
+import OAuthCallback from "./pages/OAuthCallback";
 import ForgotPassword from "./pages/ForgotPassword";
 import ResetPassword from "./pages/ResetPassword";
 import Me from "./pages/Me";
@@ -51,6 +52,7 @@ export default function App() {
           <Route path="/auth/signup" element={<SignUp />} />
           <Route path="/auth/login" element={<SignIn />} />
           <Route path="/auth/guest" element={<SignGuest />} />
+          <Route path="/auth/oauth" element={<OAuthCallback />} />
           <Route path="/auth/verify-email" element={<VerifyEmail />} />
           <Route path="/auth/forgot-password" element={<ForgotPassword />} />
           <Route path="/auth/reset-password" element={<ResetPassword />} />

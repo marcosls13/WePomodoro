@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router";
+import OAuthButtons from "../OAuthButtons";
 import { useRedirectIfSignedIn } from "../useRedirectIfSignedIn";
 
 const API_URL = import.meta.env.VITE_API_URL as string;
@@ -278,6 +279,7 @@ export default function SignIn() {
             Continue as Guest
           </Link>
         </form>
+        {!challenge && <OAuthButtons />}
       </div>
     </section>
   );

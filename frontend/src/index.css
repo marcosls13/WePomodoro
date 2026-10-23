@@ -407,6 +407,30 @@ h2 {
 .signup-button {
   width: 100%;
 }
+.oauth-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+.oauth-button {
+  width: 100%;
+  background: #fff;
+  color: var(--ink);
+  border: 1px solid #efc5c0;
+}
+.oauth-button[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.oauth-page {
+  grid-template-columns: 1fr;
+}
+.oauth-page .signup-card {
+  justify-self: center;
+}
 .not-found {
   text-align: center;
   padding: 90px 0;

@@ -1,6 +1,6 @@
-import Chat from "./Chat";
+import Chat from "../components/Chat";
 import { useState, useEffect } from "react";
-import Timer from "./Timer";
+import Timer from "../components/Timer";
 import { CYCLE_SEC, getMode } from "../lib/timer";
 import { useParams } from "react-router";
 import NotFound from "./NotFound";

@@ -1,5 +1,5 @@
 import { registerChatSocket } from "./chat.js";
-import { registerJoinSocket } from "./room.js";
+import { registerJoinSocket, registerStartSocket } from "./room.js";
 import type { TypedServer } from "./types.js";
 
 export function registerSocketHandlers(io: TypedServer): void {
@@ -10,5 +10,6 @@ export function registerSocketHandlers(io: TypedServer): void {
     });
     registerChatSocket(io, socket);
     registerJoinSocket(socket);
+    registerStartSocket(io, socket);
   });
 }

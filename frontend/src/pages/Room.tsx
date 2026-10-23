@@ -6,6 +6,7 @@ import { useParams } from "react-router";
 import NotFound from "./NotFound";
 import { useRoom } from "../hooks/useRoom";
 import { useRoomSocket } from "../hooks/useRoomSocket";
+import { socket } from "../socket";
 
 export default function Room() {
   const [elapsed, setElapsed] = useState(0);
@@ -26,6 +27,17 @@ export default function Room() {
     };
   }, [running]);
 
+  useEffect(() => {
+    function onStart(startedAt: number) {
+      console.log("I got it!");
+      console.log(startedAt);
+    }
+    socket.on("room:start", onStart);
+    return () => {
+      socket.off("room:start", onStart);
+    };
+  }, []);
+
   if (!code || status === "missing") return <NotFound />;
   if (status === "loading") return <p>Loading...</p>;
 
@@ -36,7 +48,9 @@ export default function Room() {
         running={running}
         code={code}
         onBegin={() => {
+          console.log("hey");
           setRunning(true);
+          socket.emit("room:start");
         }}
       />
       <div

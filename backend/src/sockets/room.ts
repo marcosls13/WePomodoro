@@ -17,6 +17,10 @@ export function registerJoinSocket(socket: TypedSocket): void {
     }
     await socket.join(room.code);
     socket.data.code = room.code;
+    socket.emit("timer:state", {
+      startedAt: room.startedAt,
+      serverNow: Date.now(),
+    });
     console.log(socket.id, "joined", room.code);
   });
 }
@@ -36,7 +40,10 @@ export function registerStartSocket(
       return;
     }
     console.log("room:start received");
-    io.to(room.code).emit("room:start", room.startedAt);
+    io.to(room.code).emit("timer:state", {
+      startedAt: room.startedAt,
+      serverNow: Date.now(),
+    });
     console.log("after");
   });
 }

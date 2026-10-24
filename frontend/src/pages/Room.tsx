@@ -8,9 +8,18 @@ import { useRoom } from "../hooks/useRoom";
 import { useRoomSocket } from "../hooks/useRoomSocket";
 import { socket } from "../socket";
 
+interface TimerState {
+  startedAt: number | null;
+  serverNow: number | null;
+}
+
 export default function Room() {
   const [elapsed, setElapsed] = useState(0);
   const [running, setRunning] = useState(false);
+  const [timerState, setTimerState] = useState<TimerState>({
+    startedAt: null,
+    serverNow: null,
+  });
   const { code } = useParams();
   const status = useRoom(code);
   useRoomSocket(code);
@@ -28,13 +37,12 @@ export default function Room() {
   }, [running]);
 
   useEffect(() => {
-    function onStart(startedAt: number) {
-      console.log("I got it!");
-      console.log(startedAt);
+    function onTimerState(state: TimerState) {
+      setTimerState(state);
     }
-    socket.on("room:start", onStart);
+    socket.on("timer:state", onTimerState);
     return () => {
-      socket.off("room:start", onStart);
+      socket.off("timer:state", onTimerState);
     };
   }, []);
 
@@ -48,7 +56,6 @@ export default function Room() {
         running={running}
         code={code}
         onBegin={() => {
-          console.log("hey");
           setRunning(true);
           socket.emit("room:start");
         }}

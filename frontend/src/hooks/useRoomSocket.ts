@@ -8,8 +8,8 @@ export function useRoomSocket(code: string | undefined) {
       socket.emit("room:join", code);
     }
 
-    if (socket.connected) join();
     socket.on("connect", join);
+    if (socket.connected) join();
 
     return () => {
       socket.off("connect", join);

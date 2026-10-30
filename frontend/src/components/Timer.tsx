@@ -24,7 +24,7 @@ export default function Timer({
   onBegin: () => void;
 }) {
   const position = elapsed % CYCLE_SEC;
-  const mode = getMode(elapsed, position);
+  const mode = getMode(running, position);
 
   return (
     <div

@@ -8,37 +8,52 @@ import { useRoom } from "../hooks/useRoom";
 import { useRoomSocket } from "../hooks/useRoomSocket";
 import { socket } from "../socket";
 
+interface TimerStateMessage {
+  startedAt: number | null;
+  serverNow: number;
+}
+
 interface TimerState {
   startedAt: number | null;
-  serverNow: number | null;
+  offset: number;
 }
 
 export default function Room() {
-  const [elapsed, setElapsed] = useState(0);
-  const [running, setRunning] = useState(false);
-  const [timerState, setTimerState] = useState<TimerState>({
-    startedAt: null,
-    serverNow: null,
-  });
+  const [now, setNow] = useState(() => Date.now());
+  const [timerState, setTimerState] = useState<TimerState | null>(null);
   const { code } = useParams();
   const status = useRoom(code);
   useRoomSocket(code);
 
-  const mode = getMode(elapsed, elapsed % CYCLE_SEC);
+  const startedAt = timerState?.startedAt ?? null;
+  const running = startedAt !== null;
+  const offset = timerState?.offset ?? 0;
+  const serverNow = now + offset;
+  const elapsed =
+    startedAt === null
+      ? 0
+      : Math.max(0, Math.floor((serverNow - startedAt) / 1000));
+
+  const mode = getMode(running, elapsed % CYCLE_SEC);
 
   useEffect(() => {
-    if (!running) return;
+    if (startedAt === null) return;
     const id = setInterval(() => {
-      setElapsed((e) => e + 1);
+      setNow(Date.now());
     }, 1000);
     return () => {
       clearInterval(id);
     };
-  }, [running]);
+  }, [startedAt]);
 
   useEffect(() => {
-    function onTimerState(state: TimerState) {
-      setTimerState(state);
+    function onTimerState(message: TimerStateMessage) {
+      const receivedAt = Date.now();
+      setNow(receivedAt);
+      setTimerState({
+        startedAt: message.startedAt,
+        offset: message.serverNow - receivedAt,
+      });
     }
     socket.on("timer:state", onTimerState);
     return () => {
@@ -47,7 +62,7 @@ export default function Room() {
   }, []);
 
   if (!code || status === "missing") return <NotFound />;
-  if (status === "loading") return <p>Loading...</p>;
+  if (status === "loading" || timerState === null) return <p>Loading...</p>;
 
   return (
     <main className="flex flex-col md:flex-row bg-gray-200 h-dvh p-4">
@@ -56,7 +71,6 @@ export default function Room() {
         running={running}
         code={code}
         onBegin={() => {
-          setRunning(true);
           socket.emit("room:start");
         }}
       />

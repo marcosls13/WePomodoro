@@ -1,5 +1,8 @@
 import { randomInt } from "node:crypto";
 
+// TODO
+// room expiry / cleanup
+
 export interface Member {
   clientId: string;
   name: string;

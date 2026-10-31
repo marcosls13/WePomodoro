@@ -4,8 +4,6 @@ import "./index.css";
 import App from "./App.tsx";
 import { BrowserRouter } from "react-router";
 
-import "./socket.ts";
-
 const root = document.getElementById("root");
 if (!root) throw new Error("Root element not found");
 createRoot(root).render(

@@ -39,11 +39,9 @@ export function registerStartSocket(
       console.warn("could not start room");
       return;
     }
-    console.log("room:start received");
     io.to(room.code).emit("timer:state", {
       startedAt: room.startedAt,
       serverNow: Date.now(),
     });
-    console.log("after");
   });
 }

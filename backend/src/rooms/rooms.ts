@@ -3,15 +3,9 @@ import { randomInt } from "node:crypto";
 // TODO
 // room expiry / cleanup
 
-export interface Member {
-  clientId: string;
-  name: string;
-}
-
 export interface Room {
   code: string;
   startedAt: number | null;
-  members: Map<string, Member>;
 }
 
 const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -32,34 +26,13 @@ export function createRoom(): Room {
   while (rooms.has(code)) {
     code = generateCode();
   }
-  const room: Room = { code, startedAt: null, members: new Map() };
+  const room: Room = { code, startedAt: null };
   rooms.set(code, room);
   return room;
 }
 
 export function getRoom(code: string): Room | undefined {
   return rooms.get(code.toUpperCase());
-}
-
-export function joinRoom(
-  code: string,
-  socketId: string,
-  member: Member,
-): Room | undefined {
-  const room = rooms.get(code.toUpperCase());
-  if (!room) return undefined;
-  room.members.set(socketId, member);
-  return room;
-}
-
-export function leaveRoom(code: string, socketId: string): void {
-  const key = code.toUpperCase();
-  const room = rooms.get(key);
-  if (!room) return;
-  room.members.delete(socketId);
-  if (room.members.size === 0) {
-    rooms.delete(key);
-  }
 }
 
 export function startRoom(code: string): Room | undefined {

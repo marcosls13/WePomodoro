@@ -1,11 +1,11 @@
 import { useState } from "react";
-import { NavLink } from "react-router-dom"; // Importación obligatoria
+import { NavLink } from "react-router-dom";
 import Logo from "./Logo.tsx";
 
 interface NavItemProps {
   to: string;
   content: string;
-  isPrimary?: boolean; // Permite destacar solo el botón principal
+  isPrimary?: boolean;
   onClick: () => void;
 }
 
@@ -69,9 +69,9 @@ export default function Navbar() {
             strokeLinejoin="round"
           >
             {isMenuOpen ? (
-              <path d="M6 18L18 6M6 6l12 12" stroke="#000000" /> // Icono 'X'
+              <path d="M6 18L18 6M6 6l12 12" stroke="#000000" />
             ) : (
-              <path d="M4 6h16M4 12h16M4 18h16" stroke="#000000" /> // Icono Hamburguesa
+              <path d="M4 6h16M4 12h16M4 18h16" stroke="#000000" />
             )}
           </svg>
         </button>
@@ -87,7 +87,6 @@ export default function Navbar() {
           <NavbarButton to="/" content="Home" onClick={closeMenu} />
           <NavbarButton to="/about" content="About" onClick={closeMenu} />
           <div className="w-full h-px bg-gray-100 md:hidden my-2"></div>{" "}
-          {/* Separador en móvil */}
           <NavbarButton
             to="/signup"
             content="Own your time"

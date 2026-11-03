@@ -7,6 +7,8 @@ import Navbar from "./components/Navbar";
 import Chat from "./pages/Chat";
 import Profile from "./pages/Profile";
 import SecurityPanel from "./pages/SecurityPanel"
+import MainPage from "./pages/MainPage"
+import CreatePanel from "./components/CreatePanel"
 import { PublicLayout } from "./layouts/PublicLayout";
 import { ProtectedLayout } from "./layouts/ProtectedLayout";
 import { ProtectedRoute } from "./components/ProtectedRoute";
@@ -21,14 +23,15 @@ function App() {
       <Route element={<PublicLayout />}>
         <Route path="/" element={<Home />} />
         <Route path="/about" element={<About />} />
+        <Route path="/signup" element={<SignUp />} />
       </Route>
       <Route element={<ProtectedLayout />}>
-        <Route path="/user_id" element={<Profile />} />
         <Route path="/chat" element={<Chat />} />
         <Route path="/profile" element={<ProfileView />}>
            <Route index element={<Profile />} /> 
 	   <Route path="security" element={<SecurityPanel />} />
 	</Route>
+	<Route path="create" element={<MainPage />} />
       </Route>
     </Routes>
   );

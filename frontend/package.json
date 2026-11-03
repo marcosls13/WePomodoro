@@ -19,7 +19,8 @@
     "react-router": "^8.4.0",
     "react-router-dom": "^7.18.4",
     "tailwindcss": "^4.3.3",
-    "zustand": "^5.0.15"
+    "zustand": "^5.0.15",
+    "motion": "^14.6.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

@@ -5,6 +5,7 @@ import NotFound from "./pages/NotFound";
 import SignUp from "./pages/SignUp";
 import Room from "./pages/Room";
 import JoinRoom from "./pages/JoinRoom";
+import TicTacToe from "./pages/TicTacToe";
 
 function App() {
   return (
@@ -14,6 +15,7 @@ function App() {
       <Route path="/signup" element={<SignUp />} />
       <Route path="/room/join" element={<JoinRoom />} />
       <Route path="/room/:code" element={<Room />} />
+      <Route path="/tictactoe" element={<TicTacToe />} />
       <Route path="*" element={<NotFound />} />
     </Routes>
   );

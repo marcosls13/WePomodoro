@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router";
+import AuthTabs from "../AuthTabs";
+import Tomato from "../Tomato";
 import { useRedirectIfSignedIn } from "../useRedirectIfSignedIn";
 
 const API_URL = import.meta.env.VITE_API_URL as string;
@@ -63,10 +65,16 @@ export default function SignGuest() {
         <Link className="text-link" to="/about">
           Get to know WePomodoro →
         </Link>
+        <Tomato size={280} className="intro-tomato" />
       </div>
       <div className="signup-card">
-        <p className="eyebrow">Welcome to WePomodoro</p>
-        <h2 className="signup-title">Sign in to your profile</h2>
+        <AuthTabs />
+        <h2 className="signup-title">Jump in as a guest</h2>
+        <ul className="auth-perks">
+          <li>Start instantly, no email or password.</li>
+          <li>Pick any name that isn&apos;t taken.</li>
+          <li>Guest sessions last 24 hours.</li>
+        </ul>
         <form
           onSubmit={(e) => {
             void handleSubmit(e);
@@ -102,14 +110,8 @@ export default function SignGuest() {
             className="button signup-button"
             disabled={pending}
           >
-            {pending ? "Entering" : "Enter"}
+            {pending ? "Entering…" : "Continue as guest"}
           </button>
-          <Link className="text-link" to="/auth/login">
-            Sign in
-          </Link>
-          <Link className="text-link" to="/auth/signup">
-            Sign up
-          </Link>
         </form>
       </div>
     </section>

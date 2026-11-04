@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import OAuthButtons from "../OAuthButtons";
+import AuthTabs from "../AuthTabs";
+import Tomato from "../Tomato";
 import { useRedirectIfSignedIn } from "../useRedirectIfSignedIn";
 
 const API_URL = import.meta.env.VITE_API_URL as string;
@@ -165,9 +167,10 @@ export default function SignIn() {
         <Link className="text-link" to="/about">
           Get to know WePomodoro →
         </Link>
+        <Tomato size={280} className="intro-tomato" />
       </div>
       <div className="signup-card">
-        <p className="eyebrow">Welcome to WePomodoro</p>
+        <AuthTabs />
         <h2 className="signup-title">Sign in to your profile</h2>
         <form
           onSubmit={(e) => {
@@ -271,12 +274,6 @@ export default function SignIn() {
           )}
           <Link className="text-link" to="/auth/forgot-password">
             Forgot your password?
-          </Link>
-          <Link className="text-link" to="/auth/signup">
-            Sign Up
-          </Link>
-          <Link className="text-link" to="/auth/guest">
-            Continue as Guest
           </Link>
         </form>
         {!challenge && <OAuthButtons />}

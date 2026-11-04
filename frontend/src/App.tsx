@@ -1,4 +1,4 @@
-import { NavLink, Link, Routes, Route } from "react-router";
+import { NavLink, Link, Navigate, Routes, Route } from "react-router";
 import Home from "./pages/Home";
 import About from "./pages/About";
 import UserInfo from "./pages/UserInfo";
@@ -14,6 +14,7 @@ import Me from "./pages/Me";
 import Profile from "./pages/Profile";
 import Admin from "./pages/Admin";
 import Tomato from "./Tomato";
+import ThemeToggle from "./ThemeToggle";
 
 export default function App() {
   return (
@@ -29,20 +30,24 @@ export default function App() {
           WePomodoro
         </Link>
         <nav className="site-nav" aria-label="Main navigation">
-          <NavLink to="/" end>
+          <NavLink to="/home" end>
             Home
           </NavLink>
           <NavLink to="/UserInfo">Community</NavLink>
           <NavLink to="/about">About</NavLink>
           <NavLink to="/me">Me</NavLink>
         </nav>
-        <Link to="/auth/signup" className="button button-small">
-          Join us <span aria-hidden="true">↗</span>
-        </Link>
+        <div className="header-actions">
+          <Link to="/auth/signup" className="button button-small">
+            Join us <span aria-hidden="true">↗</span>
+          </Link>
+          <ThemeToggle />
+        </div>
       </header>
       <main id="main-content" className="page-content" tabIndex={-1}>
         <Routes>
-          <Route path="/" element={<Home />} />
+          <Route path="/" element={<Navigate to="/auth/login" replace />} />
+          <Route path="/home" element={<Home />} />
           <Route path="/about" element={<About />} />
           <Route path="/me" element={<Me />} />
           <Route path="/UserInfo" element={<UserInfo />} />

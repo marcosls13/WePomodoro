@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router";
 import OAuthButtons from "../OAuthButtons";
 import Tomato from "../Tomato";
+import AuthTabs from "../AuthTabs";
 import { useRedirectIfSignedIn } from "../useRedirectIfSignedIn";
 
 const API_URL = import.meta.env.VITE_API_URL as string;
@@ -78,10 +79,10 @@ export default function SignUp() {
         <Link className="text-link" to="/about">
           Get to know WePomodoro →
         </Link>
-        <Tomato size={140} className="tomato-friend" />
+        <Tomato size={280} className="intro-tomato" />
       </div>
       <div className="signup-card">
-        <p className="eyebrow">Welcome to WePomodoro</p>
+        <AuthTabs />
         <h2 className="signup-title">Create your profile</h2>
         <p className="form-description">A name, an email, and a fresh start.</p>
         <form
@@ -178,12 +179,6 @@ export default function SignUp() {
           >
             {pending ? "Creating your profile…" : "Create profile"}
           </button>
-          <Link className="text-link" to="/auth/login">
-            Login
-          </Link>
-          <Link className="text-link" to="/auth/guest">
-            Continue as Guest
-          </Link>
         </form>
         <OAuthButtons />
       </div>

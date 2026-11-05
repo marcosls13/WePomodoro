@@ -19,7 +19,10 @@ export function Square({
   onSquareClick: () => void;
 }) {
   return (
-    <button onClick={onSquareClick} className="bg-gray-200 text-4xl font-bold">
+    <button
+      onClick={onSquareClick}
+      className="bg-gray-200 text-4xl font-bold outline-2"
+    >
       {value}
     </button>
   );
@@ -37,7 +40,7 @@ export function Board() {
   }
 
   return (
-    <div className="grid grid-cols-3 grid-rows-3 gap-2 w-72 h-72 bg-blue-800">
+    <div className="grid grid-cols-3 grid-rows-3 gap-2 w-72 h-72">
       {squares.map((square, i) => (
         <Square
           value={square}

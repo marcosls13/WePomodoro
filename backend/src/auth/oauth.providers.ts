@@ -16,6 +16,7 @@ export interface OAuthProviderConfig {
   dbValue: "GOOGLE" | "GITHUB" | "FORTY_TWO";
   authorizeUrl: (state: string) => string;
   profile: (code: string) => Promise<OAuthProfile>;
+  loginExists?: (login: string) => Promise<boolean>;
 }
 
 type Json = Record<string, unknown>;
@@ -120,6 +121,55 @@ async function fortyTwoProfile(accessToken: string): Promise<OAuthProfile> {
 }
 
 // Static settings per provider; `envPrefix` names its CLIENT_ID and CLIENT_SECRET variables.
+
+function fortyTwoLoginLookup(clientId: string, clientSecret: string) {
+  let token: { value: string; until: number } | null = null;
+
+  async function appToken() {
+    if (token && token.until > Date.now()) return token.value;
+    const data = asObject(
+      await getJson("https://api.intra.42.fr/oauth/token", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          grant_type: "client_credentials",
+          client_id: clientId,
+          client_secret: clientSecret,
+        }),
+      }),
+    );
+    if (
+      typeof data.access_token !== "string" ||
+      typeof data.expires_in !== "number"
+    )
+      throw unusable();
+    token = {
+      value: data.access_token,
+      until: Date.now() + (data.expires_in - 60) * 1000,
+    };
+    return token.value;
+  }
+
+  return async (login: string) => {
+    const response = await fetch(
+      `https://api.intra.42.fr/v2/users/${encodeURIComponent(login)}`,
+      {
+        headers: { Authorization: `Bearer ${await appToken()}` },
+        signal: AbortSignal.timeout(5000),
+      },
+    ).catch(() => {
+      throw unusable();
+    });
+    if (response.status === 404) return false;
+    if (response.status === 401) token = null;
+    if (!response.ok) throw unusable();
+    return true;
+  };
+}
+
 const table = [
   {
     id: "google",
@@ -171,6 +221,9 @@ export function providersFromEnv(env: NodeJS.ProcessEnv) {
           scope: entry.scope,
           state,
         }).toString()}`,
+      ...(entry.id === "42" && {
+        loginExists: fortyTwoLoginLookup(clientId, clientSecret),
+      }),
       profile: async (code) => {
         const token = asObject(
           await getJson(entry.tokenUrl, {

@@ -32,6 +32,9 @@ npm run dev         # generates the Prisma client, then starts tsx watch
 
 `db:deploy` changes tables in the configured database; starting the API never
 applies migrations. For a compiled run use `npm run build` then `npm start`.
+
+To browse the database, run `npx prisma studio --config prisma7.config.ts`
+(opens on http://localhost:51212/).
 Production transport should provide HTTPS so bearer tokens aren't sent in clear.
 
 Environment variables:
@@ -113,13 +116,15 @@ Authorization: Bearer <token>
 
 Input rules:
 
-- Usernames: 3–32 letters, numbers, underscores or hyphens; lowercased.
+- Usernames: 3–32 letters, numbers, underscores or hyphens; lowercased. A real
+  42 login is refused at password signup and username change when 42 is configured.
 - Emails: valid format, at most 254 characters; trimmed and lowercased.
 - Passwords: 8–128 characters; never trimmed. `currentPassword` and the password
   sent to `DELETE /api/users/me` are only checked for being a string of at most
   128 characters, so accounts with older, shorter passwords can still verify.
 - Guest names: 1–32 characters after trimming. A name equal to a registered
-  username (case-insensitive) is refused with 409, so a guest can't pose as that user.
+  username (case-insensitive) or a real 42 login (see "Reserved 42 logins") is
+  refused with 409, so a guest can't pose as that user.
 
 ---
 
@@ -240,6 +245,15 @@ Which user the sign-in resolves to:
 - A new username comes from the provider's login (lowercased, other characters
   replaced by `_`); on a clash a random four-character suffix is added.
 
+Reserved 42 logins: when 42 is configured, a username that is a real 42 login
+(checked with `GET /v2/users/<login>` using the app's own token) is refused with
+`409 That name belongs to a 42 account; sign in with 42 instead` at password
+signup, username change and guest creation. Google and GitHub sign-ins whose
+login is a real 42 login get a random suffix. A 42 sign-in is never blocked.
+Answers are cached 10 minutes (5000 names, per process). If 42 can't be reached
+the check is skipped (fail open) and the error is logged. Admin-created users
+aren't checked.
+
 OAuth login does not ask for the email two-factor code: the provider is the
 second factor. A user with a password and two-factor who also linked a provider
 can therefore sign in with the provider without the code. OAuth-only accounts
@@ -253,7 +267,7 @@ logged.
 ### Email verification
 
 Signup creates the account, returns the session token as before, and emails a
-six-digit code (valid 30 minutes, newest only, 5 wrong guesses kill it). The
+six-digit code (valid 10 minutes, newest only, 5 wrong guesses kill it). The
 frontend then asks for it and calls `POST /api/auth/verify-email`. Verification
 is **enforced**: until `emailVerifiedAt` is set, a registered account's token only
 works on `GET /auth/me`, `POST /auth/logout`, `POST /auth/verify-email`,
@@ -261,8 +275,11 @@ works on `GET /auth/me`, `POST /auth/logout`, `POST /auth/verify-email`,
 mistyped address can be fixed or the account deleted). Everything else answers
 403 `Verify your email address first`. Guests have no email and are not affected.
 Changing the email through `PATCH /api/users/me` clears `emailVerifiedAt`, emails
-a code to the new address and puts the account back in this state. A signup that
-isn't verified within 30 minutes (`User.verifyBy`) is deleted by the minute-by-minute
+a code to the new address and puts the account back in this state. Password signup replaces a pending signup on the same email (unverified with a
+`verifyBy` deadline), so the address's real owner is not locked out; verified
+and older accounts are never replaced. The sign-in and reset emails also say to
+reset the password at `FRONTEND_URL/auth/reset-password` if the reader didn't ask. A signup that
+isn't verified within 10 minutes (`User.verifyBy`) is deleted by the minute-by-minute
 cleanup, so nobody can hold an address or username they don't own. Accounts that
 only changed their email, and older accounts, have no deadline and are kept.
 `/auth/me` and the profile endpoints include `emailVerifiedAt`.
@@ -1110,7 +1127,9 @@ Coverage includes email-code two-factor (turning it on and off, sign-in
 codes, resend, attempt limits and expiry), OAuth sign-in against fake providers
 (state cookie and mismatch, first sign-in, replay and expiry of the one-time
 code, unverified provider emails, linking, replacing an unverified signup,
-username clashes, no password login for OAuth-only accounts), room joins for users and guests, personal invite codes,
+username clashes, no password login for OAuth-only accounts), reserved 42
+logins (signup, guest, rename, fail open, cache, Google suffix), pending signups
+replaced by the email's owner, room joins for users and guests, personal invite codes,
 permanent membership with leave and kick, friends, presence, join requests, server
 chat, solo and shared
 timers, pause/resume/completion, snapshot settings, late joins, expiry,
@@ -1135,6 +1154,7 @@ exclusion. CI runs the full suite against its own PostgreSQL service.
 | `src/auth/twofactor.service.ts`             | Emailed codes: sign-in challenge, turning two-factor on/off     |
 | `src/auth/oauth.providers.ts`               | Google, GitHub and 42: token swap and profile fetch             |
 | `src/auth/oauth.service.ts`                 | OAuth state, link or create the user, one-time code exchange    |
+| `src/auth/reserved.service.ts`              | Reserved 42 logins: cached lookup, fail open, 409               |
 | `src/friends/friends.service.ts`            | Friend requests, accept, list, remove                           |
 | `src/friends/social.service.ts`             | Presence heartbeat, join requests                               |
 | `src/chat/chat.service.ts`                  | Server chat messages                                            |

@@ -1,7 +1,7 @@
 import { createHash, randomInt, timingSafeEqual } from "node:crypto";
 import { ApiError, transaction, type Context } from "../api/common.js";
 
-const CODE_TTL_MS = 30 * 60_000;
+const CODE_TTL_MS = 10 * 60_000;
 const MAX_CODE_ATTEMPTS = 5;
 
 const invalidCode = () =>
@@ -41,7 +41,7 @@ export async function sendVerificationCode(ctx: Context, userId: number) {
     await ctx.mailer.send(
       user.email,
       "Verify your WePomodoro email",
-      `Your verification code is ${code}. It expires in 30 minutes.\n` +
+      `Your verification code is ${code}. It expires in 10 minutes.\n` +
         "If you didn't create an account, you can ignore this email.",
     );
   } catch (error) {

@@ -37,6 +37,8 @@ let clock = new Date();
 const mails: { to: string; text: string }[] = [];
 // Fake providers: the profile comes from a table keyed by the "code".
 const profiles = new Map<string, OAuthProfile>();
+// Logins asked of the fake 42: `real42` exists, `boom` makes the lookup fail.
+const lookups: string[] = [];
 const fake = (
   id: OAuthProviderConfig["id"],
   dbValue: OAuthProviderConfig["dbValue"],
@@ -62,7 +64,18 @@ const ctx = {
   },
   oauth: new Map([
     ["google", fake("google", "GOOGLE")],
-    ["42", fake("42", "FORTY_TWO")],
+    [
+      "42",
+      {
+        ...fake("42", "FORTY_TWO"),
+        loginExists: (login: string) => {
+          lookups.push(login);
+          if (login === `${prefix}boom`)
+            return Promise.reject(new Error("42 is down"));
+          return Promise.resolve(login === `${prefix}real42`);
+        },
+      },
+    ],
   ]),
 };
 let server: Server;
@@ -2752,4 +2765,90 @@ void test("OAuth: a username clash gets a random suffix", async () => {
   assert.notEqual(first.user.id, second.user.id);
   assert.notEqual(first.user.username, second.user.username);
   assert.match(second.user.username, /^[a-z0-9_-]{3,32}$/);
+});
+
+void test("42 logins are reserved: password signups can't take one, real 42 sign-ins can", async () => {
+  const signup = (name: string, expected: number) =>
+    request(
+      "/api/auth/signup",
+      "POST",
+      undefined,
+      {
+        username: name,
+        email: `${name}@example.test`,
+        password: "Correct-password-42",
+      },
+      expected,
+    );
+  const reserved = `${prefix}real42`;
+  await signup(reserved, 409);
+  await signup(reserved, 409);
+  // The answer is remembered: 42 was asked once for two attempts.
+  assert.equal(lookups.filter((login) => login === reserved).length, 1);
+  // A guest can't take the login of a real 42 student either (answer cached).
+  await request(
+    "/api/auth/guest",
+    "POST",
+    undefined,
+    { displayName: reserved },
+    409,
+  );
+  await signup(`${prefix}plain`, 201);
+  // A failing lookup must not block signups.
+  await signup(`${prefix}boom`, 201);
+
+  // Changing a username to a reserved one is refused; keeping your own is fine.
+  const other = await user();
+  await request(
+    "/api/users/me",
+    "PATCH",
+    other.token,
+    { username: reserved },
+    409,
+  );
+
+  // The real 42 user gets the login; a Google user with the same login doesn't.
+  const real = await exchange(
+    await oauth("42", who("real42", { login: reserved })),
+  );
+  assert.equal(real.user.username, reserved);
+  await request("/api/users/me", "PATCH", real.token, { username: reserved });
+  const google = await exchange(
+    await oauth(
+      "google",
+      who("gg", {
+        login: reserved,
+        providerUserId: `${prefix}gg`,
+        email: `${prefix}gg@example.test`,
+      }),
+    ),
+  );
+  assert.notEqual(google.user.username, reserved);
+  assert.match(google.user.username, /^[a-z0-9_-]{3,32}$/);
+});
+
+void test("a pending signup doesn't lock the email's real owner out", async () => {
+  const email = `${prefix}owner@example.test`;
+  const signup = (username: string, expected: number) =>
+    request<Auth>(
+      "/api/auth/signup",
+      "POST",
+      undefined,
+      {
+        username: `${prefix}${username}`,
+        email,
+        password: "Correct-password-42",
+      },
+      expected,
+    );
+  const squatter = await signup("sq1", 201);
+  const owner = await signup("own1", 201);
+  // The squatter's pending account and session are gone.
+  await request("/api/auth/me", "GET", squatter.token, undefined, 401);
+  // Once verified, the email is taken for good: no more replacing.
+  await db.user.update({
+    where: { id: owner.user.id },
+    data: { emailVerifiedAt: new Date(), verifyBy: null },
+  });
+  await signup("sq2", 409);
 });

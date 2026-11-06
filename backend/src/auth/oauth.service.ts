@@ -14,6 +14,7 @@ import {
   tokenHash,
 } from "./auth.service.js";
 import type { OAuthProfile, OAuthProviderConfig } from "./oauth.providers.js";
+import { isFortyTwoLogin } from "./reserved.service.js";
 import { sendVerificationCode } from "./verify.service.js";
 
 // How long the one-time code can be swapped for a session.
@@ -140,11 +141,21 @@ export async function oauthCallback(
     throw new OAuthError("denied");
   const profile = await found.profile(code);
   const mail = cleanEmail(profile.email);
+  const skipPlain =
+    found.id !== "42" &&
+    (await isFortyTwoLogin(ctx, candidate(profile.login, 0)));
   const result = await (async () => {
     for (let attempt = 0; ; attempt++) {
       try {
         return await transaction(ctx, (tx) =>
-          resolveUser(ctx, tx, found, profile, mail, attempt),
+          resolveUser(
+            ctx,
+            tx,
+            found,
+            profile,
+            mail,
+            attempt + (skipPlain ? 1 : 0),
+          ),
         );
       } catch (error) {
         if (

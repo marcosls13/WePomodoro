@@ -9,10 +9,11 @@ import {
   type Actor,
   type Context,
 } from "../api/common.js";
+import { assertNotFortyTwoLogin } from "./reserved.service.js";
 import { startChallenge } from "./twofactor.service.js";
 
 // Matches the lifetime of the emailed code.
-export const VERIFY_WINDOW_MS = 30 * 60_000;
+export const VERIFY_WINDOW_MS = 10 * 60_000;
 const DAY_IN_MS = 86400000;
 export const SESSION_EXPIRES_AT = 7 * DAY_IN_MS; // 7 days, for auth sessions
 
@@ -63,11 +64,19 @@ export async function signup(
   ctx: Context,
   input: { email: string; username: string; password: string },
 ) {
+  await assertNotFortyTwoLogin(ctx, input.username);
   const hash = await hashPassword(input.password);
   const bearer = token();
   const now = ctx.now();
   const expiresAt = new Date(now.getTime() + SESSION_EXPIRES_AT);
   const user = await transaction(ctx, async (tx) => {
+    await tx.user.deleteMany({
+      where: {
+        email: input.email,
+        emailVerifiedAt: null,
+        verifyBy: { not: null },
+      },
+    });
     const created = await tx.user.create({
       data: {
         email: input.email,
@@ -128,6 +137,8 @@ export async function createGuest(ctx: Context, displayName: string) {
     })
   )
     throw new ApiError(409, "That name belongs to a registered user");
+  if (/^[a-z0-9_-]{3,32}$/i.test(displayName))
+    await assertNotFortyTwoLogin(ctx, displayName.toLowerCase());
   const bearer = token();
   const now = ctx.now();
   const expiresAt = new Date(now.getTime() + DAY_IN_MS);
@@ -195,6 +206,8 @@ export async function updateProfile(
 ) {
   const userId = registered(actor);
   const user = await ctx.db.user.findUniqueOrThrow({ where: { id: userId } });
+  if (input.username !== undefined && input.username !== user.username)
+    await assertNotFortyTwoLogin(ctx, input.username);
   if (
     (input.email !== undefined || input.password !== undefined) &&
     (!input.currentPassword ||

@@ -58,7 +58,9 @@ export async function requestPasswordReset(ctx: Context, address: string) {
       user.email,
       "Your WePomodoro password reset code",
       `Your password reset code is ${code}. It expires in 15 minutes.\n` +
-        "If you didn't ask for this, you can ignore this email.",
+        "If you didn't ask for this, someone may know your email: you can ignore " +
+        "this, but consider resetting your password at " +
+        `${process.env.FRONTEND_URL ?? "http://localhost:5173"}/auth/reset-password`,
     );
   } catch (error) {
     // Don't tell the caller: a failure would reveal the address exists.

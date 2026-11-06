@@ -48,6 +48,15 @@ export default function VerifyEmail() {
     });
   }
 
+  // Abandons the signup: the pending account is deleted, nothing is kept.
+  async function cancel() {
+    await run(async () => {
+      await call("/cancel", {});
+      localStorage.removeItem("token");
+      void navigate("/auth/signup");
+    });
+  }
+
   async function resend() {
     await run(async () => {
       await call("/resend", {});
@@ -130,6 +139,16 @@ export default function VerifyEmail() {
               }}
             >
               Send me a new code
+            </button>
+            <button
+              type="button"
+              className="text-link"
+              disabled={pending}
+              onClick={() => {
+                void cancel();
+              }}
+            >
+              Cancel and go back
             </button>
           </form>
         )}

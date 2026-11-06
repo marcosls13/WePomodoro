@@ -15,6 +15,7 @@ import Profile from "./pages/Profile";
 import Admin from "./pages/Admin";
 import Tomato from "./Tomato";
 import ThemeToggle from "./ThemeToggle";
+import VerifyGate from "./VerifyGate";
 
 export default function App() {
   return (
@@ -45,23 +46,25 @@ export default function App() {
         </div>
       </header>
       <main id="main-content" className="page-content" tabIndex={-1}>
-        <Routes>
-          <Route path="/" element={<Navigate to="/auth/login" replace />} />
-          <Route path="/home" element={<Home />} />
-          <Route path="/about" element={<About />} />
-          <Route path="/me" element={<Me />} />
-          <Route path="/UserInfo" element={<UserInfo />} />
-          <Route path="/users/:id" element={<Profile />} />
-          <Route path="/admin" element={<Admin />} />
-          <Route path="*" element={<NotFound />} />
-          <Route path="/auth/signup" element={<SignUp />} />
-          <Route path="/auth/login" element={<SignIn />} />
-          <Route path="/auth/guest" element={<SignGuest />} />
-          <Route path="/auth/oauth" element={<OAuthCallback />} />
-          <Route path="/auth/verify-email" element={<VerifyEmail />} />
-          <Route path="/auth/forgot-password" element={<ForgotPassword />} />
-          <Route path="/auth/reset-password" element={<ResetPassword />} />
-        </Routes>
+        <VerifyGate>
+          <Routes>
+            <Route path="/" element={<Navigate to="/auth/login" replace />} />
+            <Route path="/home" element={<Home />} />
+            <Route path="/about" element={<About />} />
+            <Route path="/me" element={<Me />} />
+            <Route path="/UserInfo" element={<UserInfo />} />
+            <Route path="/users/:id" element={<Profile />} />
+            <Route path="/admin" element={<Admin />} />
+            <Route path="*" element={<NotFound />} />
+            <Route path="/auth/signup" element={<SignUp />} />
+            <Route path="/auth/login" element={<SignIn />} />
+            <Route path="/auth/guest" element={<SignGuest />} />
+            <Route path="/auth/oauth" element={<OAuthCallback />} />
+            <Route path="/auth/verify-email" element={<VerifyEmail />} />
+            <Route path="/auth/forgot-password" element={<ForgotPassword />} />
+            <Route path="/auth/reset-password" element={<ResetPassword />} />
+          </Routes>
+        </VerifyGate>
       </main>
     </div>
   );

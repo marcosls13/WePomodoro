@@ -159,6 +159,7 @@ guest; **Registered** = registered user; **Member** = room member;
 | POST   | `/api/auth/password-reset/confirm`   | Public        | `{ "resetToken", "password" }`        | 204; sets the password and signs out every session                                                                      |
 | POST   | `/api/auth/verify-email`             | Registered    | `{ "code" }`                          | 204: confirms the address; sets `emailVerifiedAt`                                                                       |
 | POST   | `/api/auth/verify-email/resend`      | Registered    | None                                  | 202: emails a new code (3 per 15 minutes); 409 if already verified                                                      |
+| POST   | `/api/auth/verify-email/cancel`      | Registered    | None                                  | 204: deletes a pending signup; 409 if verified                                                                          |
 | GET    | `/api/auth/me`                       | Authenticated | None                                  | 200 `{ type: "user" or "guest", profile }`                                                                              |
 | POST   | `/api/auth/logout`                   | Authenticated | None                                  | 204: revoke login or delete temporary guest identity                                                                    |
 
@@ -271,8 +272,9 @@ six-digit code (valid 10 minutes, newest only, 5 wrong guesses kill it). The
 frontend then asks for it and calls `POST /api/auth/verify-email`. Verification
 is **enforced**: until `emailVerifiedAt` is set, a registered account's token only
 works on `GET /auth/me`, `POST /auth/logout`, `POST /auth/verify-email`,
-`POST /auth/verify-email/resend`, and `GET`/`PATCH`/`DELETE /users/me` (so a
-mistyped address can be fixed or the account deleted). Everything else answers
+`POST /auth/verify-email/resend`, `POST /auth/verify-email/cancel`, and `GET`/`PATCH`/`DELETE /users/me` (so a
+mistyped address can be fixed or the account deleted). `POST /auth/verify-email/cancel` deletes a pending signup (unverified with a
+`verifyBy` deadline) without a password; verified accounts get 409. Everything else answers
 403 `Verify your email address first`. Guests have no email and are not affected.
 Changing the email through `PATCH /api/users/me` clears `emailVerifiedAt`, emails
 a code to the new address and puts the account back in this state. Password signup replaces a pending signup on the same email (unverified with a

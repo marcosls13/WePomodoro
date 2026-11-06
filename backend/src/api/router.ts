@@ -436,6 +436,7 @@ export function createRouter(
     "POST /auth/logout",
     "POST /auth/verify-email",
     "POST /auth/verify-email/resend",
+    "POST /auth/verify-email/cancel",
     "GET /users/me",
     "PATCH /users/me",
     "DELETE /users/me",
@@ -467,6 +468,16 @@ export function createRouter(
   router.post("/auth/verify-email/resend", perUser, async (req, res) => {
     await sendVerificationCode(ctx, registered(actor(res)));
     res.status(202).json({ message: "A new code has been sent." });
+  });
+
+  // Abandons a pending signup (no password needed: the account was never verified).
+  router.post("/auth/verify-email/cancel", async (req, res) => {
+    const id = registered(actor(res));
+    const user = await ctx.db.user.findUniqueOrThrow({ where: { id } });
+    if (user.emailVerifiedAt || !user.verifyBy)
+      throw new ApiError(409, "Only a pending signup can be cancelled");
+    await endIdentity(ctx, actor(res), true);
+    res.sendStatus(204);
   });
 
   router.post("/auth/verify-email", async (req, res) => {

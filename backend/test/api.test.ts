@@ -2852,3 +2852,23 @@ void test("a pending signup doesn't lock the email's real owner out", async () =
   });
   await signup("sq2", 409);
 });
+
+void test("a pending signup can be cancelled, a verified account can't", async () => {
+  const pending = await user(false);
+  await request(
+    "/api/auth/verify-email/cancel",
+    "POST",
+    pending.token,
+    undefined,
+    204,
+  );
+  assert.equal(await db.user.count({ where: { id: pending.user.id } }), 0);
+  const verified = await user();
+  await request(
+    "/api/auth/verify-email/cancel",
+    "POST",
+    verified.token,
+    undefined,
+    409,
+  );
+});

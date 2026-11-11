@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { TypedServer, TypedSocket } from "./types.js";
 
 export function registerChatSocket(io: TypedServer, socket: TypedSocket): void {
-  socket.on("chat:message", (text: string) => {
+  socket.on("chat:message", (text) => {
     if (typeof text !== "string") {
       console.warn("bad text type");
       return;

@@ -2,7 +2,7 @@ import { getRoom, startRoom } from "../rooms/rooms.js";
 import type { TypedServer, TypedSocket } from "./types.js";
 
 export function registerJoinSocket(socket: TypedSocket): void {
-  socket.on("room:join", async (code: string) => {
+  socket.on("room:join", async (code) => {
     if (typeof code !== "string") {
       console.warn("bad event");
       return;

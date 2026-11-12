@@ -1,4 +1,4 @@
-_This project has been created as part of the 42 curriculum by marcolop, igngonza, fdurban-, mamaratr._
+_This project has been created as part of the 42 curriculum by marcolop, igngonza, fdurban-, mamaratr, rcarpio-._
 
 # WePomodoro
 
@@ -32,25 +32,26 @@ This builds the images and starts all the services. Then open:
 
 Other useful commands:
 
-| Command      | What it does                                   |
-| ------------ | ---------------------------------------------- |
-| `make build` | Build the images                               |
-| `make up`    | Start the services in the background           |
-| `make down`  | Stop the services                              |
-| `make clean` | Stop the services and remove the images        |
-| `make fclean`| Same as `clean`, and also remove the volumes   |
-| `make re`    | Rebuild everything from scratch                |
+| Command       | What it does                                 |
+| ------------- | -------------------------------------------- |
+| `make build`  | Build the images                             |
+| `make up`     | Start the services in the background         |
+| `make down`   | Stop the services                            |
+| `make clean`  | Stop the services and remove the images      |
+| `make fclean` | Same as `clean`, and also remove the volumes |
+| `make re`     | Rebuild everything from scratch              |
 
 ## Team Information
 
 <!-- TODO: for each member, their role(s) (PO, PM, Tech Lead, Developer) and a brief description of their responsibilities. -->
 
-| Login     | Role(s) | Responsibilities |
-| --------- | ------- | ---------------- |
-| marcolop  | TODO    | TODO             |
-| igngonza  | TODO    | TODO             |
-| fdurban-  | TODO    | TODO             |
-| mamaratr  | TODO    | TODO             |
+| Login    | Role(s) | Responsibilities |
+| -------- | ------- | ---------------- |
+| marcolop | TODO    | TODO             |
+| igngonza | TODO    | TODO             |
+| fdurban- | TODO    | TODO             |
+| mamaratr | TODO    | TODO             |
+| rcarpio- | TODO    | TODO             |
 
 ## Project Management
 
@@ -58,10 +59,10 @@ Other useful commands:
 
 ## Technical Stack
 
-- **Frontend:** React, TypeScript, Vite, React Router, Tailwind CSS
-- **Backend:** Node.js, Express, TypeScript
+- **Frontend:** React, TypeScript, Vite, React Router, Tailwind CSS, Socket.io
+- **Backend:** Node.js, Express, TypeScript, Socket.io
 - **Containerization:** Docker, Docker Compose
-- **Tooling:** ESLint, Prettier
+- **Tooling:** ESLint, Prettier, Vitest
 
 <!-- TODO: database system and why it was chosen, and justification for the major technical choices. -->
 
@@ -91,6 +92,8 @@ Other useful commands:
 - [Tailwind CSS documentation](https://tailwindcss.com/docs)
 - [Express documentation](https://expressjs.com)
 - [Docker Compose documentation](https://docs.docker.com/compose/)
+- [Vitest documentation](https://vitest.dev/)
+- [Socket.io documentation](https://vitest.dev/)
 
 ### Use of AI
 

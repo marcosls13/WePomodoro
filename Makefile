@@ -24,9 +24,9 @@ re: fclean all
 ci: ci-backend ci-frontend
 
 ci-backend:
-	cd backend && npm ci && npm run lint && npm run format:check && npm run build
+	cd backend && npm ci && npm run lint && npm run format:check && npm run build && npm run test
 
 ci-frontend:
-	cd frontend && npm ci && npm run lint && npm run format:check && npm run build
+	cd frontend && npm ci && npm run lint && npm run format:check && npm run build && npm run test
 
 .PHONY: all build up down clean fclean re ci ci-backend ci-frontend

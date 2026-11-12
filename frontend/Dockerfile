@@ -1,9 +1,11 @@
+# syntax=docker/dockerfile:1
+
 FROM node:24-slim
 
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm install
+RUN --mount=type=cache,target=/root/.npm npm ci --no-audit --no-fund
 
 COPY . .
 

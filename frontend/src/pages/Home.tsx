@@ -8,7 +8,7 @@ export default function Home() {
   const [loginMode, setLoginMode] = useState(false);    
 
   return (
-    <div className="flex-grow flex flex-col lg:flex-row items-center justify-center gap-12 px-6 lg:px-24 py-12 overflow-hidden bg-gray-50">
+    <div className="flex-grow flex flex-col lg:flex-row items-center justify-center gap-12 px-6 lg:px-24 py-12 overflow-hidden">
       
       <div className="flex flex-col items-center text-center lg:text-left lg:items-start max-w-2xl space-y-6">
         <h1 className="text-5xl lg:text-7xl font-bold tracking-tight text-gray-900 leading-tight">

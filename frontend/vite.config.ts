@@ -7,6 +7,6 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
     proxy: { "/api": "http://backend:3000" },
-    allowedHosts: ["engineer-african-rid-wrestling.trycloudflare.com"],
+    allowedHosts: ["design-matter-anatomy-workplace.trycloudflare.com"],
   },
 });

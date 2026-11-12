@@ -4,7 +4,7 @@ import About from "./pages/About";
 import NotFound from "./pages/NotFound";
 import SignUp from "./pages/SignUp";
 import Navbar from "./components/Navbar";
-import Chat from "./pages/Chat";
+import Room from "./pages/Room";
 import Profile from "./pages/Profile";
 import SecurityPanel from "./pages/SecurityPanel"
 import MainPage from "./pages/MainPage"
@@ -26,7 +26,7 @@ function App() {
         <Route path="/signup" element={<SignUp />} />
       </Route>
       <Route element={<ProtectedLayout />}>
-        <Route path="/chat" element={<Chat />} />
+        <Route path="/chat" element={<Room />} />
         <Route path="/profile" element={<ProfileView />}>
            <Route index element={<Profile />} /> 
 	   <Route path="security" element={<SecurityPanel />} />

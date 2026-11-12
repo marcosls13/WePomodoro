@@ -6,8 +6,16 @@
   font-style: normal;
   font-display: swap;
 }
+@font-face {
+  font-family: "Oswald";
+  src: url("/fonts/Oswald-Medium.ttf") format("truetype");
+  font-weight: 500;
+  font-style: bold;
+  font-display: swap;
+}
 @theme {
   --font-custom: "Google Sans", sans-serif;
+  --font-custom-timer: "Oswald", sans-serif;
   --animate-slide-up: slideUp 0.8s ease-out forwards;
   @keyframes slideUp {
     0% {

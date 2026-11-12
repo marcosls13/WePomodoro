@@ -46,7 +46,7 @@ export default function Navbar() {
   const closeMenu = () => setIsMenuOpen(false);
 
   return (
-    <header className="px-6 py-4 w-full bg-gray-50">
+    <header className="px-6 py-4 w-full">
       <nav className="mx-auto flex max-w-6xl justify-between items-center bg-white border border-gray-200 rounded-full shadow-sm px-3 py-2">
         <div className="flex items-center ml-2">
           <Logo className="size-8 text-red-600" />

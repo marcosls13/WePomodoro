@@ -55,7 +55,7 @@ export default function Profilebar() {
             className="fixed top-20 right-0 z-45 flex flex-col gap-2 w-fit rounded-full bg-white shadow-xl m-6 p-3 items-center"
           >
             <motion.div variants={itemVariants}>
-              <NavLink to="/group1">
+              <NavLink to="/chat">
                 <div className="bg-red-600 p-3 rounded-full">
                   <Calculator />
                 </div>
@@ -63,7 +63,7 @@ export default function Profilebar() {
             </motion.div>
 
             <motion.div variants={itemVariants}>
-              <NavLink to="/group1">
+              <NavLink to="/chat">
                 <div className="bg-red-600 rounded-full p-3 flex items-center justify-center">
                   <History />
                 </div>
@@ -71,7 +71,7 @@ export default function Profilebar() {
             </motion.div>
 
             <motion.div variants={itemVariants}>
-              <NavLink to="/group1">
+              <NavLink to="/chat">
                 <div className="bg-red-600 rounded-full p-3 flex items-center justify-center">
                   <Code />
                 </div>
@@ -79,7 +79,7 @@ export default function Profilebar() {
             </motion.div>
 
             <motion.div variants={itemVariants}>
-              <NavLink to="/group1">
+              <NavLink to="/chat">
                 <div className="bg-red-600 rounded-full p-3">
                   <Add />
                 </div>

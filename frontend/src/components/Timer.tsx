@@ -1,10 +1,10 @@
 import { useState, useEffect } from "react";
+import TimeInputControl from "./TimeInputControl"
 
 function getFormattedTime(milliseconds) {
     let total_seconds = parseInt(Math.floor(milliseconds/1000));
     let total_minutes = parseInt(Math.floor(total_seconds/60));
     let total_hours = parseInt(Math.floor(total_minutes/60));
-    let total_days = parseInt(Math.floor(total_hours/24));
 
     let seconds = parseInt(total_seconds % 60);
     let minutes = parseInt(total_minutes % 60);
@@ -14,7 +14,7 @@ function getFormattedTime(milliseconds) {
     const mStr = String(minutes).padStart(2, '0');
     const hStr = String(hours).padStart(2, '0');
     
-    return `${total_days}d : ${hStr}h : ${mStr}m : ${sStr}s`;
+    return `${hStr}h : ${mStr}m : ${sStr}s`;
 };
 
 export default function Timer({ duration, onTimeUp }) {
@@ -34,6 +34,8 @@ export default function Timer({ duration, onTimeUp }) {
   }, [time, onTimeUp]);
 
   return (
+    <>
      <div>{getFormattedTime(time)}</div>
+</>
   );
 }

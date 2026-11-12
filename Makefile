@@ -1,6 +1,8 @@
-COMPOSE_FILE = ./docker-compose.yml
-COMPOSE      = docker compose -p $(PROJECT) -f $(COMPOSE_FILE)
-PROJECT      = wepomodoro
+PROJECT      ?= wepomodoro
+COMPOSE_FILE ?= ./docker-compose.yml
+COMPOSE      := docker compose -p $(PROJECT) -f $(COMPOSE_FILE)
+
+.DEFAUL_GOAL := all
 
 all: build up
 
@@ -24,9 +26,9 @@ re: fclean all
 ci: ci-backend ci-frontend
 
 ci-backend:
-	cd backend && npm ci && npm run lint && npm run format:check && npm run build && npm run test
+	cd backend && npm ci --no-audit --no-fund && npm run lint && npm run format:check && npm run build && npm run test
 
 ci-frontend:
-	cd frontend && npm ci && npm run lint && npm run format:check && npm run build && npm run test
+	cd frontend && npm ci --no-audit --no-fund && npm run lint && npm run format:check && npm run build && npm run test
 
 .PHONY: all build up down clean fclean re ci ci-backend ci-frontend

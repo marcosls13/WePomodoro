@@ -70,15 +70,10 @@ model User {
   oAuthCodes         OAuthCode[]
   loginChallenges    LoginChallenge[]
   ownedRooms         StudyRoom[]
-  roomBans           RoomBan[]
-  invites            Invite[]
   friendRequests     Friendship[]         @relation("FriendshipRequester")
   friendInvites      Friendship[]         @relation("FriendshipAddressee")
   messages           Message[]
   presence           Presence?
-  invitedMembers     RoomMember[]         @relation("MemberInvitedBy")
-  joinAsks           JoinRequest[]        @relation("JoinRequester")
-  joinOffers         JoinRequest[]        @relation("JoinTarget")
   memberships        RoomMember[]
   studyHistory       SessionParticipant[]
   gameResults        GameResult[]
@@ -164,6 +159,9 @@ model GuestSession {
 model StudyRoom {
   id                    String            @id @default(uuid()) @db.Uuid
   name                  String
+  // The shared code that lets anyone who has it join. Random; the owner can
+  // replace it.
+  code                  String            @unique
   ownerId               Int
   focusSeconds          Int               @default(1500)
   shortBreakSeconds     Int               @default(300)
@@ -176,29 +174,11 @@ model StudyRoom {
   closedAt              DateTime?
   owner                 User              @relation(fields: [ownerId], references: [id], onDelete: Restrict)
   members               RoomMember[]
-  invites               Invite[]
   messages              Message[]
   presence              Presence[]
-  joinRequests          JoinRequest[]
-  bans                  RoomBan[]
   sessions              PomodoroSession[]
 
   @@index([ownerId])
-}
-
-// One personal join code per registered member per room. Codes are random and
-// grow longer when the short ones start colliding, so there is no fixed length.
-model Invite {
-  id          String    @id @default(uuid()) @db.Uuid
-  roomId      String    @db.Uuid
-  createdById Int
-  code        String    @unique
-  createdAt   DateTime  @default(now())
-  room        StudyRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
-  createdBy   User      @relation(fields: [createdById], references: [id], onDelete: Cascade)
-
-  @@unique([roomId, createdById])
-  @@index([createdById])
 }
 
 model RoomMember {
@@ -208,38 +188,19 @@ model RoomMember {
   userId         Int?
   guestSessionId String?       @db.Uuid
   joinedAt       DateTime      @default(now())
-  // Who let this person in: the owner of the code used, or the friend who
-  // accepted a join request. Null for the room creator; cleared if that user is deleted.
-  invitedById    Int?
   // While in the future the member can read the chat but not post.
   mutedUntil     DateTime?
-  invitedBy      User?         @relation("MemberInvitedBy", fields: [invitedById], references: [id], onDelete: SetNull)
   room           StudyRoom     @relation(fields: [roomId], references: [id], onDelete: Cascade)
   user           User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
   guestSession   GuestSession? @relation(fields: [guestSessionId], references: [id], onDelete: Cascade)
 
   // Membership lasts until the person leaves the server or is kicked (the row is
-  // deleted, so rejoining needs a code). Closing the app or disconnecting never
+  // deleted, so rejoining needs the room code). Closing the app or disconnecting never
   // touches it; presence in a timer is SessionParticipant.leftAt.
   @@unique([roomId, userId])
   @@unique([roomId, guestSessionId])
   @@index([userId])
   @@index([guestSessionId])
-}
-
-// Registered users the owner has banned from a room. addMember refuses them, so
-// neither a code nor an accepted join request lets them back in. Guests can only
-// be kicked: a new guest identity is free.
-model RoomBan {
-  roomId    String    @db.Uuid
-  userId    Int
-  reason    String?
-  createdAt DateTime  @default(now())
-  room      StudyRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
-  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@id([roomId, userId])
-  @@index([userId])
 }
 
 // A friend request from requester to addressee; ACCEPTED makes it mutual. A
@@ -288,23 +249,6 @@ model Presence {
   room   StudyRoom? @relation(fields: [roomId], references: [id], onDelete: SetNull)
 
   @@index([seenAt])
-}
-
-// "Let me into the server you are in." Accepting adds the requester as a
-// member and deletes the row; declining or cancelling just deletes it.
-model JoinRequest {
-  id          String    @id @default(uuid()) @db.Uuid
-  roomId      String    @db.Uuid
-  requesterId Int
-  targetId    Int
-  createdAt   DateTime  @default(now())
-  room        StudyRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
-  requester   User      @relation("JoinRequester", fields: [requesterId], references: [id], onDelete: Cascade)
-  target      User      @relation("JoinTarget", fields: [targetId], references: [id], onDelete: Cascade)
-
-  @@unique([roomId, requesterId, targetId])
-  @@index([targetId])
-  @@index([requesterId])
 }
 
 model PomodoroSession {
@@ -402,5 +346,23 @@ model OAuthCode {
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+  @@index([expiresAt])
+}
+
+model PendingSignup {
+  id             String         @id @default(uuid()) @db.Uuid
+  tokenHash      String         @unique
+  email          String         @unique
+  username       String
+  passwordHash   String?
+  provider       OAuthProvider?
+  providerUserId String?
+  codeHash       String
+  failedAttempts Int            @default(0)
+  resends        Int            @default(0)
+  resendWindowAt DateTime
+  createdAt      DateTime       @default(now())
+  expiresAt      DateTime
+
   @@index([expiresAt])
 }

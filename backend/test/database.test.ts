@@ -94,7 +94,7 @@ async function fixtures(tx: Prisma.TransactionClient) {
       name: "Study together",
       ownerId: user.id,
       members: { create: { userId: user.id } },
-      invites: { create: { createdById: user.id, code: key } },
+      code: key,
     },
   });
   return { user, friend, guest, room };
@@ -114,14 +114,12 @@ function constraintError(name: string) {
   };
 }
 
-void test("registered users and guests join a room found by its invite code", async () => {
+void test("registered users and guests join a room found by its room code", async () => {
   await isolated(async (tx) => {
     const { friend, guest, room } = await fixtures(tx);
-    const invite = await tx.invite.findFirstOrThrow({
-      where: { roomId: room.id },
-      include: { room: true },
+    const found = await tx.studyRoom.findUniqueOrThrow({
+      where: { code: room.code },
     });
-    const found = invite.room;
     await tx.roomMember.createMany({
       data: [
         { roomId: found.id, userId: friend.id },
@@ -472,16 +470,12 @@ const invalidCases: {
   error: (error: unknown) => boolean;
 }[] = [
   {
-    name: "duplicate invite codes",
+    name: "duplicate room codes",
     error: knownError("P2002"),
     run: async (tx) => {
-      const { friend, room, user } = await fixtures(tx);
-      const code = randomUUID();
-      await tx.invite.create({
-        data: { roomId: room.id, createdById: friend.id, code },
-      });
-      return tx.invite.create({
-        data: { roomId: room.id, createdById: user.id, code },
+      const { room, user } = await fixtures(tx);
+      return tx.studyRoom.create({
+        data: { name: "Copy", ownerId: user.id, code: room.code },
       });
     },
   },
@@ -513,7 +507,7 @@ const invalidCases: {
     error: knownError("P2003"),
     run: (tx) =>
       tx.studyRoom.create({
-        data: { name: "Invalid", ownerId: -1 },
+        data: { name: "Invalid", ownerId: -1, code: randomUUID() },
       }),
   },
   {

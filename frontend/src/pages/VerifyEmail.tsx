@@ -9,21 +9,29 @@ export default function VerifyEmail() {
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
   const [pending, setPending] = useState(false);
+  // A new signup has a pendingToken and no session; a signed-in unverified user
+  // (changed their email) has a token and keeps the old routes.
+  const [pendingToken] = useState(() => sessionStorage.getItem("pendingToken"));
   const [token] = useState(() => localStorage.getItem("token"));
+  const active = pendingToken ?? token;
 
   async function call(path: string, body: object) {
-    const res = await fetch(`${API_URL}/api/auth/verify-email${path}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token ?? ""}`,
+    const res = await fetch(
+      `${API_URL}/api/auth/${pendingToken ? "signup" : "verify-email"}${path}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${pendingToken ? "" : (token ?? "")}`,
+        },
+        body: JSON.stringify(pendingToken ? { ...body, pendingToken } : body),
       },
-      body: JSON.stringify(body),
-    });
+    );
     if (!res.ok) {
       const data = (await res.json().catch(() => ({}))) as { error?: string };
       throw new Error(data.error ?? `Request failed (${String(res.status)})`);
     }
+    return res;
   }
 
   async function run(action: () => Promise<void>) {
@@ -43,17 +51,32 @@ export default function VerifyEmail() {
   async function handleSubmit(e: React.SubmitEvent) {
     e.preventDefault();
     await run(async () => {
-      await call("", { code: code.trim() });
+      const res = await call(pendingToken ? "/verify" : "", {
+        code: code.trim(),
+      });
+      if (pendingToken) {
+        const done = (await res.json()) as { token: string };
+        sessionStorage.removeItem("pendingToken");
+        localStorage.setItem("token", done.token);
+      }
       void navigate("/UserInfo");
     });
   }
 
-  // Abandons the signup: the pending account is deleted, nothing is kept.
+  // Pending signup: drop it. Signed-in unverified user: just sign out.
   async function cancel() {
     await run(async () => {
-      await call("/cancel", {});
-      localStorage.removeItem("token");
-      void navigate("/auth/signup");
+      if (pendingToken) {
+        await call("/cancel", {});
+        sessionStorage.removeItem("pendingToken");
+      } else {
+        await fetch(`${API_URL}/api/auth/logout`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token ?? ""}` },
+        });
+        localStorage.removeItem("token");
+      }
+      void navigate(pendingToken ? "/auth/signup" : "/auth/login");
     });
   }
 
@@ -78,11 +101,11 @@ export default function VerifyEmail() {
       </div>
       <div className="signup-card">
         <h2 className="signup-title">Verify your email</h2>
-        {!token ? (
+        {!active ? (
           <p className="form-description">
-            You need to be signed in to verify your email.{" "}
-            <Link className="text-link" to="/auth/login">
-              Sign in
+            Your signup has expired.{" "}
+            <Link className="text-link" to="/auth/signup">
+              Sign up again
             </Link>
           </p>
         ) : (
@@ -148,7 +171,7 @@ export default function VerifyEmail() {
                 void cancel();
               }}
             >
-              Cancel and go back
+              {pendingToken ? "Cancel and go back" : "Sign out"}
             </button>
           </form>
         )}

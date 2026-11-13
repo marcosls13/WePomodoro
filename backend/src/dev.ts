@@ -5,6 +5,13 @@ import { ApiError, type Actor, type Context } from "./api/common.js";
 // The script is a separate route because helmet's CSP blocks inline scripts.
 
 const presets = [
+  [
+    "Auth",
+    "Verify signup code",
+    "POST",
+    "/auth/signup/verify",
+    { pendingToken: "{pendingToken}", code: "123456" },
+  ],
   ["Auth", "Guest", "POST", "/auth/guest", { displayName: "Guest" }],
   [
     "Auth",
@@ -98,20 +105,13 @@ const presets = [
   ],
   ["Rooms", "List rooms", "GET", "/rooms", null],
   ["Rooms", "Create room", "POST", "/rooms", { name: "Study room" }],
-  ["Rooms", "My invite code", "POST", "/rooms/{roomId}/invite-code", null],
+  ["Rooms", "New room code (owner)", "POST", "/rooms/{roomId}/code", null],
   [
     "Rooms",
-    "Rotate my invite code",
-    "POST",
-    "/rooms/{roomId}/invite-code",
-    { rotate: true },
-  ],
-  [
-    "Rooms",
-    "Join by invite code",
+    "Join by room code",
     "POST",
     "/rooms/join",
-    { inviteCode: "{inviteCode}" },
+    { roomCode: "{roomCode}" },
   ],
   ["Rooms", "Get room", "GET", "/rooms/{roomId}", null],
   ["Rooms", "Leave room", "POST", "/rooms/{roomId}/leave", null],
@@ -145,28 +145,6 @@ const presets = [
     { roomId: "{roomId}" },
   ],
   ["Friends", "Heartbeat (online only)", "PUT", "/presence", { roomId: null }],
-  [
-    "Friends",
-    "Ask friend to join",
-    "POST",
-    "/join-requests",
-    { friendId: 1, roomId: "{roomId}" },
-  ],
-  ["Friends", "Join requests", "GET", "/join-requests", null],
-  [
-    "Friends",
-    "Accept join request",
-    "POST",
-    "/join-requests/{joinRequestId}/accept",
-    null,
-  ],
-  [
-    "Friends",
-    "Decline / cancel join",
-    "DELETE",
-    "/join-requests/{joinRequestId}",
-    null,
-  ],
   ["Chat", "Read messages", "GET", "/rooms/{roomId}/messages", null],
   [
     "Chat",
@@ -243,7 +221,7 @@ pre{margin:0;padding:10px;background:var(--code);border-radius:6px;overflow:auto
 
 const script = `
 const presets = ${JSON.stringify(presets)};
-const names = ["token", "roomId", "timerId", "inviteCode", "resetToken", "friendshipId", "joinRequestId", "challengeToken", "oauthCode"];
+const names = ["token", "roomId", "timerId", "roomCode", "resetToken", "friendshipId", "challengeToken", "oauthCode", "pendingToken"];
 const $ = (id) => document.getElementById(id);
 const vars = {};
 for (const n of names) {
@@ -333,13 +311,14 @@ async function send() {
 function capture(path, d) {
   if (typeof d.token === "string") set("token", d.token);
   if (typeof d.challengeToken === "string") set("challengeToken", d.challengeToken);
+  if (typeof d.pendingToken === "string") set("pendingToken", d.pendingToken);
   if (typeof d.resetToken === "string") set("resetToken", d.resetToken);
   const o = d.room ?? d;
   if (/^\\/rooms/.test(path) && typeof o.id === "string") set("roomId", o.id);
-  if (typeof o.inviteCode === "string") set("inviteCode", o.inviteCode);
+  if (typeof o.code === "string" && /^\\/rooms/.test(path)) set("roomCode", o.code);
+  if (typeof d.roomCode === "string") set("roomCode", d.roomCode);
   if (/^\\/(rooms\\/.*\\/)?timers/.test(path) && typeof d.id === "string") set("timerId", d.id);
   if (/^\\/friends/.test(path) && typeof d.id === "string") set("friendshipId", d.id);
-  if (/^\\/join-requests/.test(path) && typeof d.id === "string") set("joinRequestId", d.id);
   if (path === "/auth/logout") set("token", "");
   if (/^\\/(auth\\/(signup|guest)|users)$/.test(path)) loadActors();
 }

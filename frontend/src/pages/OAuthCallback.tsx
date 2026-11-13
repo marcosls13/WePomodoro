@@ -14,37 +14,45 @@ const messages: Partial<Record<string, string>> = {
 };
 
 // Where the backend sends the browser after a provider sign-in: `?code=` is the
-// one-time code to swap for a session, `?error=` says why it failed.
+// one-time code to swap for a session, `?pending=` a signup that still needs its
+// emailed code, `?error=` says why it failed.
 export default function OAuthCallback() {
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const code = params.get("code");
+  const pendingToken = params.get("pending");
   const reason = params.get("error");
   const [error, setError] = useState(() =>
-    reason ? (messages[reason] ?? FAILED) : code ? "" : "No sign-in code.",
+    reason
+      ? (messages[reason] ?? FAILED)
+      : code || pendingToken
+        ? ""
+        : "No sign-in code.",
   );
   // The code works once and StrictMode runs effects twice in development.
   const started = useRef(false);
 
   useEffect(() => {
+    if (pendingToken) {
+      // The provider doesn't vouch for the email: the emailed code comes first.
+      sessionStorage.setItem("pendingToken", pendingToken);
+      void navigate("/auth/verify-email", { replace: true });
+      return;
+    }
     if (!code || started.current) return;
     started.current = true;
-    api<{ token: string; user: { emailVerifiedAt: string | null } }>(
-      "/auth/oauth/exchange",
-      { method: "POST", json: { code } },
-    )
+    api<{ token: string }>("/auth/oauth/exchange", {
+      method: "POST",
+      json: { code },
+    })
       .then((res) => {
         localStorage.setItem("token", res.token);
-        // A provider that doesn't vouch for the email (42) needs the emailed code.
-        void navigate(
-          res.user.emailVerifiedAt ? "/UserInfo" : "/auth/verify-email",
-          { replace: true },
-        );
+        void navigate("/UserInfo", { replace: true });
       })
       .catch((e: unknown) => {
         setError(e instanceof Error ? e.message : FAILED);
       });
-  }, [code, navigate]);
+  }, [code, pendingToken, navigate]);
 
   return (
     <section className="signup-page oauth-page">

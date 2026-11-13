@@ -31,7 +31,6 @@ import {
   login,
   me,
   password,
-  signup,
   updateProfile,
   verifyPassword,
 } from "../auth/auth.service.js";
@@ -54,13 +53,7 @@ import {
   listMessages,
   sendMessage,
 } from "../chat/chat.service.js";
-import {
-  acceptJoin,
-  askToJoin,
-  dropJoinRequest,
-  listJoinRequests,
-  setPresence,
-} from "../friends/social.service.js";
+import { setPresence } from "../friends/social.service.js";
 import {
   acceptFriend,
   listFriends,
@@ -70,16 +63,14 @@ import {
 import {
   createRoom,
   deleteRoom,
-  getInvite,
   getRoom,
   joinRoom,
   leaveRoom,
-  listBans,
   listRooms,
   manageRoom,
   muteMember,
   removeMember,
-  unban,
+  rotateCode,
   updateRoom,
   type RoomSettings,
 } from "../rooms/rooms.service.js";
@@ -118,6 +109,12 @@ import {
 import { recordGame, type GameVerifiers } from "../games/games.service.js";
 import { endIdentity } from "./lifecycle.js";
 import { migrationsPending } from "./migrations.js";
+import {
+  cancelPending,
+  completePending,
+  resendPending,
+  startSignup,
+} from "../auth/pending.service.js";
 
 // Shown to users without a picture; deliberately says nothing about who it is.
 const defaultAvatar =
@@ -273,16 +270,56 @@ export function createRouter(
   router.post("/auth/login", perAccount);
   router.post("/auth/password-reset/request", perAddress);
 
+  // Each code check or resend is limited per pending signup, on top of the
+  // per-IP limit and the 5-attempt cap stored on the row.
+  const perPending = rateLimit({
+    windowMs: 15 * 60_000,
+    limit: limits.resetRequests,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    keyGenerator: bodyKey("pendingToken", "pending", 128),
+    handler: tooMany("Too many attempts; try again later"),
+  });
+  const pendingToken = (value: unknown) => {
+    if (typeof value !== "string" || !value || value.length > 128)
+      throw new ApiError(400, "A pendingToken is required");
+    return value;
+  };
+
   router.post(["/auth/signup", "/users"], async (req, res) => {
     const input = body(req);
-    const created = await signup(ctx, {
-      email: email(input.email),
-      username: username(input.username),
-      password: password(input.password),
-    });
-    // The session token works only for verifying the address until the code is entered.
-    await sendVerificationCode(ctx, created.user.id);
-    res.status(201).json(created);
+    res.status(202).json(
+      await startSignup(ctx, {
+        email: email(input.email),
+        username: username(input.username),
+        password: password(input.password),
+      }),
+    );
+  });
+
+  router.post("/auth/signup/verify", perPending, async (req, res) => {
+    const input = body(req);
+    if (typeof input.code !== "string" || !/^\d{6}$/.test(input.code))
+      throw new ApiError(400, "The code must be 6 digits");
+    res
+      .status(201)
+      .json(
+        await completePending(
+          ctx,
+          pendingToken(input.pendingToken),
+          input.code,
+        ),
+      );
+  });
+
+  router.post("/auth/signup/resend", perPending, async (req, res) => {
+    await resendPending(ctx, pendingToken(body(req).pendingToken));
+    res.status(202).json({ message: "A new code has been sent." });
+  });
+
+  router.post("/auth/signup/cancel", async (req, res) => {
+    await cancelPending(ctx, pendingToken(body(req).pendingToken));
+    res.sendStatus(204);
   });
 
   router.post("/auth/login", async (req, res) => {
@@ -370,14 +407,18 @@ export function createRouter(
     res.clearCookie("oauth_state", { path: "/api/auth/oauth" });
     try {
       if (typeof req.query.error === "string") throw new OAuthError("denied");
-      const code = await oauthCallback(
+      const result = await oauthCallback(
         ctx,
         req.params.provider,
         req.query.code,
         cookieState,
         req.query.state,
       );
-      res.redirect(`${frontend}/auth/oauth?code=${encodeURIComponent(code)}`);
+      res.redirect(
+        "pendingToken" in result
+          ? `${frontend}/auth/oauth?pending=${encodeURIComponent(result.pendingToken)}`
+          : `${frontend}/auth/oauth?code=${encodeURIComponent(result.code)}`,
+      );
     } catch (error) {
       if (!(error instanceof OAuthError))
         console.error("OAuth callback failed", error);
@@ -436,7 +477,6 @@ export function createRouter(
     "POST /auth/logout",
     "POST /auth/verify-email",
     "POST /auth/verify-email/resend",
-    "POST /auth/verify-email/cancel",
     "GET /users/me",
     "PATCH /users/me",
     "DELETE /users/me",
@@ -468,16 +508,6 @@ export function createRouter(
   router.post("/auth/verify-email/resend", perUser, async (req, res) => {
     await sendVerificationCode(ctx, registered(actor(res)));
     res.status(202).json({ message: "A new code has been sent." });
-  });
-
-  // Abandons a pending signup (no password needed: the account was never verified).
-  router.post("/auth/verify-email/cancel", async (req, res) => {
-    const id = registered(actor(res));
-    const user = await ctx.db.user.findUniqueOrThrow({ where: { id } });
-    if (user.emailVerifiedAt || !user.verifyBy)
-      throw new ApiError(409, "Only a pending signup can be cancelled");
-    await endIdentity(ctx, actor(res), true);
-    res.sendStatus(204);
   });
 
   router.post("/auth/verify-email", async (req, res) => {
@@ -756,11 +786,7 @@ export function createRouter(
 
   router.post("/rooms/join", async (req, res) => {
     res.json(
-      await joinRoom(
-        ctx,
-        actor(res),
-        text(body(req).inviteCode, "inviteCode", 64),
-      ),
+      await joinRoom(ctx, actor(res), text(body(req).roomCode, "roomCode", 64)),
     );
   });
 
@@ -793,15 +819,9 @@ export function createRouter(
     res.sendStatus(204);
   });
 
-  router.post("/rooms/:roomId/invite-code", async (req, res) => {
-    res.json(
-      await getInvite(
-        ctx,
-        actor(res),
-        uuid(req.params.roomId),
-        (req.body as { rotate?: unknown } | undefined)?.rotate === true,
-      ),
-    );
+  // The owner replaces the room code, e.g. after kicking someone.
+  router.post("/rooms/:roomId/code", async (req, res) => {
+    res.json(await rotateCode(ctx, actor(res), uuid(req.params.roomId)));
   });
 
   router.post("/rooms/:roomId/owner", async (req, res) => {
@@ -822,32 +842,6 @@ export function createRouter(
       actor(res),
       uuid(req.params.roomId),
       uuid(req.params.memberId),
-    );
-    res.sendStatus(204);
-  });
-
-  router.post("/rooms/:roomId/members/:memberId/ban", async (req, res) => {
-    const { reason } = (req.body ?? {}) as Record<string, unknown>;
-    await removeMember(
-      ctx,
-      actor(res),
-      uuid(req.params.roomId),
-      uuid(req.params.memberId),
-      { reason: reason === undefined ? null : text(reason, "reason", 200) },
-    );
-    res.sendStatus(204);
-  });
-
-  router.get("/rooms/:roomId/bans", async (req, res) => {
-    res.json(await listBans(ctx, actor(res), uuid(req.params.roomId)));
-  });
-
-  router.delete("/rooms/:roomId/bans/:userId", async (req, res) => {
-    await unban(
-      ctx,
-      actor(res),
-      uuid(req.params.roomId),
-      integer(Number(req.params.userId), "userId", 1, 2147483647),
     );
     res.sendStatus(204);
   });
@@ -969,34 +963,6 @@ export function createRouter(
       actor(res),
       roomId === null || roomId === undefined ? null : uuid(roomId),
     );
-    res.sendStatus(204);
-  });
-
-  router.get("/join-requests", async (req, res) => {
-    res.json(await listJoinRequests(ctx, actor(res)));
-  });
-
-  router.post("/join-requests", async (req, res) => {
-    const input = body(req);
-    res
-      .status(201)
-      .json(
-        await askToJoin(
-          ctx,
-          actor(res),
-          integer(input.friendId, "friendId", 1, 2147483647),
-          uuid(input.roomId),
-        ),
-      );
-  });
-
-  router.post("/join-requests/:id/accept", async (req, res) => {
-    await acceptJoin(ctx, actor(res), uuid(req.params.id));
-    res.sendStatus(204);
-  });
-
-  router.delete("/join-requests/:id", async (req, res) => {
-    await dropJoinRequest(ctx, actor(res), uuid(req.params.id));
     res.sendStatus(204);
   });
 

@@ -100,12 +100,11 @@ interface GuestAuth {
 }
 interface Room {
   id: string;
-  inviteCode: string;
+  code: string;
   ownerId: number;
   members: {
     id: string;
     userId: number | null;
-    invitedById: number | null;
     guestSessionId: string | null;
   }[];
   timer: Timer | null;
@@ -142,10 +141,24 @@ async function request<T>(
   );
   return result as T;
 }
-// Accounts must verify their email to use the API; tests skip that unless asked.
-async function user(verified = true) {
-  const name = `${prefix}${++count}`;
-  const account = await request<Auth>(
+interface Pending {
+  pendingToken: string;
+  expiresAt: string;
+}
+// The code the fake mailer last sent to an address.
+function codeFor(to: string) {
+  const mail = [...mails].reverse().find((m) => m.to === to);
+  const code = /code is (\d{6})/.exec(mail?.text ?? "")?.[1];
+  assert.ok(code, `no code was emailed to ${to}`);
+  return code;
+}
+const wrongCode = (code: string) => (code === "000000" ? "111111" : "000000");
+function signup(
+  name: string,
+  expected = 202,
+  over: Record<string, unknown> = {},
+) {
+  return request<Pending>(
     "/api/auth/signup",
     "POST",
     undefined,
@@ -153,13 +166,32 @@ async function user(verified = true) {
       username: name,
       email: `${name}@example.test`,
       password: "Correct-password-42",
+      ...over,
     },
+    expected,
+  );
+}
+const pendingPost = (path: string, input: unknown, expected: number) =>
+  request(`/api/auth/signup${path}`, "POST", undefined, input, expected);
+// Signing up needs the emailed code. `verified = false` then turns the account
+// into an older unverified one (as after an email change) with a deadline.
+async function user(verified = true) {
+  const name = `${prefix}${++count}`;
+  const { pendingToken } = await signup(name);
+  const account = await request<Auth>(
+    "/api/auth/signup/verify",
+    "POST",
+    undefined,
+    { pendingToken, code: codeFor(`${name}@example.test`) },
     201,
   );
-  if (verified)
+  if (!verified)
     await db.user.update({
       where: { id: account.user.id },
-      data: { emailVerifiedAt: new Date(), verifyBy: null },
+      data: {
+        emailVerifiedAt: null,
+        verifyBy: new Date(clock.getTime() + 10 * 60_000),
+      },
     });
   return account;
 }
@@ -190,13 +222,7 @@ async function room(token: string, input: Record<string, unknown> = {}) {
     201,
   );
   roomIds.push(result.id);
-  // The owner's personal join code, which the other tests share.
-  const invite = await request<{ inviteCode: string }>(
-    `/api/rooms/${result.id}/invite-code`,
-    "POST",
-    token,
-  );
-  return { ...result, inviteCode: invite.inviteCode };
+  return result;
 }
 async function solo(token: string, input: Record<string, unknown> = {}) {
   const result = await request<Timer>(
@@ -290,6 +316,9 @@ after(async () => {
       await tx.studyRoom.deleteMany({ where: { id: { in: roomIds } } });
       await tx.pomodoroSession.deleteMany({ where: { id: { in: timerIds } } });
       await tx.guestSession.deleteMany({ where: { id: { in: guestIds } } });
+      await tx.pendingSignup.deleteMany({
+        where: { email: { startsWith: prefix } },
+      });
       await tx.user.deleteMany({ where: { username: { startsWith: prefix } } });
       await tx.miniGame.deleteMany({ where: { key: { startsWith: prefix } } });
     });
@@ -408,19 +437,15 @@ void test("room joins are idempotent, private, and controlled by registered owne
   const study = await room(owner.token);
   await request(`/api/rooms/${study.id}`, "GET", friend.token, undefined, 403);
   await request("/api/rooms/join", "POST", friend.token, {
-    inviteCode: study.inviteCode,
+    roomCode: study.code,
   });
   await request("/api/rooms/join", "POST", friend.token, {
-    inviteCode: study.inviteCode,
+    roomCode: study.code,
   });
   const joined = await request<Room>("/api/rooms/join", "POST", visitor.token, {
-    inviteCode: study.inviteCode,
+    roomCode: study.code,
   });
   assert.equal(joined.members.length, 3);
-  assert.equal(
-    joined.members.find((m) => m.userId === friend.user.id)?.invitedById,
-    owner.user.id,
-  );
   await request(
     `/api/rooms/${study.id}`,
     "PATCH",
@@ -435,37 +460,36 @@ void test("room joins are idempotent, private, and controlled by registered owne
     undefined,
     409,
   );
-  const rotated = await request<{ inviteCode: string }>(
-    `/api/rooms/${study.id}/invite-code`,
+  // Only the owner can replace the room code, and the old one stops working.
+  for (const other of [friend, visitor])
+    await request(
+      `/api/rooms/${study.id}/code`,
+      "POST",
+      other.token,
+      undefined,
+      403,
+    );
+  const rotated = await request<{ roomCode: string }>(
+    `/api/rooms/${study.id}/code`,
     "POST",
     owner.token,
-    { rotate: true },
   );
-  const same = await request<{ inviteCode: string }>(
-    `/api/rooms/${study.id}/invite-code`,
-    "POST",
-    owner.token,
-  );
-  assert.equal(same.inviteCode, rotated.inviteCode);
-  // Members get their own code; guests cannot make one.
-  const friendCode = await request<{ inviteCode: string }>(
-    `/api/rooms/${study.id}/invite-code`,
-    "POST",
-    friend.token,
-  );
-  assert.notEqual(friendCode.inviteCode, rotated.inviteCode);
+  assert.notEqual(rotated.roomCode, study.code);
+  const stranger = await user();
   await request(
-    `/api/rooms/${study.id}/invite-code`,
+    "/api/rooms/join",
     "POST",
-    visitor.token,
-    undefined,
-    403,
+    stranger.token,
+    { roomCode: study.code },
+    404,
   );
   await request(
     "/api/rooms/join",
     "POST",
-    visitor.token,
-    { inviteCode: study.inviteCode },
+    stranger.token,
+    {
+      roomCode: "nope",
+    },
     404,
   );
   await request(`/api/rooms/${study.id}/owner`, "POST", owner.token, {
@@ -490,20 +514,16 @@ void test("room joins are idempotent, private, and controlled by registered owne
     204,
   );
   await request(`/api/rooms/${study.id}`, "GET", visitor.token, undefined, 403);
-  // A member who left can no longer invite: the owner's code died with them.
-  await request(
-    "/api/rooms/join",
-    "POST",
-    visitor.token,
-    { inviteCode: rotated.inviteCode },
-    404,
-  );
+  // A kicked member can come back with the current code.
+  await request("/api/rooms/join", "POST", visitor.token, {
+    roomCode: rotated.roomCode,
+  });
   await request(`/api/rooms/${study.id}/close`, "POST", friend.token);
   await request(
     "/api/rooms/join",
     "POST",
     visitor.token,
-    { inviteCode: friendCode.inviteCode },
+    { roomCode: rotated.roomCode },
     409,
   );
 });
@@ -512,7 +532,7 @@ void test("membership persists until the person leaves or is kicked", async () =
   const friend = await user();
   const study = await room(owner.token);
   await request("/api/rooms/join", "POST", friend.token, {
-    inviteCode: study.inviteCode,
+    roomCode: study.code,
   });
   // Leaving the timer (or never being in it) never touches membership.
   const timer = await request<{ id: string }>(
@@ -532,7 +552,7 @@ void test("membership persists until the person leaves or is kicked", async () =
   await request(`/api/rooms/${study.id}`, "GET", friend.token);
   // Joining again with a code is a no-op for an existing member.
   const again = await request<Room>("/api/rooms/join", "POST", friend.token, {
-    inviteCode: study.inviteCode,
+    roomCode: study.code,
   });
   assert.equal(again.members.length, 2);
   // Leaving the server removes the membership; a code is needed to return.
@@ -549,7 +569,7 @@ void test("membership persists until the person leaves or is kicked", async () =
     "POST",
     friend.token,
     {
-      inviteCode: study.inviteCode,
+      roomCode: study.code,
     },
   );
   // Kicked members need a code again too.
@@ -564,7 +584,7 @@ void test("membership persists until the person leaves or is kicked", async () =
   );
   await request(`/api/rooms/${study.id}`, "GET", friend.token, undefined, 403);
   await request("/api/rooms/join", "POST", friend.token, {
-    inviteCode: study.inviteCode,
+    roomCode: study.code,
   });
   await request(`/api/rooms/${study.id}`, "GET", friend.token);
 });
@@ -645,7 +665,7 @@ void test("friends: request, accept, list and remove", async () => {
   const crossed = await request<Lists>("/api/friends", "GET", bob.token);
   assert.equal(crossed.friends.length, 1);
 });
-void test("friends see presence and can ask to join a server", async () => {
+void test("friends see presence and whether they are in the room", async () => {
   const alice = await user();
   const bob = await user();
   const stranger = await user();
@@ -671,14 +691,7 @@ void test("friends see presence and can ask to join a server", async () => {
       204,
     );
   };
-  // Not friends yet: no asking, and presence needs membership.
-  await request(
-    "/api/join-requests",
-    "POST",
-    bob.token,
-    { friendId: alice.user.id, roomId: study.id },
-    403,
-  );
+  // Presence needs membership.
   await request(
     "/api/presence",
     "PUT",
@@ -702,95 +715,16 @@ void test("friends see presence and can ask to join a server", async () => {
   assert.equal(seen.friends[0]?.presence.online, true);
   assert.equal(seen.friends[0]?.presence.room?.id, study.id);
   assert.equal(seen.friends[0]?.presence.room?.joined, false);
-  // Ask to join: only a member can be asked, and only once.
-  await request(
-    "/api/join-requests",
-    "POST",
-    bob.token,
-    { friendId: alice.user.id, roomId: study.id },
-    201,
-  );
-  await request(
-    "/api/join-requests",
-    "POST",
-    bob.token,
-    { friendId: alice.user.id, roomId: study.id },
-    201,
-  );
-  interface Ask {
-    id: string;
-  }
-  const asks = await request<{ incoming: Ask[]; outgoing: Ask[] }>(
-    "/api/join-requests",
-    "GET",
-    alice.token,
-  );
-  assert.equal(asks.incoming.length, 1);
-  // Only the person asked can accept.
-  await request(
-    `/api/join-requests/${asks.incoming[0].id}/accept`,
-    "POST",
-    bob.token,
-    undefined,
-    404,
-  );
-  await request(
-    `/api/join-requests/${asks.incoming[0].id}/accept`,
-    "POST",
-    alice.token,
-    undefined,
-    204,
-  );
-  const joinedRoom = await request<{
-    members: { userId: number; invitedById: number | null }[];
-  }>(`/api/rooms/${study.id}`, "GET", bob.token);
-  const byId = (id: number) => joinedRoom.members.find((m) => m.userId === id);
-  assert.equal(byId(bob.user.id)?.invitedById, alice.user.id);
-  assert.equal(byId(alice.user.id)?.invitedById, null);
+  // Joining with the room code flips `joined` for the friend.
+  await request("/api/rooms/join", "POST", bob.token, {
+    roomCode: study.code,
+  });
   const after = await request<{ friends: Friend[] }>(
     "/api/friends",
     "GET",
     bob.token,
   );
   assert.equal(after.friends[0]?.presence.room?.joined, true);
-  await request(
-    "/api/join-requests",
-    "POST",
-    bob.token,
-    { friendId: alice.user.id, roomId: study.id },
-    409,
-  );
-  // Declining removes the request.
-  const carol = await user();
-  const sent = await request<{ id: string }>(
-    "/api/friends",
-    "POST",
-    carol.token,
-    { username: alice.user.username },
-    201,
-  );
-  await request(
-    `/api/friends/${sent.id}/accept`,
-    "POST",
-    alice.token,
-    undefined,
-    204,
-  );
-  const ask = await request<Ask>(
-    "/api/join-requests",
-    "POST",
-    carol.token,
-    { friendId: alice.user.id, roomId: study.id },
-    201,
-  );
-  await request(
-    `/api/join-requests/${ask.id}`,
-    "DELETE",
-    alice.token,
-    undefined,
-    204,
-  );
-  await request(`/api/rooms/${study.id}`, "GET", carol.token, undefined, 403);
 });
 void test("room chat is for members, in order, and polls by message id", async () => {
   const owner = await user();
@@ -812,7 +746,7 @@ void test("room chat is for members, in order, and polls by message id", async (
     403,
   );
   await request("/api/rooms/join", "POST", visitor.token, {
-    inviteCode: study.inviteCode,
+    roomCode: study.code,
   });
   interface Message {
     id: number;
@@ -919,7 +853,7 @@ void test("shared timers credit late arrival and rejoining without crediting abs
   const timer = await shared(owner.token, study.id);
   advance(2);
   await request("/api/rooms/join", "POST", friend.token, {
-    inviteCode: study.inviteCode,
+    roomCode: study.code,
   });
   advance(2);
   await request(
@@ -931,7 +865,7 @@ void test("shared timers credit late arrival and rejoining without crediting abs
   );
   advance(2);
   await request("/api/rooms/join", "POST", friend.token, {
-    inviteCode: study.inviteCode,
+    roomCode: study.code,
   });
   await request(
     `/api/timers/${timer.id}/pause`,
@@ -1003,7 +937,7 @@ void test("only the owner can delete a room, which removes it but keeps study ti
   const study = await room(owner.token);
   for (const token of [friend.token, visitor.token])
     await request("/api/rooms/join", "POST", token, {
-      inviteCode: study.inviteCode,
+      roomCode: study.code,
     });
   await request(
     `/api/rooms/${study.id}/messages`,
@@ -1026,7 +960,7 @@ void test("only the owner can delete a room, which removes it but keeps study ti
     204,
   );
   assert.equal(await db.studyRoom.count({ where: { id: study.id } }), 0);
-  for (const table of [db.roomMember, db.invite, db.message])
+  for (const table of [db.roomMember, db.message])
     assert.equal(
       await (
         table as unknown as {
@@ -1040,7 +974,7 @@ void test("only the owner can delete a room, which removes it but keeps study ti
     "/api/rooms/join",
     "POST",
     friend.token,
-    { inviteCode: study.inviteCode },
+    { roomCode: study.code },
     404,
   );
   const listed = await request<Room[]>("/api/rooms", "GET", owner.token);
@@ -1173,7 +1107,7 @@ void test("deleting an account revokes sessions and preserves other users' share
   const friend = await user();
   const study = await room(owner.token);
   await request("/api/rooms/join", "POST", friend.token, {
-    inviteCode: study.inviteCode,
+    roomCode: study.code,
   });
   const timer = await shared(owner.token, study.id);
   advance(2);
@@ -1209,7 +1143,7 @@ void test("a person cannot accrue study time in overlapping solo and shared time
   const friend = await user();
   const study = await room(owner.token);
   await request("/api/rooms/join", "POST", friend.token, {
-    inviteCode: study.inviteCode,
+    roomCode: study.code,
   });
   const own = await solo(friend.token);
   await request(
@@ -1271,7 +1205,7 @@ void test("joining during a pause does not credit paused time", async () => {
   await request(`/api/timers/${timer.id}/pause`, "POST", owner.token);
   advance(30);
   await request("/api/rooms/join", "POST", friend.token, {
-    inviteCode: study.inviteCode,
+    roomCode: study.code,
   });
   advance(30);
   await request(`/api/timers/${timer.id}/resume`, "POST", owner.token);
@@ -1750,14 +1684,17 @@ void test("password reset requests are limited per address", async () => {
   }
 });
 
-void test("email verification: signup emails a code that proves the address", async () => {
-  const before = mails.length;
+void test("email verification: an unverified account is emailed a code that proves the address", async () => {
   const account = await user(false);
-  const mail = mails.slice(before).find((m) => m.to === account.user.email);
-  assert.ok(mail);
-  const code = /code is (\d{6})/.exec(mail.text)?.[1];
-  assert.ok(code);
-  const wrong = code === "000000" ? "111111" : "000000";
+  await request(
+    "/api/auth/verify-email/resend",
+    "POST",
+    account.token,
+    {},
+    202,
+  );
+  const code = codeFor(account.user.email);
+  const wrong = wrongCode(code);
   const post = (
     path: string,
     token: string,
@@ -1822,7 +1759,7 @@ void test("unverified accounts can only verify, fix their email or leave", async
   await request("/api/auth/logout", "POST", account.token, undefined, 204);
 });
 
-void test("moderation: ban, mute and deleting messages are owner powers", async () => {
+void test("moderation: kick, mute and deleting messages are owner powers", async () => {
   const owner = await user();
   const member = await user();
   const other = await user();
@@ -1833,7 +1770,7 @@ void test("moderation: ban, mute and deleting messages are owner powers", async 
       "/api/rooms/join",
       "POST",
       token,
-      { inviteCode: study.inviteCode },
+      { roomCode: study.code },
       expected,
     );
   await join(member.token);
@@ -1859,8 +1796,13 @@ void test("moderation: ban, mute and deleting messages are owner powers", async 
     { minutes: 5 },
     403,
   );
-  await request(`${path}/members/${target}/ban`, "POST", other.token, {}, 403);
-  await request(`${path}/bans`, "GET", other.token, undefined, 403);
+  await request(
+    `${path}/members/${target}`,
+    "DELETE",
+    other.token,
+    undefined,
+    403,
+  );
   await request(
     `${path}/members/${memberId(full, owner.user.id)}/mute`,
     "POST",
@@ -1909,37 +1851,15 @@ void test("moderation: ban, mute and deleting messages are owner powers", async 
     404,
   );
 
-  // A banned user is removed and can't return with a code.
+  // A kicked user is removed but can return with the room code.
   await request(
-    `${path}/members/${target}/ban`,
-    "POST",
+    `${path}/members/${target}`,
+    "DELETE",
     owner.token,
-    { reason: "spam" },
+    undefined,
     204,
   );
   await request(path, "GET", member.token, undefined, 403);
-  await join(member.token, 403);
-  const bans = await request<
-    { userId: number; username: string; reason: string }[]
-  >(`${path}/bans`, "GET", owner.token);
-  assert.deepEqual(
-    bans.map((b) => [b.userId, b.username, b.reason]),
-    [[member.user.id, member.user.username, "spam"]],
-  );
-  await request(
-    `${path}/bans/${member.user.id}`,
-    "DELETE",
-    owner.token,
-    undefined,
-    204,
-  );
-  await request(
-    `${path}/bans/${member.user.id}`,
-    "DELETE",
-    owner.token,
-    undefined,
-    404,
-  );
   await join(member.token);
 });
 
@@ -1989,7 +1909,7 @@ void test("signups that never verify are deleted, freeing the email", async () =
       email: stale.user.email,
       password: "Correct-password-42",
     },
-    201,
+    202,
   );
 });
 
@@ -2014,7 +1934,7 @@ void test("messages and members say whether the author is a guest", async () => 
   const visitor = await guest();
   const study = await room(owner.token);
   await request("/api/rooms/join", "POST", visitor.token, {
-    inviteCode: study.inviteCode,
+    roomCode: study.code,
   });
   const say = (token: string) =>
     request<{ isGuest: boolean }>(
@@ -2488,7 +2408,7 @@ void test("moderators moderate rooms they belong to, but not staff or the owner"
   const path = `/api/rooms/${study.id}`;
   for (const who of [moderator, member, peer, admin])
     await request("/api/rooms/join", "POST", who.token, {
-      inviteCode: study.inviteCode,
+      roomCode: study.code,
     });
   const full = await request<Room>(path, "GET", owner.token);
   const memberOf = (id: number) =>
@@ -2522,9 +2442,15 @@ void test("moderators moderate rooms they belong to, but not staff or the owner"
     where: { id: stray.user.id },
     data: { role: "MODERATOR" },
   });
-  await request(`${path}/bans`, "GET", stray.token, undefined, 403);
+  await request(
+    `${path}/members/${memberOf(member.user.id)}`,
+    "DELETE",
+    stray.token,
+    undefined,
+    403,
+  );
 
-  // As a member, a moderator can delete anyone's message, mute, kick and ban.
+  // As a member, a moderator can delete anyone's message, mute and kick.
   const note = await say(member.token);
   await request(
     `${path}/messages/${note.id}`,
@@ -2539,7 +2465,6 @@ void test("moderators moderate rooms they belong to, but not staff or the owner"
     moderator.token,
     { minutes: 5 },
   );
-  await request(`${path}/bans`, "GET", moderator.token);
 
   // Staff and the owner are out of a moderator's reach; an admin member can.
   for (const target of [peer.user.id, admin.user.id, owner.user.id]) {
@@ -2551,10 +2476,10 @@ void test("moderators moderate rooms they belong to, but not staff or the owner"
       target === owner.user.id ? 409 : 403,
     );
     await request(
-      `${path}/members/${memberOf(target)}/ban`,
-      "POST",
+      `${path}/members/${memberOf(target)}`,
+      "DELETE",
       moderator.token,
-      {},
+      undefined,
       target === owner.user.id ? 409 : 403,
     );
   }
@@ -2566,14 +2491,7 @@ void test("moderators moderate rooms they belong to, but not staff or the owner"
   );
 
   await request(
-    `${path}/members/${memberOf(member.user.id)}/ban`,
-    "POST",
-    moderator.token,
-    { reason: "spam" },
-    204,
-  );
-  await request(
-    `${path}/bans/${member.user.id}`,
+    `${path}/members/${memberOf(member.user.id)}`,
     "DELETE",
     moderator.token,
     undefined,
@@ -2695,21 +2613,33 @@ void test("OAuth: a wrong state is refused and creates nothing", async () => {
   );
 });
 
-void test("OAuth: an email the provider doesn't vouch for must be verified with a code", async () => {
+void test("OAuth: an email the provider doesn't vouch for creates nothing until the code is entered", async () => {
   const profile = who("fortytwo", { emailVerified: false });
-  const session = await exchange(await oauth("42", profile));
+  const done = await oauth("42", profile);
+  assert.equal(done.searchParams.get("code"), null);
+  const pendingToken = done.searchParams.get("pending");
+  assert.ok(pendingToken);
+  assert.equal(
+    await db.user.count({ where: { email: profile.email ?? "" } }),
+    0,
+  );
+  assert.equal(mails.at(-1)?.to, profile.email);
+  const code = codeFor(profile.email ?? "");
+  await pendingPost("/verify", { pendingToken, code: wrongCode(code) }, 400);
+  const session = await request<Auth>(
+    "/api/auth/signup/verify",
+    "POST",
+    undefined,
+    { pendingToken, code },
+    201,
+  );
   const stored = await db.user.findUniqueOrThrow({
     where: { id: session.user.id },
+    include: { oAuthAccounts: true },
   });
-  assert.equal(stored.emailVerifiedAt, null);
-  assert.ok(stored.verifyBy);
-  // Limited to the verify routes until the emailed code is entered.
-  await request("/api/rooms", "GET", session.token, undefined, 403);
-  const mail = mails.at(-1);
-  assert.equal(mail?.to, profile.email);
-  const code = /code is (\d{6})/.exec(mail.text)?.[1];
-  assert.ok(code);
-  await request("/api/auth/verify-email", "POST", session.token, { code }, 204);
+  assert.ok(stored.emailVerifiedAt);
+  assert.equal(stored.passwordHash, null);
+  assert.equal(stored.oAuthAccounts.length, 1);
   await request("/api/rooms", "GET", session.token);
 });
 
@@ -2768,21 +2698,10 @@ void test("OAuth: a username clash gets a random suffix", async () => {
 });
 
 void test("42 logins are reserved: password signups can't take one, real 42 sign-ins can", async () => {
-  const signup = (name: string, expected: number) =>
-    request(
-      "/api/auth/signup",
-      "POST",
-      undefined,
-      {
-        username: name,
-        email: `${name}@example.test`,
-        password: "Correct-password-42",
-      },
-      expected,
-    );
+  const signupAs = (name: string, expected: number) => signup(name, expected);
   const reserved = `${prefix}real42`;
-  await signup(reserved, 409);
-  await signup(reserved, 409);
+  await signupAs(reserved, 409);
+  await signupAs(reserved, 409);
   // The answer is remembered: 42 was asked once for two attempts.
   assert.equal(lookups.filter((login) => login === reserved).length, 1);
   // A guest can't take the login of a real 42 student either (answer cached).
@@ -2793,9 +2712,9 @@ void test("42 logins are reserved: password signups can't take one, real 42 sign
     { displayName: reserved },
     409,
   );
-  await signup(`${prefix}plain`, 201);
+  await signupAs(`${prefix}plain`, 202);
   // A failing lookup must not block signups.
-  await signup(`${prefix}boom`, 201);
+  await signupAs(`${prefix}boom`, 202);
 
   // Changing a username to a reserved one is refused; keeping your own is fine.
   const other = await user();
@@ -2827,48 +2746,138 @@ void test("42 logins are reserved: password signups can't take one, real 42 sign
   assert.match(google.user.username, /^[a-z0-9_-]{3,32}$/);
 });
 
-void test("a pending signup doesn't lock the email's real owner out", async () => {
-  const email = `${prefix}owner@example.test`;
-  const signup = (username: string, expected: number) =>
-    request<Auth>(
-      "/api/auth/signup",
-      "POST",
-      undefined,
-      {
-        username: `${prefix}${username}`,
-        email,
-        password: "Correct-password-42",
-      },
-      expected,
-    );
-  const squatter = await signup("sq1", 201);
-  const owner = await signup("own1", 201);
-  // The squatter's pending account and session are gone.
-  await request("/api/auth/me", "GET", squatter.token, undefined, 401);
-  // Once verified, the email is taken for good: no more replacing.
-  await db.user.update({
-    where: { id: owner.user.id },
-    data: { emailVerifiedAt: new Date(), verifyBy: null },
-  });
-  await signup("sq2", 409);
+void test("a signup creates no user until the emailed code is entered", async () => {
+  const name = `${prefix}p1`;
+  const email = `${name}@example.test`;
+  const { pendingToken, expiresAt } = await signup(name);
+  assert.ok(Date.parse(expiresAt) > clock.getTime());
+  assert.equal(await db.user.count({ where: { email } }), 0);
+  const row = await db.pendingSignup.findUniqueOrThrow({ where: { email } });
+  assert.notEqual(row.tokenHash, pendingToken);
+  assert.ok(row.passwordHash?.startsWith("scrypt$"));
+  const code = codeFor(email);
+  // The token and the code are both required, and the code is six digits.
+  await pendingPost("/verify", { code }, 400);
+  await pendingPost("/verify", { pendingToken, code: "12" }, 400);
+  await pendingPost("/verify", { pendingToken: "nope", code }, 400);
+  await pendingPost("/verify", { pendingToken, code: wrongCode(code) }, 400);
+  const done = await request<Auth>(
+    "/api/auth/signup/verify",
+    "POST",
+    undefined,
+    { pendingToken, code },
+    201,
+  );
+  assert.equal(done.user.username, name);
+  assert.ok(
+    (await db.user.findUniqueOrThrow({ where: { email } })).emailVerifiedAt,
+  );
+  assert.equal(await db.pendingSignup.count({ where: { email } }), 0);
+  await request("/api/rooms", "GET", done.token);
+  // The token is spent.
+  await pendingPost("/verify", { pendingToken, code }, 400);
+  // A taken username or email is refused up front.
+  await signup(name, 409, { email: `${name}2@example.test` });
+  await signup(`${name}x`, 409, { email });
 });
 
-void test("a pending signup can be cancelled, a verified account can't", async () => {
-  const pending = await user(false);
-  await request(
-    "/api/auth/verify-email/cancel",
-    "POST",
-    pending.token,
-    undefined,
-    204,
+void test("five wrong codes delete the pending signup", async () => {
+  const name = `${prefix}p2`;
+  const email = `${name}@example.test`;
+  const { pendingToken } = await signup(name);
+  const code = codeFor(email);
+  for (let i = 0; i < 5; i++)
+    await pendingPost("/verify", { pendingToken, code: wrongCode(code) }, 400);
+  assert.equal(await db.pendingSignup.count({ where: { email } }), 0);
+  await pendingPost("/verify", { pendingToken, code }, 400);
+  assert.equal(await db.user.count({ where: { email } }), 0);
+});
+
+void test("pending signups expire, and expired rows are cleaned up", async () => {
+  const name = `${prefix}p3`;
+  const email = `${name}@example.test`;
+  const { pendingToken } = await signup(name);
+  const code = codeFor(email);
+  const saved = clock;
+  clock = new Date(clock.getTime() + 11 * 60_000);
+  try {
+    await pendingPost("/verify", { pendingToken, code }, 400);
+    await pendingPost("/resend", { pendingToken }, 400);
+    await cleanupExpiredSessions(ctx);
+  } finally {
+    clock = saved;
+  }
+  assert.equal(await db.pendingSignup.count({ where: { email } }), 0);
+});
+
+void test("resending replaces the code and is limited", async () => {
+  const name = `${prefix}p4`;
+  const email = `${name}@example.test`;
+  const { pendingToken } = await signup(name);
+  const first = codeFor(email);
+  for (let i = 0; i < 3; i++)
+    await pendingPost("/resend", { pendingToken }, 202);
+  await pendingPost("/resend", { pendingToken }, 429);
+  const latest = codeFor(email);
+  // Only the newest code works.
+  if (latest !== first)
+    await pendingPost("/verify", { pendingToken, code: first }, 400);
+  await pendingPost("/verify", { pendingToken, code: latest }, 201);
+  await pendingPost("/resend", { pendingToken: "nope" }, 400);
+});
+
+void test("a pending signup doesn't lock the email's real owner out", async () => {
+  const email = `${prefix}owner@example.test`;
+  const attempt = (username: string, expected: number) =>
+    signup(`${prefix}${username}`, expected, { email });
+  const squatter = await attempt("sq1", 202);
+  const owner = await attempt("own1", 202);
+  const squatterCode = codeFor(email);
+  // The squatter's token no longer works; the owner's does.
+  await pendingPost(
+    "/verify",
+    { pendingToken: squatter.pendingToken, code: squatterCode },
+    400,
   );
-  assert.equal(await db.user.count({ where: { id: pending.user.id } }), 0);
-  const verified = await user();
-  await request(
-    "/api/auth/verify-email/cancel",
-    "POST",
-    verified.token,
-    undefined,
-    409,
+  await pendingPost(
+    "/verify",
+    { pendingToken: owner.pendingToken, code: squatterCode },
+    201,
   );
+  // Once verified, the email is taken for good: no more replacing.
+  await attempt("sq2", 409);
+});
+
+void test("a pending signup can be cancelled", async () => {
+  const name = `${prefix}p5`;
+  const email = `${name}@example.test`;
+  const { pendingToken } = await signup(name);
+  const code = codeFor(email);
+  await pendingPost("/cancel", { pendingToken }, 204);
+  assert.equal(await db.pendingSignup.count({ where: { email } }), 0);
+  await pendingPost("/verify", { pendingToken, code }, 400);
+  // Cancelling something unknown or twice also succeeds.
+  await pendingPost("/cancel", { pendingToken }, 204);
+  await pendingPost("/cancel", {}, 400);
+});
+
+void test("OAuth: a Google login that is a real 42 login still gets a suffix when the code is entered", async () => {
+  const login = `${prefix}real42`;
+  const profile = who("gp", {
+    login,
+    emailVerified: false,
+    providerUserId: `${prefix}gp`,
+  });
+  const done = await oauth("google", profile);
+  const pendingToken = done.searchParams.get("pending");
+  assert.ok(pendingToken);
+  const session = await request<Auth>(
+    "/api/auth/signup/verify",
+    "POST",
+    undefined,
+    { pendingToken, code: codeFor(profile.email ?? "") },
+    201,
+  );
+  assert.notEqual(session.user.username, login);
+  assert.match(session.user.username, /^[a-z0-9_-]{3,32}$/);
 });

@@ -49,10 +49,9 @@ export default function SignUp() {
         setError(body.error ?? `Request failed (${String(res.status)})`);
         return;
       }
-      const { token } = (await res.json()) as { token: string };
-      // The API returns a bearer token; later requests send it as
-      // "Authorization: Bearer <token>".
-      localStorage.setItem("token", token);
+      const { pendingToken } = (await res.json()) as { pendingToken: string };
+      // No session yet: the verify page needs this to check the emailed code.
+      sessionStorage.setItem("pendingToken", pendingToken);
       void navigate("/auth/verify-email");
     } catch {
       setError("Could not reach the server. Please try again.");

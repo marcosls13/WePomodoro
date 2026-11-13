@@ -27,6 +27,15 @@ export interface RoomSettings {
   cyclesBeforeLongBreak?: number;
 }
 
+function isUniqueClash(error: unknown) {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "P2002"
+  );
+}
+
 async function roomView(tx: Transaction, roomId: string, now: Date) {
   const room = await tx.studyRoom.findUniqueOrThrow({ where: { id: roomId } });
   const members = await tx.roomMember.findMany({
@@ -42,7 +51,6 @@ async function roomView(tx: Transaction, roomId: string, now: Date) {
       userId: true,
       guestSessionId: true,
       joinedAt: true,
-      invitedById: true,
       mutedUntil: true,
       user: { select: { username: true } },
       guestSession: { select: { displayName: true } },
@@ -67,41 +75,35 @@ async function roomView(tx: Transaction, roomId: string, now: Date) {
 const alphabet =
   "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
-// Random code that starts at 6 characters and gets one longer whenever a length
-// keeps colliding, so it scales with the number of invites without a fixed size.
-async function newInviteCode(tx: Transaction) {
-  for (let length = 6; ; length++)
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const code = Array.from(
-        randomBytes(length),
-        (byte) => alphabet[byte % alphabet.length],
-      ).join("");
-      if (!(await tx.invite.findUnique({ where: { code } }))) return code;
-    }
+// 8 random characters; a clash with another room fails on the unique index and
+// createRoom retries, so no lookup is needed here.
+function newRoomCode() {
+  return Array.from(
+    randomBytes(8),
+    (byte) => alphabet[byte % alphabet.length],
+  ).join("");
 }
 
-/** The caller's own join code for a room; `rotate` replaces it with a new one. */
-export async function getInvite(
-  ctx: Context,
-  actor: Actor,
-  roomId: string,
-  rotate: boolean,
-) {
-  const createdById = registered(actor);
+/** The owner replaces the room code; the old one stops working at once. */
+export async function rotateCode(ctx: Context, actor: Actor, roomId: string) {
   return transaction(ctx, async (tx) => {
     const room = await lockRoom(tx, roomId);
-    await activeMember(tx, actor, roomId);
+    if (room.ownerId !== actor.userId)
+      throw new ApiError(403, "Only the owner can change the room code");
     if (room.closedAt) throw new ApiError(409, "Room is closed");
-    const key = { roomId_createdById: { roomId, createdById } };
-    const existing = await tx.invite.findUnique({ where: key });
-    if (existing && !rotate) return { inviteCode: existing.code };
-    const code = await newInviteCode(tx);
-    const invite = await tx.invite.upsert({
-      where: key,
-      create: { roomId, createdById, code, createdAt: ctx.now() },
-      update: { code },
-    });
-    return { inviteCode: invite.code };
+    for (let attempt = 0; ; attempt++)
+      try {
+        return {
+          roomCode: (
+            await tx.studyRoom.update({
+              where: { id: roomId },
+              data: { code: newRoomCode() },
+            })
+          ).code,
+        };
+      } catch (error) {
+        if (!(attempt < 3 && isUniqueClash(error))) throw error;
+      }
   });
 }
 
@@ -118,6 +120,7 @@ export async function createRoom(
         const room = await tx.studyRoom.create({
           data: {
             ...settings,
+            code: newRoomCode(),
             ownerId,
             createdAt: now,
             members: { create: { userId: ownerId, joinedAt: now } },
@@ -126,21 +129,14 @@ export async function createRoom(
         return roomView(tx, room.id, now);
       });
     } catch (error) {
-      if (
-        attempt < 3 &&
-        typeof error === "object" &&
-        error !== null &&
-        "code" in error &&
-        error.code === "P2002"
-      )
-        continue;
+      if (attempt < 3 && isUniqueClash(error)) continue;
       throw error;
     }
   }
 }
 
 export async function listRooms(ctx: Context, actor: Actor) {
-  // Only rooms this identity currently belongs to; invite codes aren't public.
+  // Only rooms this identity currently belongs to; the room code is only shown to members.
   return ctx.db.studyRoom.findMany({
     where: {
       closedAt: null,
@@ -161,15 +157,14 @@ export async function getRoom(ctx: Context, actor: Actor, roomId: string) {
 
 export async function joinRoom(ctx: Context, actor: Actor, code: string) {
   return transaction(ctx, async (tx) => {
-    const found = await tx.invite.findUnique({ where: { code } });
-    if (!found) throw new ApiError(404, "Invite code not found");
-    const room = await lockRoom(tx, found.roomId);
-    // Recheck after taking the lock in case the invite was rotated or revoked.
-    if (!(await tx.invite.findUnique({ where: { code } })))
-      throw new ApiError(404, "Invite code not found");
+    const found = await tx.studyRoom.findUnique({ where: { code } });
+    if (!found) throw new ApiError(404, "Room code not found");
+    // Recheck after taking the lock in case the code was just replaced.
+    const room = await lockRoom(tx, found.id);
+    if (room.code !== code) throw new ApiError(404, "Room code not found");
     if (room.closedAt) throw new ApiError(409, "Room is closed");
     const now = ctx.now();
-    await addMember(tx, room.id, actor, now, found.createdById);
+    await addMember(tx, room.id, actor, now);
     return roomView(tx, room.id, now);
   });
 }
@@ -183,21 +178,13 @@ export async function addMember(
   roomId: string,
   actor: Actor,
   now: Date,
-  invitedById: number,
 ) {
   const member = await tx.roomMember.findFirst({
     where: { roomId, ...identity(actor) },
   });
   if (member) return;
-  if (
-    actor.userId !== null &&
-    (await tx.roomBan.findUnique({
-      where: { roomId_userId: { roomId, userId: actor.userId } },
-    }))
-  )
-    throw new ApiError(403, "You are banned from this room");
   await tx.roomMember.create({
-    data: { roomId, ...identity(actor), joinedAt: now, invitedById },
+    data: { roomId, ...identity(actor), joinedAt: now },
   });
   const session = await tx.pomodoroSession.findFirst({
     where: { roomId, status: { in: [...liveStatuses] } },
@@ -225,10 +212,6 @@ export async function leaveRoom(ctx: Context, actor: Actor, roomId: string) {
     if (session)
       await leaveTimer(tx, actor, await settle(tx, session, now), now);
     await tx.roomMember.delete({ where: { id: member.id } });
-    // A member who left can no longer invite others.
-    await tx.invite.deleteMany({
-      where: { roomId, createdById: actor.userId ?? -1 },
-    });
   });
 }
 
@@ -333,13 +316,12 @@ async function protectStaff(
     throw new ApiError(403, "Moderators can't act on other staff");
 }
 
-/** Owner or moderator kicks a member; with `ban`, a registered user also can't come back. */
+/** Owner or moderator kicks a member, who can rejoin with the room code. */
 export async function removeMember(
   ctx: Context,
   actor: Actor,
   roomId: string,
   memberId: string,
-  ban?: { reason: string | null },
 ) {
   return transaction(ctx, async (tx) => {
     const room = await lockRoom(tx, roomId);
@@ -358,58 +340,6 @@ export async function removeMember(
     if (session)
       await leaveTimer(tx, member, await settle(tx, session, now), now);
     await tx.roomMember.delete({ where: { id: memberId } });
-    if (member.userId) {
-      await tx.invite.deleteMany({
-        where: { roomId, createdById: member.userId },
-      });
-      if (ban)
-        await tx.roomBan.upsert({
-          where: { roomId_userId: { roomId, userId: member.userId } },
-          create: {
-            roomId,
-            userId: member.userId,
-            reason: ban.reason,
-            createdAt: now,
-          },
-          update: { reason: ban.reason },
-        });
-    }
-  });
-}
-
-async function moderatedRoom(tx: Transaction, actor: Actor, roomId: string) {
-  const room = await lockRoom(tx, roomId);
-  return { room, by: await moderatorOf(tx, actor, room) };
-}
-
-export async function listBans(ctx: Context, actor: Actor, roomId: string) {
-  return transaction(ctx, async (tx) => {
-    await moderatedRoom(tx, actor, roomId);
-    const bans = await tx.roomBan.findMany({
-      where: { roomId },
-      orderBy: { createdAt: "desc" },
-      take: 100,
-      include: { user: { select: { username: true } } },
-    });
-    return bans.map(({ user, ...ban }) => ({
-      ...ban,
-      username: user.username,
-    }));
-  });
-}
-
-export async function unban(
-  ctx: Context,
-  actor: Actor,
-  roomId: string,
-  userId: number,
-) {
-  return transaction(ctx, async (tx) => {
-    await moderatedRoom(tx, actor, roomId);
-    const { count } = await tx.roomBan.deleteMany({
-      where: { roomId, userId },
-    });
-    if (!count) throw new ApiError(404, "Ban not found");
   });
 }
 
@@ -422,7 +352,8 @@ export async function muteMember(
   minutes: number | null,
 ) {
   return transaction(ctx, async (tx) => {
-    const { room, by } = await moderatedRoom(tx, actor, roomId);
+    const room = await lockRoom(tx, roomId);
+    const by = await moderatorOf(tx, actor, room);
     const member = await tx.roomMember.findFirst({
       where: { id: memberId, roomId },
     });

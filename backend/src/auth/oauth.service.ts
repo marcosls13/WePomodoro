@@ -8,14 +8,10 @@ import {
   type Transaction,
 } from "../api/common.js";
 import { Prisma } from "../generated/prisma/client.js";
-import {
-  SESSION_EXPIRES_AT,
-  VERIFY_WINDOW_MS,
-  tokenHash,
-} from "./auth.service.js";
+import { SESSION_EXPIRES_AT, tokenHash } from "./auth.service.js";
+import { candidate, createPending } from "./pending.service.js";
 import type { OAuthProfile, OAuthProviderConfig } from "./oauth.providers.js";
 import { isFortyTwoLogin } from "./reserved.service.js";
-import { sendVerificationCode } from "./verify.service.js";
 
 // How long the one-time code can be swapped for a session.
 const CODE_TTL_MS = 60_000;
@@ -54,19 +50,6 @@ function cleanEmail(value: string | null) {
   }
 }
 
-// Builds a valid username from the provider's login; after a clash it adds a
-// random suffix.
-function candidate(login: string, attempt: number) {
-  const name = login
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]/g, "_")
-    .slice(0, 32)
-    .padEnd(3, "_");
-  return attempt === 0
-    ? name
-    : `${name.slice(0, 27)}_${randomBytes(2).toString("hex")}`;
-}
-
 // Makes a random state and the provider's authorize URL; the route keeps the
 // state in a cookie to check it on the way back.
 export function oauthStart(ctx: Context, id: unknown) {
@@ -91,7 +74,7 @@ async function resolveUser(
   const linked = await tx.oAuthAccount.findUnique({
     where: { provider_providerUserId: account },
   });
-  if (linked) return { userId: linked.userId, needsVerification: false };
+  if (linked) return { userId: linked.userId };
   const existing = await tx.user.findUnique({ where: { email: mail } });
   if (existing) {
     if (!profile.emailVerified) throw new OAuthError("email_taken");
@@ -105,36 +88,36 @@ async function resolveUser(
       await tx.oAuthAccount.create({
         data: { userId: existing.id, ...account },
       });
-      return { userId: existing.id, needsVerification: false };
+      return { userId: existing.id };
     }
-    // Unverified with no deadline is an older account that may hold data.
+    // Unverified without a deadline is an older account that may hold data.
+    // (Older pending users with a deadline are replaced until they expire.)
     if (!existing.verifyBy) throw new OAuthError("email_taken");
     await tx.user.delete({ where: { id: existing.id } });
   }
-  const now = ctx.now();
+  // The provider doesn't vouch for the email: no user yet, the emailed code decides.
+  if (!profile.emailVerified) return { pending: true as const };
   const created = await tx.user.create({
     data: {
       email: mail,
       username: candidate(profile.login, attempt),
-      emailVerifiedAt: profile.emailVerified ? now : null,
-      verifyBy: profile.emailVerified
-        ? null
-        : new Date(now.getTime() + VERIFY_WINDOW_MS),
+      emailVerifiedAt: ctx.now(),
       oAuthAccounts: { create: account },
     },
   });
-  return { userId: created.id, needsVerification: !profile.emailVerified };
+  return { userId: created.id };
 }
 
 // Checks the state, loads the profile, resolves the user (retrying on a username
-// clash) and returns the one-time code to send back to the frontend.
+// clash) and returns the one-time code, or a pendingToken when the emailed code
+// must come first.
 export async function oauthCallback(
   ctx: Context,
   id: unknown,
   code: unknown,
   cookieState: string | undefined,
   queryState: unknown,
-) {
+): Promise<{ code: string } | { pendingToken: string }> {
   const found = provider(ctx, id);
   if (!sameText(cookieState, queryState)) throw new OAuthError("state");
   if (typeof code !== "string" || !code || code.length > 2048)
@@ -168,7 +151,17 @@ export async function oauthCallback(
       }
     }
   })();
-  if (result.needsVerification) await sendVerificationCode(ctx, result.userId);
+  if ("pending" in result) {
+    // Google and GitHub logins that are real 42 logins get their suffix when
+    // the code is entered (completePending).
+    const { pendingToken } = await createPending(ctx, {
+      email: mail,
+      username: profile.login,
+      provider: found.dbValue,
+      providerUserId: profile.providerUserId,
+    });
+    return { pendingToken };
+  }
   const oneTime = randomBytes(32).toString("base64url");
   const now = ctx.now();
   await ctx.db.oAuthCode.create({
@@ -179,7 +172,7 @@ export async function oauthCallback(
       expiresAt: new Date(now.getTime() + CODE_TTL_MS),
     },
   });
-  return oneTime;
+  return { code: oneTime };
 }
 
 // Swaps a one-time code for a session, like a password login. A code works once.

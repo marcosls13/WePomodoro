@@ -56,47 +56,8 @@ export function tokenHash(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
 
-function token() {
+export function token() {
   return randomBytes(32).toString("base64url");
-}
-
-export async function signup(
-  ctx: Context,
-  input: { email: string; username: string; password: string },
-) {
-  await assertNotFortyTwoLogin(ctx, input.username);
-  const hash = await hashPassword(input.password);
-  const bearer = token();
-  const now = ctx.now();
-  const expiresAt = new Date(now.getTime() + SESSION_EXPIRES_AT);
-  const user = await transaction(ctx, async (tx) => {
-    await tx.user.deleteMany({
-      where: {
-        email: input.email,
-        emailVerifiedAt: null,
-        verifyBy: { not: null },
-      },
-    });
-    const created = await tx.user.create({
-      data: {
-        email: input.email,
-        username: input.username,
-        passwordHash: hash,
-        verifyBy: new Date(now.getTime() + VERIFY_WINDOW_MS),
-      },
-      select: profileSelect,
-    });
-    await tx.authSession.create({
-      data: {
-        userId: created.id,
-        tokenHash: tokenHash(bearer),
-        createdAt: now,
-        expiresAt,
-      },
-    });
-    return created;
-  });
-  return { token: bearer, expiresAt, user };
 }
 
 export async function login(ctx: Context, address: string, value: string) {

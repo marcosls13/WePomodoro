@@ -1,185 +1,507 @@
 # Backend guide: pending signups (no user row until the code is entered)
 
-Not implemented. Do it in the order below. Everything refers to `backend/`.
+Not implemented yet, except the `PendingSignup` model and its migration (applied).
+Everything refers to `backend/` unless it says frontend. Do the steps in order.
 
-## 0. Why, and what changes
+Differences from the first plan, because they make the code smaller:
 
-Today signup creates a `User` row at once and a 10 minute timer (`verifyBy`)
-deletes it if the code never comes. Anyone calling `POST /auth/signup` directly
-(no frontend) can hold a username or an email for 10 minutes, again and again, so
-the real owner can't sign up. Closing the tab can't be detected reliably (a
-reload looks the same), and an attacker never opens the tab anyway.
+- The pending flow has its **own public routes** (`/auth/signup/verify`,
+  `/resend`, `/cancel`). The old authenticated `/auth/verify-email*` routes stay
+  exactly as they are for the one case left (a verified user who changed their
+  email), so no route has two modes.
+- `signup` moves out of `auth.service.ts` into the new `pending.service.ts`, so
+  the two files don't import each other.
+- The migration also has a `CHECK` (a pending row is a password signup or a
+  provider sign-in) and `id` is a native `UUID`, like `OAuthCode`.
 
-Fix: **signup and "unverified" OAuth sign-ins create a `PendingSignup` row, not a
-`User`.** The `User` (and its session) is created only when the right code is
-entered. A fake signup then holds nothing: no username, no email, no session, and
-nothing to delete when someone leaves the page.
+## 3. `src/auth/pending.service.ts` (new file)
 
-Decisions (change them if you disagree):
+First, in `auth.service.ts`: `export` the `token()` function (line ~59: change
+`function token()` to `export function token()`), and **delete the `signup`
+function** (it moves here). Keep `VERIFY_WINDOW_MS`, `SESSION_EXPIRES_AT`,
+`hashPassword`, `tokenHash`; the `assertNotFortyTwoLogin` import stays (guests
+and `updateProfile` use it).
 
-- **One pending row per email.** A new signup or sign-in for the same email
-  replaces the old pending row (this is the "real owner replaces a squatter"
-  rule, now for free). A verified `User` with that email always wins (409).
-- **Usernames are not reserved while pending.** The name is checked when the row
-  is created (fast feedback) and again when the code is entered. Whoever proves
-  their email first gets it; the other gets `409 That name was just taken; sign
-up again`. This is what stops username squatting.
-- **No session before verification.** The client gets a `pendingToken` (random,
-  only its hash is stored), not a bearer token. The user can leave the page
-  freely: they have no access to anything until they verify.
-- **42 sign-in gets the same treatment.** 42 never vouches for the email, so the
-  callback creates a pending row and the code is emailed. GitHub without a verified
-  email and Google without `email_verified` too. Providers that vouch for the
-  email (Google verified, GitHub verified) still create the user at once.
-- **5 wrong codes delete the pending row** (sign up again). Resend: 3 per 15
-  minutes per pending row. Expiry: 10 minutes (`VERIFY_WINDOW_MS`).
-- **The unverified-user gate stays** for the one case left: a verified user who
-  changes their email through `PATCH /users/me` is unverified again (`emailTokens`).
-  That flow is not touched.
+```ts
+import {
+  createHash,
+  randomInt,
+  randomUUID,
+  timingSafeEqual,
+} from "node:crypto";
+import {
+  ApiError,
+  profileSelect,
+  transaction,
+  type Context,
+  type Transaction,
+} from "../api/common.js";
+import { Prisma } from "../generated/prisma/client.js";
+import {
+  SESSION_EXPIRES_AT,
+  VERIFY_WINDOW_MS,
+  hashPassword,
+  token,
+  tokenHash,
+} from "./auth.service.js";
+import { assertNotFortyTwoLogin, isFortyTwoLogin } from "./reserved.service.js";
 
-## 1. Before you start: commit the current work
+const MAX_CODE_ATTEMPTS = 5;
+const MAX_RESENDS = 3;
+const RESEND_WINDOW_MS = 15 * 60_000;
 
-The uncommitted changes (frontend `VerifyGate`, "Cancel and go back" button,
-`POST /auth/verify-email/cancel` and its test) are replaced by this guide:
-commit them first so the history is clear, then see 8 for what to remove.
+const invalidCode = () =>
+  new ApiError(400, "Invalid or expired code; request a new one");
+const gone = () =>
+  new ApiError(404, "This signup has expired; please sign up again");
 
-## 2. Schema (`prisma/schema.prisma`) and migration
+type Provider = "GOOGLE" | "GITHUB" | "FORTY_TWO";
+type Identity =
+  { passwordHash: string } | { provider: Provider; providerUserId: string };
 
-```prisma
-model PendingSignup {
-  id             String    @id @default(uuid())
-  // Hash of the random pendingToken the client keeps; the client never sees `id`.
-  tokenHash      String    @unique
-  email          String    @unique
-  username       String
-  // Password signup: the hash. OAuth: null.
-  passwordHash   String?
-  // OAuth only: the provider identity to link when the code is entered.
-  provider       OAuthProvider?   // use the enum your OAuthAccount already uses
-  providerUserId String?
-  // Hash of the six-digit code (salted with `id`, like `codeHash` in verify.service.ts).
-  codeHash       String
-  failedAttempts Int       @default(0)
-  resends        Int       @default(0)
-  resendWindowAt DateTime
-  createdAt      DateTime  @default(now())
-  expiresAt      DateTime
+function codeHash(id: string, code: string) {
+  return createHash("sha256").update(`pending:${id}:${code}`).digest("hex");
+}
 
-  @@index([expiresAt])
+// Builds a valid username from the provider's login; after a clash it adds a
+// random suffix. (Moved here from oauth.service.ts, which now imports it.)
+export function candidate(login: string, attempt: number) {
+  const name = login
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, "_")
+    .slice(0, 32)
+    .padEnd(3, "_");
+  return attempt === 0
+    ? name
+    : `${name.slice(0, 27)}_${randomInt(0, 65536).toString(16).padStart(4, "0")}`;
+}
+
+async function mailCode(ctx: Context, to: string, code: string) {
+  try {
+    await ctx.mailer.send(
+      to,
+      "Verify your WePomodoro email",
+      `Your verification code is ${code}. It expires in 10 minutes.\n` +
+        "If you didn't create an account, you can ignore this email.",
+    );
+  } catch (error) {
+    // A mail failure must not reveal whether the address exists.
+    console.error("Could not send verification email", error);
+  }
+}
+
+// Password signup: validates nothing the route hasn't, refuses a real 42 login,
+// then stores the signup. No user exists until `completePending`.
+export async function startSignup(
+  ctx: Context,
+  input: { email: string; username: string; password: string },
+) {
+  await assertNotFortyTwoLogin(ctx, input.username);
+  return createPending(ctx, {
+    email: input.email,
+    username: input.username,
+    passwordHash: await hashPassword(input.password),
+  });
+}
+
+// Stores (or replaces, per email) a signup and emails the code. For provider
+// sign-ins `username` is the provider's login; the real name is picked when the
+// code is entered.
+export async function createPending(
+  ctx: Context,
+  input: { email: string; username: string } & Identity,
+) {
+  const id = randomUUID();
+  const bearer = token();
+  const code = randomInt(0, 1_000_000).toString().padStart(6, "0");
+  const now = ctx.now();
+  const expiresAt = new Date(now.getTime() + VERIFY_WINDOW_MS);
+  await transaction(ctx, async (tx) => {
+    if (await tx.user.findUnique({ where: { email: input.email } }))
+      throw new ApiError(409, "That email is already registered");
+    // Password signups find out about a taken name now, not after the code.
+    if (
+      "passwordHash" in input &&
+      (await tx.user.findUnique({ where: { username: input.username } }))
+    )
+      throw new ApiError(409, "That username is taken");
+    // One pending signup per email: a new attempt replaces the old one, so a
+    // squatter never blocks the address's real owner.
+    await tx.pendingSignup.deleteMany({ where: { email: input.email } });
+    await tx.pendingSignup.create({
+      data: {
+        id,
+        tokenHash: tokenHash(bearer),
+        email: input.email,
+        username: input.username,
+        passwordHash: "passwordHash" in input ? input.passwordHash : null,
+        provider: "provider" in input ? input.provider : null,
+        providerUserId: "provider" in input ? input.providerUserId : null,
+        codeHash: codeHash(id, code),
+        resendWindowAt: now,
+        expiresAt,
+      },
+    });
+  });
+  await mailCode(ctx, input.email, code);
+  return { pendingToken: bearer, expiresAt };
+}
+
+export async function resendPending(ctx: Context, pendingToken: string) {
+  const now = ctx.now();
+  const code = randomInt(0, 1_000_000).toString().padStart(6, "0");
+  const to = await transaction(ctx, async (tx) => {
+    const row = await tx.pendingSignup.findUnique({
+      where: { tokenHash: tokenHash(pendingToken) },
+    });
+    if (!row || row.expiresAt <= now) throw gone();
+    const fresh =
+      now.getTime() - row.resendWindowAt.getTime() > RESEND_WINDOW_MS;
+    if (!fresh && row.resends >= MAX_RESENDS)
+      throw new ApiError(429, "Too many codes requested; try again later");
+    await tx.pendingSignup.update({
+      where: { id: row.id },
+      data: {
+        codeHash: codeHash(row.id, code),
+        failedAttempts: 0,
+        resends: fresh ? 1 : row.resends + 1,
+        resendWindowAt: fresh ? now : row.resendWindowAt,
+      },
+    });
+    return row.email;
+  });
+  await mailCode(ctx, to, code);
+}
+
+// Always succeeds, so it reveals nothing about whether the token was valid.
+export async function cancelPending(ctx: Context, pendingToken: string) {
+  await ctx.db.pendingSignup.deleteMany({
+    where: { tokenHash: tokenHash(pendingToken) },
+  });
+}
+
+// The only place a user is created from a signup. A right code makes the user
+// and its session in one transaction and removes the pending row.
+export async function completePending(
+  ctx: Context,
+  pendingToken: string,
+  code: string,
+) {
+  const hash = tokenHash(pendingToken);
+  const peek = await ctx.db.pendingSignup.findUnique({
+    where: { tokenHash: hash },
+  });
+  if (!peek) throw invalidCode();
+  // Google and GitHub users can't take a name that is a real 42 login.
+  const skipPlain =
+    peek.provider !== null &&
+    peek.provider !== "FORTY_TWO" &&
+    (await isFortyTwoLogin(ctx, candidate(peek.username, 0)));
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const done = await transaction(ctx, (tx) =>
+        finish(ctx, tx, hash, code, attempt + (skipPlain ? 1 : 0)),
+      );
+      if (!done) throw invalidCode(); // wrong code: the counter was committed
+      return done;
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002"
+      ) {
+        // A provider login clash gets a new random suffix; a password signup
+        // lost the race for its name or email.
+        if (peek.provider && attempt < 4) continue;
+        throw new ApiError(409, "That name was just taken; sign up again");
+      }
+      throw error;
+    }
+  }
+}
+
+async function finish(
+  ctx: Context,
+  tx: Transaction,
+  hash: string,
+  code: string,
+  attempt: number,
+) {
+  const now = ctx.now();
+  const row = await tx.pendingSignup.findUnique({ where: { tokenHash: hash } });
+  if (!row || row.expiresAt <= now) throw invalidCode();
+  const expected = Buffer.from(row.codeHash, "hex");
+  const actual = Buffer.from(codeHash(row.id, code), "hex");
+  if (!timingSafeEqual(expected, actual)) {
+    if (row.failedAttempts + 1 >= MAX_CODE_ATTEMPTS)
+      await tx.pendingSignup.delete({ where: { id: row.id } });
+    else
+      await tx.pendingSignup.update({
+        where: { id: row.id },
+        data: { failedAttempts: { increment: 1 } },
+      });
+    return null;
+  }
+  const username = row.provider
+    ? candidate(row.username, attempt)
+    : row.username;
+  if (await tx.user.findUnique({ where: { email: row.email } }))
+    throw new ApiError(409, "That email is already registered");
+  if (!row.provider && (await tx.user.findUnique({ where: { username } })))
+    throw new ApiError(409, "That name was just taken; sign up again");
+  const user = await tx.user.create({
+    data: {
+      email: row.email,
+      username,
+      passwordHash: row.passwordHash,
+      emailVerifiedAt: now,
+      ...(row.provider &&
+        row.providerUserId && {
+          oAuthAccounts: {
+            create: {
+              provider: row.provider,
+              providerUserId: row.providerUserId,
+            },
+          },
+        }),
+    },
+    select: profileSelect,
+  });
+  await tx.pendingSignup.delete({ where: { id: row.id } });
+  const bearer = token();
+  const expiresAt = new Date(now.getTime() + SESSION_EXPIRES_AT);
+  await tx.authSession.create({
+    data: {
+      userId: user.id,
+      tokenHash: tokenHash(bearer),
+      createdAt: now,
+      expiresAt,
+    },
+  });
+  return { token: bearer, expiresAt, user };
 }
 ```
 
-- Check the enum name in the schema (`dbValue: "GOOGLE" | "GITHUB" | "FORTY_TWO"`
-  in `oauth.providers.ts`) and reuse it.
-- Add a `CHECK` in the migration SQL that `passwordHash IS NOT NULL` or
-  `(provider IS NOT NULL AND providerUserId IS NOT NULL)`; look at how earlier
-  migrations add constraints by hand (`prisma/migrations/*`).
-- `npx prisma migrate dev --name pending_signup` (needs your dev DB), commit the
-  generated folder. Update `backend.md` section 4 (data model) with the table.
+Notes on the code:
 
-## 3. A new `src/auth/pending.service.ts`
-
-One file with four functions. Reuse `token()` / `tokenHash()` from `auth.service.ts`
-(export `token` if it isn't) and the code hashing/`timingSafeEqual` pattern from
-`verify.service.ts`.
-
-1. `createPending(ctx, input)`: `input` is `{ email, username, passwordHash }` or
-   `{ email, username, provider, providerUserId }`.
-   - Refuse with 409 if a `User` has that email (password signup) or that username
-     (`assertNotFortyTwoLogin` stays in the callers, see 4 and 5).
-   - In one transaction: `deleteMany({ where: { email } })` then `create`, so a new
-     attempt replaces the old one. Generate the pendingToken and a six-digit code
-     (`randomInt`), store only hashes, set `expiresAt = now + VERIFY_WINDOW_MS`.
-   - Send the same email as `sendVerificationCode` does today (move the text here;
-     a mail failure is logged and does not fail the call).
-   - Return `{ pendingToken, expiresAt }`.
-2. `resendPending(ctx, pendingToken)`: find by `tokenHash`; 404 if missing or
-   expired; enforce 3 resends per 15 minutes with `resends` / `resendWindowAt`;
-   replace `codeHash`, extend nothing (the 10 minute total stays).
-3. `cancelPending(ctx, pendingToken)`: `deleteMany({ where: { tokenHash } })`,
-   always 204 (idempotent, reveals nothing).
-4. `completePending(ctx, pendingToken, code)`: the only place a `User` is created.
-   In one `transaction`:
-   - find the row, 400 `Invalid or expired code; request a new one` if missing or
-     expired;
-   - wrong code: increment `failedAttempts` (commit it, then fail like
-     `verifyEmail` does with `return false`); at 5, delete the row;
-   - right code: re-check that no `User` has the email (409 `That email is already
-registered`) or username (409 `That name was just taken; sign up again`),
-     then create the user with `emailVerifiedAt: now`, `verifyBy: null`, the
-     password hash, and `oAuthAccounts: { create: {...} }` for OAuth rows. Delete
-     the pending row in the same transaction.
-   - For OAuth rows a username clash should not fail: reuse the retry loop that
-     `oauthCallback` has (random suffix on `P2002`). Move `candidate()` out of
-     `oauth.service.ts` (or export it) so this file can use it.
-   - Then create the `AuthSession` exactly as `signup` does today and return
-     `{ token, expiresAt, user }` (same shape as the old signup response).
+- A wrong code returns `null` (instead of throwing) so the counter update
+  commits; `completePending` throws `invalidCode()` after the transaction, like
+  `verifyEmail` does. The fifth wrong code deletes the row.
+- `ApiError(409)` thrown inside `finish` rolls back, so the pending row stays;
+  the user can cancel or sign up again.
+- If `candidate` here and the one in `oauth.service.ts` ever differ, the 42
+  reservation breaks: delete the old one there (see 5) and import this one.
 
 ## 4. Routes (`src/api/router.ts`)
 
-All public, no bearer token:
+Imports: replace `signup` (from `auth.service.js`) by nothing, and add
 
-| Method | Path                        | Body                            | Result                                |
-| ------ | --------------------------- | ------------------------------- | ------------------------------------- |
-| POST   | `/auth/signup`              | `{ email, username, password }` | **202** `{ pendingToken, expiresAt }` |
-| POST   | `/auth/verify-email`        | `{ pendingToken, code }`        | 201 `{ token, expiresAt, user }`      |
-| POST   | `/auth/verify-email/resend` | `{ pendingToken }`              | 202                                   |
-| POST   | `/auth/verify-email/cancel` | `{ pendingToken }`              | 204                                   |
+```ts
+import {
+  cancelPending,
+  completePending,
+  resendPending,
+  startSignup,
+} from "../auth/pending.service.js";
+```
 
-- `/auth/signup` keeps its validation, `assertNotFortyTwoLogin`, and the hashing,
-  then calls `createPending`. It also refuses (409) a username already held by a
-  `User`, so the user finds out now and not after typing the code.
-- Today `POST /auth/verify-email` and `/resend` take a bearer token and use the
-  unverified-user gate. The **email-change flow still needs those** (an unverified
-  _user_ with a token). Make both routes accept either: if the body has
-  `pendingToken`, use the pending path; otherwise keep the current behaviour. Do
-  not remove `"POST /auth/verify-email"` / `".../resend"` from `unverifiedOk`.
-  Remove `"POST /auth/verify-email/cancel"` from `unverifiedOk` and replace its
-  handler (it used the bearer token and `verifyBy`).
-- Rate limit the new public routes: reuse the signup limiter for `/auth/signup`;
-  `/auth/verify-email` and `/resend` per IP **and** per `pendingToken` (the same
-  `rateLimit` + `keyGenerator` pattern as `perUser` above them in the file). The
-  5-attempt cap on the row is the real brute-force defence (6 digits, 5 tries).
-- `createUser` / `POST /users` (if it also signs up with a password) must call the
-  same path; grep `signup(` for every caller.
+Replace the signup route (line ~276) and add the three public routes right after
+it (they must stay **above** the `router.use(async (req, res, next) => { ... authenticate` middleware, because they have no bearer token). `/auth/signup`
+is already in the `perIp` list, which covers `/auth/signup/*` too.
+
+```ts
+// Each code check or resend is limited per pending signup, on top of the
+// per-IP limit and the 5-attempt cap stored on the row.
+const perPending = rateLimit({
+  windowMs: 15 * 60_000,
+  limit: limits.resetRequests,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  keyGenerator: bodyKey("pendingToken", "pending", 128),
+  handler: tooMany("Too many attempts; try again later"),
+});
+const pendingToken = (value: unknown) => {
+  if (typeof value !== "string" || !value || value.length > 128)
+    throw new ApiError(400, "A pendingToken is required");
+  return value;
+};
+
+router.post(["/auth/signup", "/users"], async (req, res) => {
+  const input = body(req);
+  res.status(202).json(
+    await startSignup(ctx, {
+      email: email(input.email),
+      username: username(input.username),
+      password: password(input.password),
+    }),
+  );
+});
+
+router.post("/auth/signup/verify", perPending, async (req, res) => {
+  const input = body(req);
+  if (typeof input.code !== "string" || !/^\d{6}$/.test(input.code))
+    throw new ApiError(400, "The code must be 6 digits");
+  res
+    .status(201)
+    .json(
+      await completePending(ctx, pendingToken(input.pendingToken), input.code),
+    );
+});
+
+router.post("/auth/signup/resend", perPending, async (req, res) => {
+  await resendPending(ctx, pendingToken(body(req).pendingToken));
+  res.status(202).json({ message: "A new code has been sent." });
+});
+
+router.post("/auth/signup/cancel", async (req, res) => {
+  await cancelPending(ctx, pendingToken(body(req).pendingToken));
+  res.sendStatus(204);
+});
+```
+
+Then remove what the pending flow replaces:
+
+- the old `router.post("/auth/verify-email/cancel", ...)` handler and its entry
+  `"POST /auth/verify-email/cancel"` in `unverifiedOk` (added in the last commit);
+- the `sendVerificationCode(ctx, created.user.id)` call that was in the old signup
+  route (gone with the replacement above). `sendVerificationCode` stays imported:
+  `/auth/verify-email/resend` and the email change in `PATCH /users/me` use it.
+
+`src/dev.ts` line ~13: the "Sign up" preset now answers 202 with a `pendingToken`
+and the console no longer gets a session from it. Add presets for the verify call
+(`/auth/signup/verify`, body `{ pendingToken: "{pendingToken}", code: "123456" }`)
+if you use the console; check how it fills `{oauthCode}` and do the same for
+`{pendingToken}`.
 
 ## 5. OAuth (`src/auth/oauth.service.ts`)
 
-- `resolveUser`: keep the linked-identity and the "verified email links to an
-  existing verified account" branches. Replace the end of the function:
-  - provider vouches (`profile.emailVerified`): create the user at once, as now;
-  - otherwise: **do not create a user**. Check `User` for the email (existing
-    behaviour: `email_taken` if present) and the username is not required here
-    (it is checked at completion), then return `{ pending: {...} }`.
-  - Delete the "unverified with `verifyBy`, delete the existing user" branch: new
-    pending users don't exist as `User` rows. (Legacy rows with `verifyBy` can
-    still be there for a few minutes after the deploy; they expire through the
-    sweep in 7. Keep the `email_taken` line for an unverified user without a
-    deadline.)
-- `oauthCallback` returns either `{ code }` (a user exists) or `{ pendingToken }`.
-  For the pending case call `createPending` with `provider` and `providerUserId`
-  and the `skipPlain` logic is no longer needed here: the username is picked at
-  completion (a Google/GitHub login that is a real 42 login still gets the suffix:
-  call `isFortyTwoLogin` in `completePending` for OAuth rows from non-42 providers).
-- The callback route redirects to `FRONTEND_URL/auth/oauth?pending=<token>`
-  (`encodeURIComponent`) in the pending case, `?code=` otherwise. Update the
-  docs sentence that lists the redirect.
-- `sendVerificationCode` is no longer called from OAuth (only the email-change
-  flow still uses it, in `users`/`auth.service.ts`: grep it).
+1. Delete the local `candidate` function and add
+   `import { candidate, createPending } from "./pending.service.js";`. Also delete
+   the imports that become unused (`sendVerificationCode`, `VERIFY_WINDOW_MS`).
+2. `resolveUser` returns one of three things. Replace everything from
+   `const existing = ...` to the end of the function:
 
-## 6. `auth.service.ts` and `verify.service.ts`
+```ts
+const existing = await tx.user.findUnique({ where: { email: mail } });
+if (existing) {
+  if (!profile.emailVerified) throw new OAuthError("email_taken");
+  if (existing.emailVerifiedAt) {
+    const other = await tx.oAuthAccount.findUnique({
+      where: {
+        userId_provider: { userId: existing.id, provider: found.dbValue },
+      },
+    });
+    if (other) throw new OAuthError("email_taken");
+    await tx.oAuthAccount.create({
+      data: { userId: existing.id, ...account },
+    });
+    return { userId: existing.id };
+  }
+  // Unverified without a deadline is an older account that may hold data.
+  // (Older pending users with a deadline are replaced until they expire.)
+  if (!existing.verifyBy) throw new OAuthError("email_taken");
+  await tx.user.delete({ where: { id: existing.id } });
+}
+// The provider doesn't vouch for the email: no user yet, the emailed code decides.
+if (!profile.emailVerified) return { pending: true as const };
+const created = await tx.user.create({
+  data: {
+    email: mail,
+    username: candidate(profile.login, attempt),
+    emailVerifiedAt: ctx.now(),
+    oAuthAccounts: { create: account },
+  },
+});
+return { userId: created.id };
+```
 
-- `signup`: drop the `tx.user.deleteMany` squatter replacement (7.2 of the old
-  guide) and the `verifyBy` field; it now only validates and calls `createPending`.
-  Keep `VERIFY_WINDOW_MS` (used by the pending `expiresAt`).
-- `verify.service.ts`: keep `sendVerificationCode` and `verifyEmail` for the
-  email-change flow, unchanged. The 10 minute text stays.
-- `createGuest` and `updateProfile` need no change: a pending username is not
-  reserved, and only `User` rows are checked.
+and change the first `return` in the function to `return { userId: linked.userId };`.
+
+3. In `oauthCallback`, replace the part from `const skipPlain` to the `oneTime`
+   code creation with:
+
+```ts
+// Verified Google and GitHub users can't take a name that is a real 42 login.
+const skipPlain =
+  found.id !== "42" &&
+  (await isFortyTwoLogin(ctx, candidate(profile.login, 0)));
+const result = await (async () => {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await transaction(ctx, (tx) =>
+        resolveUser(
+          ctx,
+          tx,
+          found,
+          profile,
+          mail,
+          attempt + (skipPlain ? 1 : 0),
+        ),
+      );
+    } catch (error) {
+      if (
+        attempt < 4 &&
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002"
+      )
+        continue;
+      throw error;
+    }
+  }
+})();
+if ("pending" in result) {
+  // Google and GitHub logins that are real 42 logins get their suffix when
+  // the code is entered (completePending).
+  const { pendingToken } = await createPending(ctx, {
+    email: mail,
+    username: profile.login,
+    provider: found.dbValue,
+    providerUserId: profile.providerUserId,
+  });
+  return { pendingToken };
+}
+const oneTime = randomBytes(32).toString("base64url");
+const now = ctx.now();
+await ctx.db.oAuthCode.create({
+  data: {
+    userId: result.userId,
+    codeHash: tokenHash(oneTime),
+    createdAt: now,
+    expiresAt: new Date(now.getTime() + CODE_TTL_MS),
+  },
+});
+return { code: oneTime };
+```
+
+4. The callback route (`router.ts`, line ~373) now gets `{ code }` or
+   `{ pendingToken }`:
+
+```ts
+const result = await oauthCallback(
+  ctx,
+  req.params.provider,
+  req.query.code,
+  cookieState,
+  req.query.state,
+);
+res.redirect(
+  "pendingToken" in result
+    ? `${frontend}/auth/oauth?pending=${encodeURIComponent(result.pendingToken)}`
+    : `${frontend}/auth/oauth?code=${encodeURIComponent(result.code)}`,
+);
+```
+
+`oauthExchange` is unchanged. Its docs sentence about `emailVerifiedAt` is now
+only true for verified providers.
+
+## 6. `verify.service.ts` and the rest of `auth.service.ts`
+
+Nothing to change in `verify.service.ts`: `sendVerificationCode` and `verifyEmail`
+keep serving the email-change flow. `createGuest` and `updateProfile` need no
+change (a pending username is not reserved; only `User` rows are checked).
 
 ## 7. Cleanup (`src/api/lifecycle.ts`)
 
-In `cleanupExpiredSessions`, next to the other expired-row deletes:
+In `cleanupExpiredSessions`, after the `emailToken` delete:
 
 ```ts
 await ctx.db.pendingSignup.deleteMany({
@@ -187,101 +509,187 @@ await ctx.db.pendingSignup.deleteMany({
 });
 ```
 
-Leave the existing `user.deleteMany({ verifyBy: { lte } })`: it drains legacy
-rows after the deploy. When the DB is emptied before the evaluation, a later
-migration can drop `User.verifyBy`; not needed now.
+Leave the existing `user.deleteMany({ ... verifyBy ... })`: it drains the older
+rows after the deploy. `User.verifyBy` can be dropped by a later migration.
 
-## 8. Frontend (hand this to your teammates, or do it after the backend)
+## 8. Frontend
 
-- Signup page: `POST /auth/signup` now answers 202 `{ pendingToken }`. Store it in
-  **`sessionStorage`** (not `localStorage`, and no `token`), then go to the verify
-  page. Do not store a bearer token here.
-- Verify page: send `{ pendingToken, code }` to `/auth/verify-email`; on 201
-  store `token` in `localStorage` and go to the app. "Send me a new code" calls
-  `/resend`; "Cancel and go back" calls `/cancel`, clears `pendingToken`, goes
-  to signup. If there is no `pendingToken`, show "start your signup again" with a
-  link instead of the form.
-- OAuth callback page: `?pending=<token>` means store it in `sessionStorage` and
-  go to the verify page (the same page); `?code=` works as today.
-- `VerifyGate.tsx` stays, but it now only ever catches users who changed their
-  email. Those have a bearer token and no `pendingToken`: the verify page must
-  keep the old code path for them, and **hide "Cancel and go back"** for them
-  (it only deletes a pending signup). Give them a "Sign out" button instead
-  (`POST /auth/logout`), or they can't leave. Remove the old cancel endpoint test
-  from `api.test.ts` (it is replaced by the tests below).
+**`pages/SignUp.tsx`**: the response is now 202 `{ pendingToken }`.
 
-## 9. Tests (`test/api.test.ts`)
+```ts
+const { pendingToken } = (await res.json()) as { pendingToken: string };
+// No session yet: the verify page needs this to check the emailed code.
+sessionStorage.setItem("pendingToken", pendingToken);
+void navigate("/auth/verify-email");
+```
 
-The helper `user(false)` signs up and expects 201 with a token, which no longer
-exists. Change it: sign up, read the code from the captured `mails`, call
-`/auth/verify-email` with `{ pendingToken, code }`, and for `verified = false`
-then set `emailVerifiedAt: null` with `db.user.update` (that is the "changed my
-email" state the gate still handles). Then fix the tests that use it or the old
-flow (find them with `grep -n "user(false)\|verify-email\|verifyBy" test/api.test.ts`):
+(replace the `localStorage.setItem("token", token)` lines).
 
-- "email verification: signup emails a code that proves the address": rewrite
-  around `pendingToken`: signup returns 202 and **no `User` row exists** (`db.user.count`
-  is 0), wrong codes fail, 5 wrong codes delete the pending row, the right code
-  returns 201 with a token that works on `/auth/me`.
-- "unverified accounts can only verify, fix their email or leave": keep it, built
-  on `user(false)` (email-change state); drop what is about signup tokens.
-- "signups that never verify are deleted, freeing the email": rewrite: advance the
-  clock past 10 minutes, `cleanupExpiredSessions`, the `PendingSignup` row is gone
-  and the code is refused with 400.
-- "a pending signup doesn't lock the email's real owner out": the second signup
-  for the same email replaces the first; the first `pendingToken` and code stop
-  working (400), the second completes.
-- New: a pending signup holds no username: signup A and B with the same username
-  and different emails both get 202; A completes (201), B completes and gets 409.
-- New: a pending signup never blocks a verified user's email (409 at signup).
-- Replace the "cancel" test I added: `/cancel` with a `pendingToken` deletes the
-  row (204) and the same call again is also 204.
-- OAuth tests: "an email the provider doesn't vouch for must be verified with a
-  code" and the squatter / legacy ones (`api.test.ts` around the `OAuth:` titles):
-  42 now redirects with `?pending=`, no user exists yet, completing with the
-  emailed code creates the user with the 42 account linked and the plain login as
-  username; a 42 pending then a username taken meanwhile gets a suffix.
-- 42 reserved logins test: still valid for signup; add that a Google user with a
-  real 42 login gets a suffix at completion.
+**`pages/OAuthCallback.tsx`**: handle `?pending=` before the `code` logic.
 
-## 10. Docs (`docs/backend.md`)
+```ts
+  const pendingToken = params.get("pending");
+  ...
+  useEffect(() => {
+    if (pendingToken) {
+      sessionStorage.setItem("pendingToken", pendingToken);
+      void navigate("/auth/verify-email", { replace: true });
+      return;
+    }
+    if (!code || started.current) return;
+    ...
+  }, [code, pendingToken, navigate]);
+```
 
-- "Email verification": rewrite the signup part (pending row, `pendingToken`, no
-  user until the code, 5 attempts, resends, 10 minute expiry) and keep the
-  email-change part.
-- "Sign in with OAuth": the unverified-email branch now ends in
-  `?pending=<token>` and the verify call, not an unverified user; update the
-  "which user the sign-in resolves to" bullets and the redirect sentence.
-- API table (section 3.1): the four routes in 4 above, and that `/auth/signup`
-  now answers 202.
-- Data model (section 4): `PendingSignup`. Section 7 (lifecycle): its cleanup.
-- Section 9 coverage: pending signups, username not held while pending.
-- Source map: `src/auth/pending.service.ts`.
+and make the initial error state ignore it: `reason ? ... : code || pendingToken ? "" : "No sign-in code."`.
 
-## 11. Checks, then try it by hand
+**`pages/VerifyEmail.tsx`**: two modes, picked by what is stored. A pending signup
+uses the new public routes and ends with a token; a signed-in unverified user
+(email change) keeps the old routes.
 
-`npm run lint`, `npm run format:check`, `npm run test:types`, `npm run test:db:up`,
-`npm test`, `npm run test:db:down`. In the frontend: `npx tsc --noEmit`,
-`npx eslint src`, `npx prettier --check src`.
+```tsx
+const [pendingToken] = useState(() => sessionStorage.getItem("pendingToken"));
+const [token] = useState(() => localStorage.getItem("token"));
+const active = pendingToken ?? token;
 
-By hand (backend and frontend running):
+async function call(path: string, body: object) {
+  const res = await fetch(
+    `${API_URL}/api/auth/${pendingToken ? "signup" : "verify-email"}${path}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${pendingToken ? "" : (token ?? "")}`,
+      },
+      body: JSON.stringify(pendingToken ? { ...body, pendingToken } : body),
+    },
+  );
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error ?? `Request failed (${String(res.status)})`);
+  }
+  return res;
+}
 
-1. Sign up with a fake email: you land on the verify page; in the database there
-   is a `PendingSignup` row and **no** `User` row. Open `/me`: you are not signed in.
-2. Close the tab: nothing to clean up; the row disappears after 10 minutes.
-3. Sign up with the same username and a different email: allowed; whoever enters
-   their code first keeps the name.
-4. Sign up with someone else's email, then as the real owner with the same email:
-   the second replaces the first.
-5. "Continue with 42": you are sent to the verify page, the code is emailed, and
-   the user is created only when you enter it.
+async function handleSubmit(e: React.SubmitEvent) {
+  e.preventDefault();
+  await run(async () => {
+    const res = await call(pendingToken ? "/verify" : "", {
+      code: code.trim(),
+    });
+    if (pendingToken) {
+      const done = (await res.json()) as { token: string };
+      sessionStorage.removeItem("pendingToken");
+      localStorage.setItem("token", done.token);
+    }
+    void navigate("/UserInfo");
+  });
+}
 
-## 12. Still open from before (not part of this change)
+// Pending signup: drop it. Signed-in unverified user: just sign out.
+async function cancel() {
+  await run(async () => {
+    if (pendingToken) {
+      await call("/cancel", {});
+      sessionStorage.removeItem("pendingToken");
+    } else {
+      await fetch(`${API_URL}/api/auth/logout`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token ?? ""}` },
+      });
+      localStorage.removeItem("token");
+    }
+    void navigate(pendingToken ? "/auth/signup" : "/auth/login");
+  });
+}
+```
 
-- The real 42 API has never been called from the code: run the curl probe
-  (token URL, `200` / `404`, rate-limit headers) before the evaluation.
-- Repeated 42 sign-in problems: sign in, log out, sign in again, and note the
-  exact error and backend log.
+In the JSX use `!active` instead of `!token` for the "start again" message (change
+its text to "Your signup has expired. Sign up again" with a link to
+`/auth/signup` when there is no `pendingToken` and no `token`), and label the
+cancel button `{pendingToken ? "Cancel and go back" : "Sign out"}`. The resend
+call keeps working: `call("/resend", {})` hits `/auth/signup/resend` for pending
+signups and `/auth/verify-email/resend` otherwise.
+
+**`VerifyGate.tsx`**: no change. Pending signups have no token, so it passes them
+through; it only locks signed-in users who are unverified.
+
+## 9. Still open from before (not part of this change)
+
+- The real 42 API has never been called from the code: run the curl probe (token
+  URL, `200` / `404`, rate-limit headers) before the evaluation.
+- Repeated 42 sign-in problems: sign in, log out, sign in again, and note the exact
+  error and backend log.
 - Fail open for the 42 login check, and admin-created users not being checked.
 - Optional, not planned: a 42 sign-in renaming whoever holds its plain login,
   redirecting `@student.` emails to "Continue with 42", guest to account upgrade.
+
+## 10. Progress so far and where we left off
+
+Snapshot of the working tree on `feature/user-management`, to resume from.
+
+**Already done (earlier commits)**
+
+- Reserving 42 logins, the 10 minute signup window and pending-signup
+  replacement (backend); unverified accounts blocked in the frontend, cancel for
+  pending signups (frontend + `/auth/verify-email/cancel`).
+
+**Backend: done in the working tree, not committed** (`tsc` and `eslint` pass)
+
+- `PendingSignup` model and migration `20261106120000_pending_signup`
+  (confirm it is applied to the dev DB).
+- Step 3: `pending.service.ts`; `token()` exported and the old `signup` deleted
+  from `auth.service.ts`.
+- Step 4: `router.ts` has the new signup route (202 + `pendingToken`), the public
+  `/auth/signup/{verify,resend,cancel}` routes with `perPending`, and the old
+  `/auth/verify-email/cancel` route and its `unverifiedOk` entry are gone.
+  `dev.ts` has a "Verify signup code" preset and fills `{pendingToken}`.
+- Step 5: `oauth.service.ts` uses the shared `candidate`; `resolveUser` returns
+  `{ userId }` or `{ pending: true }`; the callback redirects to
+  `/auth/oauth?pending=...` for providers that don't vouch for the email.
+- Step 7: `lifecycle.ts` deletes expired `pendingSignup` rows.
+
+**Backend tests: done** (94 pass, `tsc`, `eslint` clean; test DB from
+`compose.test.yml`, `npm run test:db:up`)
+
+- The `user()` helper in `test/api.test.ts` now signs up, reads the emailed code
+  from the fake mailer and verifies. `user(false)` turns that account into an
+  older unverified one (verified cleared, `verifyBy` set) for the tests that need
+  one.
+- New tests: no user until the code, wrong/missing token or code, five wrong
+  codes delete the row, expiry and cleanup, resend limit and replacement, a second
+  signup for the same email replaces the first, cancel, a provider that doesn't
+  vouch for the email, and a Google login that is a real 42 login getting a
+  suffix.
+
+**Backend: still to do**
+
+1. Confirm the migration is applied to the dev DB (`npm run db:migrate`).
+2. Later: drop `User.verifyBy` once old rows have drained (the `resolveUser` and
+   lifecycle code that read it, and `user(false)` in the tests, go with it).
+
+**Frontend: done** (step 8; `tsc -b` and `eslint` clean): `SignUp.tsx` stores the
+`pendingToken` in `sessionStorage`, `OAuthCallback.tsx` handles `?pending=`,
+`VerifyEmail.tsx` uses the public routes for a pending signup and the old ones
+for a signed-in unverified user.
+
+**Checked against the running stack** (docker compose backend on :3000 with the
+migration applied): signup answers 202, a wrong code 400, resend 202, cancel 204,
+and the cancelled token is dead. Not done: the full browser run, because the real
+code goes to a real mailbox.
+
+**Section 9 leftovers:** real 42 API probe, repeated 42 sign-in errors, fail
+open for the 42 login check, admin-created users.
+
+**Left off at:** backend, tests and frontend are done. Next action: click through
+signup in the browser with a real inbox (and a 42 / unverified-email sign-in), then
+the section 9 leftovers.
+
+## 11. Rooms: shared room code (separate change)
+
+Replaced personal invites, bans and join requests by one shared `StudyRoom.code`
+(migration `20261113120000_room_code`, applied to the test DB only: run
+`npm run db:migrate` / `db:deploy` on the dev DB). `POST /rooms/join { roomCode }`,
+owner-only `POST /rooms/:id/code` to replace it, kick stays, `RoomMember.invitedById`
+is gone. Backend, tests (94 pass) and `docs/backend.md` are updated; the frontend
+has no room screens yet.

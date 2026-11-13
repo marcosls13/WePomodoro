@@ -9,6 +9,7 @@ export default defineConfig([
   globalIgnores([
     "eslint.config.js",
     "prisma7.config.ts",
+    "studio-proxy.cjs",
     "dist/**",
     "node_modules/**",
     "src/generated/**",

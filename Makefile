@@ -39,7 +39,13 @@ db-load: .env
 	$(COMPOSE) exec -T db sh -c 'psql -v ON_ERROR_STOP=1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"' < db/dump.sql
 	$(COMPOSE) up -d backend
 
+# Prisma Studio, a browser UI for the data: http://localhost:5555 (Ctrl+C stops it).
+studio: .env
+	$(COMPOSE) up -d db
+	@echo "Prisma Studio: http://localhost:5555 (Ctrl+C to stop)"
+	$(COMPOSE) run --rm --name studio -p 127.0.0.1:5555:5556 backend sh -c "npx prisma studio --port 5555 --browser none --config prisma7.config.ts > /dev/null 2>&1 & exec node studio-proxy.cjs"
+
 psql: .env
 	$(COMPOSE) exec db sh -c 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"'
 
-.PHONY: all build up down clean fclean re db-dump db-load psql
+.PHONY: all build up down clean fclean re db-dump db-load psql studio

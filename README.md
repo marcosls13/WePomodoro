@@ -51,6 +51,7 @@ Other useful commands:
 | `make db-dump` | Save the database (schema and data) to `db/dump.sql` |
 | `make db-load` | Replace the database with `db/dump.sql`      |
 | `make psql`  | Open a `psql` shell in the database            |
+| `make studio`| Browse the data in Prisma Studio, http://localhost:5555 |
 
 ### Database
 

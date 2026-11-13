@@ -15,7 +15,15 @@ WePomodoro is a web application built for the ft_transcendence project.
 - [Docker](https://docs.docker.com/get-docker/) with the Compose plugin
 - `make`
 
-<!-- TODO: add the .env setup once the project has one (the subject requires a git-ignored .env and a committed .env.example). -->
+Environment files (the real ones are git-ignored; the `.env.example` next to each
+is committed):
+
+- `.env` (root): the local database credentials. `make` creates it from
+  `.env.example` on the first run, so you don't have to.
+- `backend/.env`: copy `backend/.env.example` and fill in the email and OAuth
+  values you need. `DATABASE_URL` is not set there: Docker Compose points the
+  backend at the local `db` container.
+- `frontend/.env`: copy `frontend/.env.example`.
 
 ### Run the project
 
@@ -40,6 +48,20 @@ Other useful commands:
 | `make clean` | Stop the services and remove the images        |
 | `make fclean`| Same as `clean`, and also remove the volumes   |
 | `make re`    | Rebuild everything from scratch                |
+| `make db-dump` | Save the database (schema and data) to `db/dump.sql` |
+| `make db-load` | Replace the database with `db/dump.sql`      |
+| `make psql`  | Open a `psql` shell in the database            |
+
+### Database
+
+PostgreSQL runs in the `db` container, with its data in the `pgdata` volume, so it
+survives `make down`; `make fclean` deletes it. On every start the backend applies
+the migrations in `backend/prisma/migrations`, so a fresh database always gets the
+full schema.
+
+To give a teammate your data, run `make db-dump` and send them `db/dump.sql`.
+They put it in `db/` and run `make db-load`. It contains everything in your
+database (including accounts and password hashes), so only share it with the team.
 
 ## Team Information
 

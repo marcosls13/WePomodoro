@@ -1,10 +1,35 @@
 name: WePomodoro
 
 services:
+  # Local PostgreSQL. No port is published: only the other containers reach it.
+  # The credentials come from the root .env (git-ignored; `make` creates it from
+  # .env.example).
+  db:
+    image: postgres:17-alpine
+    container_name: db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
   backend:
     build: ./backend
     container_name: backend
     image: backend:WePomodoro
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    # Applies any migration the database is missing, then starts the API.
+    command: sh -c "npx prisma migrate deploy --config prisma7.config.ts && npm run dev"
     ports:
       - "3000:3000"
     volumes:
@@ -20,3 +45,6 @@ services:
     volumes:
       - ./frontend:/app
       - /app/node_modules
+
+volumes:
+  pgdata:

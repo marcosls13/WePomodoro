@@ -21,7 +21,6 @@ export const useAuthStore = create<AuthState>()(
       loginAction: async (username: string) => {
         set({ isLoading: true }); // Bloquea el botón de UI
         try {
-          // Aquí llamas a tu mock. Mañana cambiarás esto por: await api.post('/login', ...)
           const fakeToken = await mockLogin(username);
 
           set({

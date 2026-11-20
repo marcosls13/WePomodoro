@@ -6,9 +6,9 @@ import SignUp from "./pages/SignUp";
 import Navbar from "./components/Navbar";
 import Room from "./pages/Room";
 import Profile from "./pages/Profile";
-import SecurityPanel from "./pages/SecurityPanel"
-import MainPage from "./pages/MainPage"
-import CreatePanel from "./components/CreatePanel"
+import SecurityPanel from "./pages/SecurityPanel";
+import MainPage from "./pages/MainPage";
+import CreatePanel from "./components/CreatePanel";
 import { PublicLayout } from "./layouts/PublicLayout";
 import { ProtectedLayout } from "./layouts/ProtectedLayout";
 import { ProtectedRoute } from "./components/ProtectedRoute";
@@ -28,10 +28,10 @@ function App() {
       <Route element={<ProtectedLayout />}>
         <Route path="/chat" element={<Room />} />
         <Route path="/profile" element={<ProfileView />}>
-           <Route index element={<Profile />} /> 
-	   <Route path="security" element={<SecurityPanel />} />
-	</Route>
-	<Route path="create" element={<MainPage />} />
+          <Route index element={<Profile />} />
+          <Route path="security" element={<SecurityPanel />} />
+        </Route>
+        <Route path="create" element={<MainPage />} />
       </Route>
     </Routes>
   );

@@ -4,7 +4,7 @@ interface SubmitButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   children: React.ReactNode;
 }
 
-export function OAuthSubmitButton ({ children, ...props }: SubmitButtonProps) {
+export function OAuthSubmitButton({ children, ...props }: SubmitButtonProps) {
   return (
     <button
       type="submit"

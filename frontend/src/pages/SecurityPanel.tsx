@@ -1,5 +1,3 @@
 export default function SecurityPanel() {
-  return (
-	  <h1> Security panel</h1>
-  )
+  return <h1> Security panel</h1>;
 }

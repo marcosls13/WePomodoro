@@ -1,21 +1,21 @@
 import { useState, useEffect } from "react";
-import TimeInputControl from "./TimeInputControl"
+import TimeInputControl from "./TimeInputControl";
 
 function getFormattedTime(milliseconds) {
-    let total_seconds = parseInt(Math.floor(milliseconds/1000));
-    let total_minutes = parseInt(Math.floor(total_seconds/60));
-    let total_hours = parseInt(Math.floor(total_minutes/60));
+  let total_seconds = parseInt(Math.floor(milliseconds / 1000));
+  let total_minutes = parseInt(Math.floor(total_seconds / 60));
+  let total_hours = parseInt(Math.floor(total_minutes / 60));
 
-    let seconds = parseInt(total_seconds % 60);
-    let minutes = parseInt(total_minutes % 60);
-    let hours = parseInt(total_hours % 24);
+  let seconds = parseInt(total_seconds % 60);
+  let minutes = parseInt(total_minutes % 60);
+  let hours = parseInt(total_hours % 24);
 
-    const sStr = String(seconds).padStart(2, '0');
-    const mStr = String(minutes).padStart(2, '0');
-    const hStr = String(hours).padStart(2, '0');
-    
-    return `${hStr}h : ${mStr}m : ${sStr}s`;
-};
+  const sStr = String(seconds).padStart(2, "0");
+  const mStr = String(minutes).padStart(2, "0");
+  const hStr = String(hours).padStart(2, "0");
+
+  return `${hStr}h : ${mStr}m : ${sStr}s`;
+}
 
 export default function Timer({ duration, onTimeUp }) {
   const [time, setTime] = useState(duration);
@@ -35,7 +35,9 @@ export default function Timer({ duration, onTimeUp }) {
 
   return (
     <>
-     <div>{getFormattedTime(time)}</div>
-</>
+      <p className="dark:text-white dark:bg-slate-900">
+        {getFormattedTime(time)}
+      </p>
+    </>
   );
 }

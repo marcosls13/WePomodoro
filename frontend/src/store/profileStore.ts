@@ -1,4 +1,4 @@
-import { create } from 'zustand';
+import { create } from "zustand";
 
 // 1. Tipado estricto del dominio. Define exactamente qué forma tiene un usuario.
 interface UserProfile {
@@ -13,7 +13,7 @@ interface ProfileState {
   user: UserProfile | null;
   isLoading: boolean;
   error: string | null;
-  
+
   // Acciones asíncronas
   fetchUser: () => Promise<void>;
   updateUsername: (newName: string) => Promise<void>;
@@ -22,11 +22,11 @@ interface ProfileState {
 // 3. Creación del motor de estado
 export const useProfileStore = create<ProfileState>((set, get) => ({
   // Estado inicial. Usamos tu login real de 42 como mock inicial.
-  user: { 
-    id: 1, 
-    login_42: 'fdurban-', 
-    name: 'Fernando', 
-    avatarUrl: null 
+  user: {
+    id: 1,
+    login_42: "fdurban-",
+    name: "Fernando",
+    avatarUrl: null,
   },
   isLoading: false,
   error: null,
@@ -40,7 +40,10 @@ export const useProfileStore = create<ProfileState>((set, get) => ({
       // const data = await response.json();
       // set({ user: data, isLoading: false });
     } catch (error) {
-      set({ error: 'Error al obtener el perfil de la base de datos', isLoading: false });
+      set({
+        error: "Error al obtener el perfil de la base de datos",
+        isLoading: false,
+      });
     }
   },
 
@@ -49,14 +52,14 @@ export const useProfileStore = create<ProfileState>((set, get) => ({
     try {
       // 1. Aquí harías el PATCH a tu backend
       // await fetch('/api/users/me', { method: 'PATCH', body: JSON.stringify({ name: newName }) });
-      
+
       // 2. Zustand actualiza la UI al instante inyectando el nuevo nombre
       set((state) => ({
-        user: state.user ? { ...state.user, name: newName } : null
+        user: state.user ? { ...state.user, name: newName } : null,
       }));
     } catch (error) {
       console.error("Fallo al actualizar el nombre:", error);
       // Aquí podrías manejar la reversión del estado si la API falla
     }
-  }
+  },
 }));

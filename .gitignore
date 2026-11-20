@@ -10,3 +10,4 @@ src/generated
 skills-lock.json
 # Database dump from `make db-dump`: holds real accounts, share it by hand
 db/dump.sql
+db/backups/

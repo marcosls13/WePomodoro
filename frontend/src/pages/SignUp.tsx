@@ -6,7 +6,7 @@ import AuthTabs from "../AuthTabs";
 import { useRedirectIfSignedIn } from "../useRedirectIfSignedIn";
 
 const API_URL = import.meta.env.VITE_API_URL as string;
-
+import SignUpForm from "../components/SignupForm";
 export default function SignUp() {
   const navigate = useNavigate();
   const checking = useRedirectIfSignedIn();

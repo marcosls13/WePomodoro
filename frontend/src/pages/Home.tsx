@@ -1,62 +1,61 @@
-import { Link } from "react-router";
-import Tomato from "../Tomato";
+import { Link } from "react-router-dom";
+import { useState } from "react";
+import { motion, AnimatePresence } from "motion/react";
+import SigninForm from "../components/SigninForm"; 
+import CreatePanel from "../components/CreatePanel";
 
 export default function Home() {
+  const [loginMode, setLoginMode] = useState(false);    
+
   return (
-    <section className="home-layout">
-      <div className="hero-copy">
-        <p className="eyebrow">A little structure. A lot of possibility.</p>
-        <h1>
-          Make room
-          <br />
-          for <span className="accent-text">deep focus.</span>
+    <div className="flex-grow flex flex-col lg:flex-row items-center justify-center gap-12 px-6 lg:px-24 py-12 overflow-hidden">
+      
+      <div className="flex flex-col items-center text-center lg:text-left lg:items-start max-w-2xl space-y-6">
+        <h1 className="text-5xl lg:text-7xl font-bold tracking-tight text-gray-900 leading-tight">
+          Your time is your <span className="text-red-600">most valuable</span> asset.
         </h1>
-        <p className="lead">
-          Big ideas start with small, focused moments. Meet WePomodoro: a space
-          we're building to make time for what matters, together.
+        <p className="text-lg lg:text-xl text-gray-600 font-medium">
+          Sync your peak focus cycles. Team-driven deep work, zero distractions.
         </p>
-        <div className="actions">
-          <Link to="/auth/signup" className="button">
-            Join the community <span aria-hidden="true">↗</span>
+
+        <div className="pt-4">
+          <Link
+            to="/signup"
+            className="inline-flex items-center justify-center rounded-full bg-gray-900 px-8 py-3.5 text-base font-semibold text-white shadow-sm hover:bg-gray-700 hover:-translate-y-0.5 transition-all duration-200"
+          >
+            Sync your focus
           </Link>
-          <Link to="/about" className="text-link">
-            Discover the idea <span aria-hidden="true">→</span>
-          </Link>
-        </div>
-        <div className="hero-note">
-          <span className="status-dot" aria-hidden="true" />
-          Growing one focused moment at a time
         </div>
       </div>
-      <div
-        className="focus-card"
-        aria-label="Illustration of a 25 minute Pomodoro session"
-      >
-        <Tomato size={120} className="tomato-hero" />
-        <div className="card-topline">
-          <span className="eyebrow">The Pomodoro rhythm</span>
-          <span className="pill">A simple idea</span>
-        </div>
-        <div className="timer-ring">
-          <span className="timer-label">TIME TO FOCUS</span>
-          <span className="timer-number">25:00</span>
-          <span className="timer-caption">One thing at a time.</span>
-        </div>
-        <div className="rhythm">
-          <span>
-            <strong>01</strong>Focus
-          </span>
-          <span>
-            <strong>02</strong>Take a break
-          </span>
-          <span>
-            <strong>03</strong>Repeat
-          </span>
-        </div>
-        <p className="card-caption">
-          A glimpse of the experience we're building.
-        </p>
+
+      <div className="w-full max-w-md relative min-h-[450px] flex justify-center items-center">
+        <AnimatePresence mode="wait">
+          {loginMode ? (
+            <motion.div
+              key="panel-login"
+              initial={{ opacity: 0, x: 30 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -30 }}
+              transition={{ duration: 0.3, ease: "easeInOut" }}
+              className="w-full"
+            >
+              <SigninForm onSwitchMode={() => setLoginMode(false)} />
+            </motion.div>
+          ) : (
+            <motion.div
+              key="panel-create"
+              initial={{ opacity: 0, x: -30 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 30 }}
+              transition={{ duration: 0.3, ease: "easeInOut" }}
+              className="w-full"
+            >
+              <CreatePanel onSwitchMode={() => setLoginMode(true)} />
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
-    </section>
+
+    </div>
   );
 }

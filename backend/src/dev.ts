@@ -103,60 +103,41 @@ const presets = [
     "/auth/password-reset/confirm",
     { resetToken: "{resetToken}", password: "NewPass123!" },
   ],
-  ["Rooms", "List rooms", "GET", "/rooms", null],
-  ["Rooms", "Create room", "POST", "/rooms", { name: "Study room" }],
-  ["Rooms", "New room code (owner)", "POST", "/rooms/{roomId}/code", null],
+  ["Sessions", "List sessions", "GET", "/sessions", null],
   [
-    "Rooms",
-    "Join by room code",
+    "Sessions",
+    "Create session",
     "POST",
-    "/rooms/join",
-    { roomCode: "{roomCode}" },
+    "/sessions",
+    { name: "Study session" },
   ],
-  ["Rooms", "Get room", "GET", "/rooms/{roomId}", null],
-  ["Rooms", "Leave room", "POST", "/rooms/{roomId}/leave", null],
-  ["Rooms", "Close room", "POST", "/rooms/{roomId}/close", null],
-  ["Rooms", "Delete room", "DELETE", "/rooms/{roomId}", null],
-  ["Timers", "Start room timer", "POST", "/rooms/{roomId}/timers", null],
   [
-    "Timers",
-    "Start solo (5 min break)",
+    "Sessions",
+    "Create solo timer",
     "POST",
-    "/timers",
-    { phase: "SHORT_BREAK", plannedSeconds: 300 },
+    "/sessions",
+    { name: "Solo", solo: true },
   ],
-  ["Timers", "Start solo (focus)", "POST", "/timers", { phase: "FOCUS" }],
-  ["Timers", "List timers", "GET", "/timers", null],
-  ["Timers", "Get timer", "GET", "/timers/{timerId}", null],
-  ["Timers", "Pause", "POST", "/timers/{timerId}/pause", null],
-  ["Timers", "Resume", "POST", "/timers/{timerId}/resume", null],
-  ["Timers", "Cancel", "POST", "/timers/{timerId}/cancel", null],
-  ["Timers", "Join", "POST", "/timers/{timerId}/join", null],
-  ["Timers", "Leave", "POST", "/timers/{timerId}/leave", null],
+  ["Sessions", "New code (owner)", "POST", "/sessions/{sessionId}/code", null],
+  [
+    "Sessions",
+    "Join by code",
+    "POST",
+    "/sessions/join",
+    { code: "{sessionCode}" },
+  ],
+  ["Sessions", "Get session", "GET", "/sessions/{sessionId}", null],
+  ["Sessions", "Leave session", "POST", "/sessions/{sessionId}/leave", null],
+  ["Sessions", "Delete session", "DELETE", "/sessions/{sessionId}", null],
+  ["Timer", "Start", "POST", "/sessions/{sessionId}/timer/start", null],
+  ["Timer", "Pause", "POST", "/sessions/{sessionId}/timer/pause", null],
+  ["Timer", "Resume", "POST", "/sessions/{sessionId}/timer/resume", null],
+  ["Timer", "Cancel", "POST", "/sessions/{sessionId}/timer/cancel", null],
   ["Friends", "List friends", "GET", "/friends", null],
   ["Friends", "Send request", "POST", "/friends", { username: "bob" }],
   ["Friends", "Accept request", "POST", "/friends/{friendshipId}/accept", null],
   ["Friends", "Remove / decline", "DELETE", "/friends/{friendshipId}", null],
-  [
-    "Friends",
-    "Heartbeat (in room)",
-    "PUT",
-    "/presence",
-    { roomId: "{roomId}" },
-  ],
-  ["Friends", "Heartbeat (online only)", "PUT", "/presence", { roomId: null }],
-  ["Chat", "Read messages", "GET", "/rooms/{roomId}/messages", null],
-  [
-    "Chat",
-    "Send message",
-    "POST",
-    "/rooms/{roomId}/messages",
-    { content: "Hello!" },
-  ],
   ["Stats", "My stats", "GET", "/users/me/stats", null],
-  ["Stats", "Study sessions", "GET", "/users/me/study-sessions", null],
-  ["Stats", "Game results", "GET", "/users/me/game-results", null],
-  ["Games", "List games", "GET", "/games", null],
   ["Account", "Profile", "GET", "/users/me", null],
   [
     "Account",
@@ -221,7 +202,7 @@ pre{margin:0;padding:10px;background:var(--code);border-radius:6px;overflow:auto
 
 const script = `
 const presets = ${JSON.stringify(presets)};
-const names = ["token", "roomId", "timerId", "roomCode", "resetToken", "friendshipId", "challengeToken", "oauthCode", "pendingToken"];
+const names = ["token", "sessionId", "sessionCode", "resetToken", "friendshipId", "challengeToken", "oauthCode", "pendingToken"];
 const $ = (id) => document.getElementById(id);
 const vars = {};
 for (const n of names) {
@@ -313,11 +294,8 @@ function capture(path, d) {
   if (typeof d.challengeToken === "string") set("challengeToken", d.challengeToken);
   if (typeof d.pendingToken === "string") set("pendingToken", d.pendingToken);
   if (typeof d.resetToken === "string") set("resetToken", d.resetToken);
-  const o = d.room ?? d;
-  if (/^\\/rooms/.test(path) && typeof o.id === "string") set("roomId", o.id);
-  if (typeof o.code === "string" && /^\\/rooms/.test(path)) set("roomCode", o.code);
-  if (typeof d.roomCode === "string") set("roomCode", d.roomCode);
-  if (/^\\/(rooms\\/.*\\/)?timers/.test(path) && typeof d.id === "string") set("timerId", d.id);
+  if (/^\\/sessions/.test(path) && typeof d.id === "string") set("sessionId", d.id);
+  if (/^\\/sessions/.test(path) && typeof d.code === "string") set("sessionCode", d.code);
   if (/^\\/friends/.test(path) && typeof d.id === "string") set("friendshipId", d.id);
   if (path === "/auth/logout") set("token", "");
   if (/^\\/(auth\\/(signup|guest)|users)$/.test(path)) loadActors();

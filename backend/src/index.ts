@@ -1,6 +1,5 @@
 import { cleanupExpiredSessions } from "./api/lifecycle.js";
 import { createApp } from "./app.js";
-import { gameVerifiers } from "./games/registry.js";
 import { providersFromEnv } from "./auth/oauth.providers.js";
 import { consoleMailer, type Mailer } from "./mail/mailer.js";
 import { createSmtpMailer, smtpConfigFromEnv } from "./mail/smtp.js";
@@ -44,7 +43,6 @@ const ctx = {
 };
 
 const app = createApp(ctx, {
-  gameVerifiers,
   trustProxy,
   devAuth: process.env.DEV_AUTH === "true",
   origins: (process.env.CORS_ORIGIN ?? "http://localhost:5173")

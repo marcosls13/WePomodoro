@@ -5,7 +5,6 @@ import {
   type Actor,
   type Context,
 } from "../api/common.js";
-import { presenceWindowMs } from "./social.service.js";
 
 const person = { select: { id: true, username: true } } as const;
 
@@ -17,35 +16,25 @@ export async function listFriends(ctx: Context, actor: Actor) {
     orderBy: { createdAt: "desc" },
     take: 500,
   });
-  // Always visible to friends: online if a heartbeat is fresh, plus the server.
+  // Friends see which shared (coded) session someone is in; solo timers are
+  // private. "Online" comes from the WebSocket layer, not from the database.
   const friendIds = rows
     .filter((r) => r.status === "ACCEPTED")
     .map((r) => (r.requesterId === me ? r.addresseeId : r.requesterId));
-  const seen = await ctx.db.presence.findMany({
+  const memberships = await ctx.db.sessionMember.findMany({
     where: {
-      userId: { in: friendIds },
-      seenAt: { gt: new Date(ctx.now().getTime() - presenceWindowMs) },
+      userId: { in: [...friendIds, me] },
+      session: { code: { not: null } },
     },
-    include: { room: { select: { id: true, name: true, closedAt: true } } },
+    include: { session: { select: { id: true, name: true } } },
+    orderBy: { joinedAt: "desc" },
   });
   const mine = new Set(
-    (
-      await ctx.db.roomMember.findMany({
-        where: {
-          userId: me,
-          roomId: { in: seen.flatMap((p) => p.roomId ?? []) },
-        },
-        select: { roomId: true },
-      })
-    ).map((m) => m.roomId),
+    memberships.filter((m) => m.userId === me).map((m) => m.sessionId),
   );
   const presenceOf = (userId: number) => {
-    const p = seen.find((x) => x.userId === userId);
-    const room = p?.room && !p.room.closedAt ? p.room : null;
-    return {
-      online: Boolean(p),
-      room: room && { id: room.id, name: room.name, joined: mine.has(room.id) },
-    };
+    const s = memberships.find((m) => m.userId === userId)?.session;
+    return { session: s && { id: s.id, name: s.name, joined: mine.has(s.id) } };
   };
   const view = (row: (typeof rows)[number]) => {
     const user = row.requesterId === me ? row.addressee : row.requester;
@@ -97,7 +86,7 @@ export async function requestFriend(
       throw new ApiError(409, "Request already sent");
     return tx.friendship.update({
       where: { id: existing.id },
-      data: { status: "ACCEPTED", respondedAt: ctx.now() },
+      data: { status: "ACCEPTED" },
     });
   });
 }
@@ -106,7 +95,7 @@ export async function acceptFriend(ctx: Context, actor: Actor, id: string) {
   const me = registered(actor);
   const result = await ctx.db.friendship.updateMany({
     where: { id, addresseeId: me, status: "PENDING" },
-    data: { status: "ACCEPTED", respondedAt: ctx.now() },
+    data: { status: "ACCEPTED" },
   });
   if (!result.count) throw new ApiError(404, "Friend request not found");
 }

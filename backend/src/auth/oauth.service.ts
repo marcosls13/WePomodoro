@@ -90,10 +90,8 @@ async function resolveUser(
       });
       return { userId: existing.id };
     }
-    // Unverified without a deadline is an older account that may hold data.
-    // (Older pending users with a deadline are replaced until they expire.)
-    if (!existing.verifyBy) throw new OAuthError("email_taken");
-    await tx.user.delete({ where: { id: existing.id } });
+    // An unverified account may hold data: never take it over.
+    throw new OAuthError("email_taken");
   }
   // The provider doesn't vouch for the email: no user yet, the emailed code decides.
   if (!profile.emailVerified) return { pending: true as const };

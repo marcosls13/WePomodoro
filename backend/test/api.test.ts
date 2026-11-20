@@ -6,7 +6,6 @@ import type { Server } from "node:http";
 import { after, before, test } from "node:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
-import { ApiError } from "../src/api/common.js";
 import { cleanupExpiredSessions } from "../src/api/lifecycle.js";
 import { createApp } from "../src/app.js";
 import { PrismaClient } from "../src/generated/prisma/client.js";
@@ -15,6 +14,7 @@ import type {
   OAuthProfile,
   OAuthProviderConfig,
 } from "../src/auth/oauth.providers.js";
+import { recordMatch } from "../src/stats/stats.service.js";
 import { sweepTimers } from "../src/timers/timers.service.js";
 
 const url = new URL(
@@ -81,8 +81,7 @@ const ctx = {
 let server: Server;
 let base: string;
 let count = 0;
-const roomIds: string[] = [];
-const timerIds: string[] = [];
+const sessionIds: string[] = [];
 const guestIds: string[] = [];
 const errors: unknown[] = [];
 interface Profile {
@@ -98,24 +97,28 @@ interface GuestAuth {
   token: string;
   guest: { id: string; displayName: string };
 }
-interface Room {
+interface Session {
   id: string;
-  code: string;
-  ownerId: number;
+  code: string | null;
+  timerStatus: string;
+  phase: string;
+  plannedSeconds: number;
+  elapsedSeconds: number;
+  remainingSeconds: number;
   members: {
     id: string;
     userId: number | null;
     guestSessionId: string | null;
+    isOwner: boolean;
+    isGuest: boolean;
+    mutedUntil: string | null;
   }[];
-  timer: Timer | null;
 }
-interface Timer {
-  id: string;
-  status: string;
-  remainingSeconds: number;
-  elapsedSeconds: number;
-  phase: string;
-  plannedSeconds: number;
+interface Stats {
+  focusedSeconds: number;
+  wins: number;
+  losses: number;
+  played: number;
 }
 async function request<T>(
   path: string,
@@ -188,10 +191,7 @@ async function user(verified = true) {
   if (!verified)
     await db.user.update({
       where: { id: account.user.id },
-      data: {
-        emailVerifiedAt: null,
-        verifyBy: new Date(clock.getTime() + 10 * 60_000),
-      },
+      data: { emailVerifiedAt: null },
     });
   return account;
 }
@@ -206,46 +206,39 @@ async function guest() {
   guestIds.push(result.guest.id);
   return result;
 }
-async function room(token: string, input: Record<string, unknown> = {}) {
-  const result = await request<Room>(
-    "/api/rooms",
+async function makeSession(token: string, input: Record<string, unknown> = {}) {
+  const result = await request<Session>(
+    "/api/sessions",
     "POST",
     token,
     {
       name: prefix,
       focusSeconds: 10,
-      shortBreakSeconds: 3,
-      longBreakSeconds: 5,
-      cyclesBeforeLongBreak: 2,
+      breakSeconds: 3,
       ...input,
     },
     201,
   );
-  roomIds.push(result.id);
+  sessionIds.push(result.id);
   return result;
 }
-async function solo(token: string, input: Record<string, unknown> = {}) {
-  const result = await request<Timer>(
-    "/api/timers",
-    "POST",
-    token,
-    { plannedSeconds: 10, ...input },
-    201,
-  );
-  timerIds.push(result.id);
-  return result;
-}
-async function shared(token: string, roomId: string) {
-  const result = await request<Timer>(
-    `/api/rooms/${roomId}/timers`,
+const joinCode = (token: string, code: string | null, expected = 200) =>
+  request<Session>("/api/sessions/join", "POST", token, { code }, expected);
+const act = (
+  token: string,
+  sessionId: string,
+  action: "start" | "pause" | "resume" | "cancel",
+  expected = 200,
+) =>
+  request<Session>(
+    `/api/sessions/${sessionId}/timer/${action}`,
     "POST",
     token,
     undefined,
-    201,
+    expected,
   );
-  timerIds.push(result.id);
-  return result;
-}
+const myStats = (token: string) =>
+  request<Stats>("/api/users/me/stats", "GET", token);
 function advance(seconds: number) {
   clock = new Date(clock.getTime() + seconds * 1000);
 }
@@ -281,20 +274,6 @@ before(async () => {
     onError: (error) => {
       errors.push(error);
     },
-    gameVerifiers: {
-      [`${prefix}-memory`]: {
-        verify: (userId, payload) => {
-          if (
-            !payload ||
-            typeof payload !== "object" ||
-            !("proof" in payload) ||
-            payload.proof !== "valid-server-proof"
-          )
-            throw new ApiError(400, "Invalid proof");
-          return { score: userId + 10, durationSeconds: 3 };
-        },
-      },
-    },
   });
   server = app.listen(0, "127.0.0.1");
   await new Promise<void>((resolve) => {
@@ -313,14 +292,14 @@ after(async () => {
   });
   try {
     await db.$transaction(async (tx) => {
-      await tx.studyRoom.deleteMany({ where: { id: { in: roomIds } } });
-      await tx.pomodoroSession.deleteMany({ where: { id: { in: timerIds } } });
+      await tx.pomodoroSession.deleteMany({
+        where: { id: { in: sessionIds } },
+      });
       await tx.guestSession.deleteMany({ where: { id: { in: guestIds } } });
       await tx.pendingSignup.deleteMany({
         where: { email: { startsWith: prefix } },
       });
       await tx.user.deleteMany({ where: { username: { startsWith: prefix } } });
-      await tx.miniGame.deleteMany({ where: { key: { startsWith: prefix } } });
     });
   } finally {
     await db.$disconnect();
@@ -392,16 +371,13 @@ void test("legacy profiles with no hash cannot log in, and directory does not ex
     ),
   );
   await request("/api/users/me/stats", "GET", visitor.token, undefined, 403);
-  await request(
-    "/api/rooms",
-    "POST",
-    visitor.token,
-    { name: "Guest-owned room" },
-    403,
-  );
+  // Guests can own sessions; they just keep no statistics.
+  const own = await makeSession(visitor.token);
+  assert.equal(own.members[0]?.isGuest, true);
+  assert.equal(own.members[0]?.isOwner, true);
 });
 void test("authentication, validation, pagination and CORS reject bad requests", async () => {
-  await request("/api/rooms", "GET", undefined, undefined, 401);
+  await request("/api/sessions", "GET", undefined, undefined, 401);
   await request(
     "/api/auth/signup",
     "POST",
@@ -411,12 +387,18 @@ void test("authentication, validation, pagination and CORS reject bad requests",
   );
   const visitor = await guest();
   await request("/api/users?take=-1", "GET", visitor.token, undefined, 400);
-  await request("/api/rooms/not-a-uuid", "GET", visitor.token, undefined, 400);
   await request(
-    "/api/timers",
+    "/api/sessions/not-a-uuid",
+    "GET",
+    visitor.token,
+    undefined,
+    400,
+  );
+  await request(
+    "/api/sessions",
     "POST",
     visitor.token,
-    { plannedSeconds: -1 },
+    { name: prefix, focusSeconds: -1 },
     400,
   );
   const response = await fetch(`${base}/api/auth/guest`, {
@@ -430,163 +412,88 @@ void test("authentication, validation, pagination and CORS reject bad requests",
   });
   assert.equal(denied.status, 403);
 });
-void test("room joins are idempotent, private, and controlled by registered owners", async () => {
+void test("session joins are idempotent, private, and the owner controls the code and ownership", async () => {
   const owner = await user();
   const friend = await user();
   const visitor = await guest();
-  const study = await room(owner.token);
-  await request(`/api/rooms/${study.id}`, "GET", friend.token, undefined, 403);
-  await request("/api/rooms/join", "POST", friend.token, {
-    roomCode: study.code,
-  });
-  await request("/api/rooms/join", "POST", friend.token, {
-    roomCode: study.code,
-  });
-  const joined = await request<Room>("/api/rooms/join", "POST", visitor.token, {
-    roomCode: study.code,
-  });
+  const study = await makeSession(owner.token);
+  const path = `/api/sessions/${study.id}`;
+  await request(path, "GET", friend.token, undefined, 403);
+  await joinCode(friend.token, study.code);
+  await joinCode(friend.token, study.code);
+  const joined = await joinCode(visitor.token, study.code);
   assert.equal(joined.members.length, 3);
-  await request(
-    `/api/rooms/${study.id}`,
-    "PATCH",
-    friend.token,
-    { focusSeconds: 30 },
-    403,
-  );
-  await request(
-    `/api/rooms/${study.id}/leave`,
-    "POST",
-    owner.token,
-    undefined,
-    409,
-  );
-  // Only the owner can replace the room code, and the old one stops working.
+  await request(path, "PATCH", friend.token, { focusSeconds: 30 }, 403);
+  // Only the owner can replace the code, and the old one stops working.
   for (const other of [friend, visitor])
-    await request(
-      `/api/rooms/${study.id}/code`,
-      "POST",
-      other.token,
-      undefined,
-      403,
-    );
-  const rotated = await request<{ roomCode: string }>(
-    `/api/rooms/${study.id}/code`,
+    await request(`${path}/code`, "POST", other.token, undefined, 403);
+  const rotated = await request<{ code: string }>(
+    `${path}/code`,
     "POST",
     owner.token,
   );
-  assert.notEqual(rotated.roomCode, study.code);
+  assert.notEqual(rotated.code, study.code);
   const stranger = await user();
-  await request(
-    "/api/rooms/join",
-    "POST",
-    stranger.token,
-    { roomCode: study.code },
-    404,
-  );
-  await request(
-    "/api/rooms/join",
-    "POST",
-    stranger.token,
-    {
-      roomCode: "nope",
-    },
-    404,
-  );
-  await request(`/api/rooms/${study.id}/owner`, "POST", owner.token, {
-    userId: friend.user.id,
+  await joinCode(stranger.token, study.code, 404);
+  await joinCode(stranger.token, "nope", 404);
+  // Ownership moves to another member; the old owner may then leave.
+  const friendMember = joined.members.find((m) => m.userId === friend.user.id);
+  assert.ok(friendMember);
+  await request(`${path}/owner`, "POST", owner.token, {
+    memberId: friendMember.id,
   });
-  await request(
-    `/api/rooms/${study.id}/leave`,
-    "POST",
-    owner.token,
-    undefined,
-    204,
-  );
+  await request(`${path}/leave`, "POST", owner.token, undefined, 204);
   const guestMember = joined.members.find(
     (member) => member.guestSessionId === visitor.guest.id,
   );
   assert.ok(guestMember);
   await request(
-    `/api/rooms/${study.id}/members/${guestMember.id}`,
+    `${path}/members/${guestMember.id}`,
     "DELETE",
     friend.token,
     undefined,
     204,
   );
-  await request(`/api/rooms/${study.id}`, "GET", visitor.token, undefined, 403);
+  await request(path, "GET", visitor.token, undefined, 403);
   // A kicked member can come back with the current code.
-  await request("/api/rooms/join", "POST", visitor.token, {
-    roomCode: rotated.roomCode,
-  });
-  await request(`/api/rooms/${study.id}/close`, "POST", friend.token);
-  await request(
-    "/api/rooms/join",
-    "POST",
-    visitor.token,
-    { roomCode: rotated.roomCode },
-    409,
-  );
+  await joinCode(visitor.token, rotated.code);
+  // A deleted session can no longer be joined.
+  await request(path, "DELETE", friend.token, undefined, 204);
+  await joinCode(visitor.token, rotated.code, 404);
 });
 void test("membership persists until the person leaves or is kicked", async () => {
   const owner = await user();
   const friend = await user();
-  const study = await room(owner.token);
-  await request("/api/rooms/join", "POST", friend.token, {
-    roomCode: study.code,
-  });
-  // Leaving the timer (or never being in it) never touches membership.
-  const timer = await request<{ id: string }>(
-    `/api/rooms/${study.id}/timers`,
-    "POST",
-    owner.token,
-    undefined,
-    201,
-  );
-  await request(`/api/timers/${timer.id}/leave`, "POST", friend.token);
+  const study = await makeSession(owner.token);
+  const path = `/api/sessions/${study.id}`;
+  await joinCode(friend.token, study.code);
   const listed = await request<{ id: string }[]>(
-    "/api/rooms",
+    "/api/sessions",
     "GET",
     friend.token,
   );
   assert.ok(listed.some((r) => r.id === study.id));
-  await request(`/api/rooms/${study.id}`, "GET", friend.token);
+  await request(path, "GET", friend.token);
   // Joining again with a code is a no-op for an existing member.
-  const again = await request<Room>("/api/rooms/join", "POST", friend.token, {
-    roomCode: study.code,
-  });
+  const again = await joinCode(friend.token, study.code);
   assert.equal(again.members.length, 2);
-  // Leaving the server removes the membership; a code is needed to return.
-  await request(
-    `/api/rooms/${study.id}/leave`,
-    "POST",
-    friend.token,
-    undefined,
-    204,
-  );
-  await request(`/api/rooms/${study.id}`, "GET", friend.token, undefined, 403);
-  const rejoined = await request<Room>(
-    "/api/rooms/join",
-    "POST",
-    friend.token,
-    {
-      roomCode: study.code,
-    },
-  );
+  // Leaving removes the membership; a code is needed to return.
+  await request(`${path}/leave`, "POST", friend.token, undefined, 204);
+  await request(path, "GET", friend.token, undefined, 403);
+  const rejoined = await joinCode(friend.token, study.code);
   // Kicked members need a code again too.
   const member = rejoined.members.find((m) => m.userId === friend.user.id);
   assert.ok(member);
   await request(
-    `/api/rooms/${study.id}/members/${member.id}`,
+    `${path}/members/${member.id}`,
     "DELETE",
     owner.token,
     undefined,
     204,
   );
-  await request(`/api/rooms/${study.id}`, "GET", friend.token, undefined, 403);
-  await request("/api/rooms/join", "POST", friend.token, {
-    roomCode: study.code,
-  });
-  await request(`/api/rooms/${study.id}`, "GET", friend.token);
+  await request(path, "GET", friend.token, undefined, 403);
+  await joinCode(friend.token, study.code);
+  await request(path, "GET", friend.token);
 });
 void test("friends: request, accept, list and remove", async () => {
   const alice = await user();
@@ -665,422 +572,263 @@ void test("friends: request, accept, list and remove", async () => {
   const crossed = await request<Lists>("/api/friends", "GET", bob.token);
   assert.equal(crossed.friends.length, 1);
 });
-void test("friends see presence and whether they are in the room", async () => {
+void test("friends see the shared session someone is in and whether they joined it", async () => {
   const alice = await user();
   const bob = await user();
-  const stranger = await user();
-  const study = await room(alice.token);
+  const carol = await user();
+  const study = await makeSession(alice.token);
+  // A solo timer is private: friends never see it.
+  await makeSession(carol.token, { solo: true });
   interface Friend {
     id: string;
     user: { id: number };
-    presence: { online: boolean; room: { id: string; joined: boolean } | null };
+    presence: { session?: { id: string; joined: boolean } };
   }
-  const befriend = async () => {
+  const befriend = async (other: Auth) => {
     const sent = await request<{ id: string }>(
       "/api/friends",
       "POST",
       bob.token,
-      { username: alice.user.username },
+      { username: other.user.username },
       201,
     );
     await request(
       `/api/friends/${sent.id}/accept`,
       "POST",
-      alice.token,
+      other.token,
       undefined,
       204,
     );
   };
-  // Presence needs membership.
+  await befriend(alice);
+  await befriend(carol);
+  const list = async () =>
+    (await request<{ friends: Friend[] }>("/api/friends", "GET", bob.token))
+      .friends;
+  const of = (friends: Friend[], other: Auth) =>
+    friends.find((f) => f.user.id === other.user.id)?.presence.session;
+  const seen = await list();
+  assert.equal(of(seen, alice)?.id, study.id);
+  assert.equal(of(seen, alice)?.joined, false);
+  assert.equal(of(seen, carol), undefined);
+  // Joining with the code flips `joined` for the friend.
+  await joinCode(bob.token, study.code);
+  assert.equal(of(await list(), alice)?.joined, true);
+  // A deleted session is no longer shown.
   await request(
-    "/api/presence",
-    "PUT",
-    stranger.token,
-    { roomId: study.id },
-    403,
-  );
-  await befriend();
-  const before = await request<{ friends: Friend[] }>(
-    "/api/friends",
-    "GET",
-    bob.token,
-  );
-  assert.equal(before.friends[0]?.presence.online, false);
-  await request("/api/presence", "PUT", alice.token, { roomId: study.id }, 204);
-  const seen = await request<{ friends: Friend[] }>(
-    "/api/friends",
-    "GET",
-    bob.token,
-  );
-  assert.equal(seen.friends[0]?.presence.online, true);
-  assert.equal(seen.friends[0]?.presence.room?.id, study.id);
-  assert.equal(seen.friends[0]?.presence.room?.joined, false);
-  // Joining with the room code flips `joined` for the friend.
-  await request("/api/rooms/join", "POST", bob.token, {
-    roomCode: study.code,
-  });
-  const after = await request<{ friends: Friend[] }>(
-    "/api/friends",
-    "GET",
-    bob.token,
-  );
-  assert.equal(after.friends[0]?.presence.room?.joined, true);
-});
-void test("room chat is for members, in order, and polls by message id", async () => {
-  const owner = await user();
-  const outsider = await user();
-  const visitor = await guest();
-  const study = await room(owner.token);
-  await request(
-    `/api/rooms/${study.id}/messages`,
-    "GET",
-    outsider.token,
+    `/api/sessions/${study.id}`,
+    "DELETE",
+    alice.token,
     undefined,
-    403,
+    204,
   );
-  await request(
-    `/api/rooms/${study.id}/messages`,
-    "POST",
-    outsider.token,
-    { content: "hi" },
-    403,
-  );
-  await request("/api/rooms/join", "POST", visitor.token, {
-    roomCode: study.code,
-  });
-  interface Message {
-    id: number;
-    authorName: string;
-    content: string;
-  }
-  const first = await request<Message>(
-    `/api/rooms/${study.id}/messages`,
-    "POST",
-    owner.token,
-    { content: "  hello  " },
-    201,
-  );
-  assert.equal(first.content, "hello");
-  assert.equal(first.authorName, owner.user.username);
-  await request(
-    `/api/rooms/${study.id}/messages`,
-    "POST",
-    owner.token,
-    { content: "   " },
-    400,
-  );
-  const second = await request<Message>(
-    `/api/rooms/${study.id}/messages`,
-    "POST",
-    visitor.token,
-    { content: "hey" },
-    201,
-  );
-  assert.equal(second.authorName, prefix);
-  const all = await request<Message[]>(
-    `/api/rooms/${study.id}/messages`,
-    "GET",
-    visitor.token,
-  );
-  assert.deepEqual(
-    all.map((m) => m.content),
-    ["hello", "hey"],
-  );
-  const newer = await request<Message[]>(
-    `/api/rooms/${study.id}/messages?after=${first.id}`,
-    "GET",
-    owner.token,
-  );
-  assert.deepEqual(
-    newer.map((m) => m.id),
-    [second.id],
-  );
+  assert.equal(of(await list(), alice), undefined);
 });
-void test("solo timers exclude paused time, prevent early completion and calculate statistics", async () => {
+void test("solo timers exclude paused time and credit the focus time", async () => {
   const auth = await user();
-  const timer = await solo(auth.token);
-  await request("/api/timers", "POST", auth.token, { plannedSeconds: 10 }, 409);
+  const solo = await makeSession(auth.token, { solo: true });
+  assert.equal(solo.code, null);
+  await joinCode(auth.token, null, 400);
+  await act(auth.token, solo.id, "start");
+  await act(auth.token, solo.id, "start", 409);
+  // Settings only change between phases.
   await request(
-    `/api/timers/${timer.id}/complete`,
-    "POST",
+    `/api/sessions/${solo.id}`,
+    "PATCH",
     auth.token,
-    undefined,
+    { focusSeconds: 20 },
     409,
   );
   advance(4);
-  const liveStats = await request<{ focusedSeconds: number }>(
-    "/api/users/me/stats",
-    "GET",
-    auth.token,
-  );
-  assert.equal(liveStats.focusedSeconds, 4);
-  const paused = await request<Timer>(
-    `/api/timers/${timer.id}/pause`,
-    "POST",
-    auth.token,
-  );
+  assert.equal((await myStats(auth.token)).focusedSeconds, 4);
+  const paused = await act(auth.token, solo.id, "pause");
   assert.equal(paused.elapsedSeconds, 4);
   advance(100);
-  const frozen = await request<Timer>(
-    `/api/timers/${timer.id}`,
+  const frozen = await request<Session>(
+    `/api/sessions/${solo.id}`,
     "GET",
     auth.token,
   );
   assert.equal(frozen.remainingSeconds, 6);
-  await request(`/api/timers/${timer.id}/resume`, "POST", auth.token);
+  await act(auth.token, solo.id, "resume");
   advance(6);
-  await request(`/api/timers/${timer.id}/complete`, "POST", auth.token);
-  const stats = await request<{
-    focusedSeconds: number;
-    completedFocusSessions: number;
-  }>("/api/users/me/stats", "GET", auth.token);
-  assert.equal(stats.focusedSeconds, 10);
-  assert.equal(stats.completedFocusSessions, 1);
-  await request(
-    `/api/timers/${timer.id}/cancel`,
-    "POST",
+  // The phase ran out: everyone is credited and the next phase waits, idle.
+  assert.equal((await myStats(auth.token)).focusedSeconds, 10);
+  const next = await request<Session>(
+    `/api/sessions/${solo.id}`,
+    "GET",
     auth.token,
-    undefined,
-    409,
   );
+  assert.equal(next.timerStatus, "IDLE");
+  assert.equal(next.phase, "BREAK");
+  // Only members can see it, and a solo timer has no code to join with.
   const other = await guest();
-  await request(`/api/timers/${timer.id}`, "GET", other.token, undefined, 404);
+  await request(`/api/sessions/${solo.id}`, "GET", other.token, undefined, 403);
 });
 void test("shared timers credit late arrival and rejoining without crediting absence", async () => {
   const owner = await user();
   const friend = await user();
-  const study = await room(owner.token);
-  const timer = await shared(owner.token, study.id);
+  const study = await makeSession(owner.token);
+  await act(owner.token, study.id, "start");
   advance(2);
-  await request("/api/rooms/join", "POST", friend.token, {
-    roomCode: study.code,
-  });
+  await joinCode(friend.token, study.code);
   advance(2);
   await request(
-    `/api/rooms/${study.id}/leave`,
+    `/api/sessions/${study.id}/leave`,
     "POST",
     friend.token,
     undefined,
     204,
   );
   advance(2);
-  await request("/api/rooms/join", "POST", friend.token, {
-    roomCode: study.code,
-  });
-  await request(
-    `/api/timers/${timer.id}/pause`,
-    "POST",
-    friend.token,
-    undefined,
-    403,
-  );
+  await joinCode(friend.token, study.code);
+  // Only the owner drives the timer.
+  await act(friend.token, study.id, "pause", 403);
   advance(4);
-  await request(`/api/timers/${timer.id}`, "GET", owner.token);
-  const stats = await request<{
-    focusedSeconds: number;
-    completedFocusSessions: number;
-  }>("/api/users/me/stats", "GET", friend.token);
-  assert.equal(stats.focusedSeconds, 6);
-  assert.equal(stats.completedFocusSessions, 0);
-  const ownerStats = await request<{
-    focusedSeconds: number;
-    completedFocusSessions: number;
-  }>("/api/users/me/stats", "GET", owner.token);
-  assert.equal(ownerStats.focusedSeconds, 10);
-  assert.equal(ownerStats.completedFocusSessions, 1);
+  assert.equal((await myStats(friend.token)).focusedSeconds, 6);
+  assert.equal((await myStats(owner.token)).focusedSeconds, 10);
 });
-void test("room cycle alternates focus and breaks and ignores break time in study totals", async () => {
+void test("the cycle alternates focus and breaks and ignores break time in study totals", async () => {
   const auth = await user();
-  const study = await room(auth.token);
-  for (const expected of [
-    "FOCUS",
-    "SHORT_BREAK",
-    "FOCUS",
-    "LONG_BREAK",
-    "FOCUS",
-  ]) {
-    const timer = await shared(auth.token, study.id);
-    assert.equal(timer.phase, expected);
-    advance(timer.plannedSeconds);
+  const study = await makeSession(auth.token);
+  for (const expected of ["FOCUS", "BREAK", "FOCUS", "BREAK", "FOCUS"]) {
+    const started = await act(auth.token, study.id, "start");
+    assert.equal(started.phase, expected);
+    advance(started.plannedSeconds);
     await sweepTimers(ctx);
   }
-  const stats = await request<{
-    focusedSeconds: number;
-    completedFocusSessions: number;
-  }>("/api/users/me/stats", "GET", auth.token);
-  assert.equal(stats.focusedSeconds, 30);
-  assert.equal(stats.completedFocusSessions, 3);
+  assert.equal((await myStats(auth.token)).focusedSeconds, 30);
 });
-void test("closing a room cancels its timer and keeps partial study time", async () => {
-  const auth = await user();
-  const study = await room(auth.token);
-  const timer = await shared(auth.token, study.id);
-  advance(3);
-  await request(`/api/rooms/${study.id}/close`, "POST", auth.token);
-  const stopped = await request<Timer>(
-    `/api/timers/${timer.id}`,
-    "GET",
-    auth.token,
+void test("leaving, being kicked and cancelling all keep the focus time earned so far", async () => {
+  const owner = await user();
+  const leaver = await user();
+  const kicked = await user();
+  const study = await makeSession(owner.token);
+  const full = await joinCode(leaver.token, study.code);
+  const both = await joinCode(kicked.token, study.code);
+  assert.equal(full.members.length + 1, both.members.length);
+  await act(owner.token, study.id, "start");
+  advance(2);
+  await request(
+    `/api/sessions/${study.id}/leave`,
+    "POST",
+    leaver.token,
+    undefined,
+    204,
   );
-  assert.equal(stopped.status, "CANCELLED");
-  const stats = await request<{
-    focusedSeconds: number;
-    completedFocusSessions: number;
-  }>("/api/users/me/stats", "GET", auth.token);
-  assert.equal(stats.focusedSeconds, 3);
-  assert.equal(stats.completedFocusSessions, 0);
+  advance(3);
+  const target = both.members.find((m) => m.userId === kicked.user.id);
+  assert.ok(target);
+  await request(
+    `/api/sessions/${study.id}/members/${target.id}`,
+    "DELETE",
+    owner.token,
+    undefined,
+    204,
+  );
+  advance(1);
+  await act(leaver.token, study.id, "cancel", 403);
+  const cancelled = await act(owner.token, study.id, "cancel");
+  assert.equal(cancelled.timerStatus, "IDLE");
+  assert.equal((await myStats(leaver.token)).focusedSeconds, 2);
+  assert.equal((await myStats(kicked.token)).focusedSeconds, 5);
+  assert.equal((await myStats(owner.token)).focusedSeconds, 6);
 });
-void test("only the owner can delete a room, which removes it but keeps study time", async () => {
+
+void test("when the owner leaves the longest-standing registered member takes over, and an empty session is deleted", async () => {
+  const owner = await user();
+  const friend = await user();
+  const study = await makeSession(owner.token);
+  const visitor = await guest();
+  advance(1);
+  await joinCode(visitor.token, study.code);
+  advance(1);
+  await joinCode(friend.token, study.code);
+  const ownerOf = async () =>
+    (
+      await db.sessionMember.findFirst({
+        where: { sessionId: study.id, isOwner: true },
+      })
+    )?.userId;
+  const leave = (token: string) =>
+    request(`/api/sessions/${study.id}/leave`, "POST", token, undefined, 204);
+  // Registered members come before the guest who arrived earlier.
+  await leave(owner.token);
+  assert.equal(await ownerOf(), friend.user.id);
+  await leave(friend.token);
+  const left = await db.sessionMember.findFirstOrThrow({
+    where: { sessionId: study.id },
+  });
+  assert.equal(left.isOwner, true);
+  assert.equal(left.guestSessionId, visitor.guest.id);
+  await leave(visitor.token);
+  assert.equal(await db.pomodoroSession.count({ where: { id: study.id } }), 0);
+});
+void test("only the owner can delete a session, which removes it but keeps study time", async () => {
   const owner = await user();
   const friend = await user();
   const visitor = await guest();
-  const study = await room(owner.token);
+  const study = await makeSession(owner.token);
+  const path = `/api/sessions/${study.id}`;
   for (const token of [friend.token, visitor.token])
-    await request("/api/rooms/join", "POST", token, {
-      roomCode: study.code,
-    });
-  await request(
-    `/api/rooms/${study.id}/messages`,
-    "POST",
-    friend.token,
-    { content: "hello" },
-    201,
-  );
-  const timer = await shared(owner.token, study.id);
+    await joinCode(token, study.code);
+  await act(owner.token, study.id, "start");
   advance(3);
   for (const token of [friend.token, visitor.token])
-    await request(`/api/rooms/${study.id}`, "DELETE", token, undefined, 403);
-  assert.equal(await db.studyRoom.count({ where: { id: study.id } }), 1);
+    await request(path, "DELETE", token, undefined, 403);
+  assert.equal(await db.pomodoroSession.count({ where: { id: study.id } }), 1);
 
-  await request(
-    `/api/rooms/${study.id}`,
-    "DELETE",
-    owner.token,
-    undefined,
-    204,
+  await request(path, "DELETE", owner.token, undefined, 204);
+  assert.equal(await db.pomodoroSession.count({ where: { id: study.id } }), 0);
+  assert.equal(
+    await db.sessionMember.count({ where: { sessionId: study.id } }),
+    0,
   );
-  assert.equal(await db.studyRoom.count({ where: { id: study.id } }), 0);
-  for (const table of [db.roomMember, db.message])
-    assert.equal(
-      await (
-        table as unknown as {
-          count: (args: { where: { roomId: string } }) => Promise<number>;
-        }
-      ).count({ where: { roomId: study.id } }),
-      0,
-    );
-  await request(`/api/rooms/${study.id}`, "GET", owner.token, undefined, 404);
-  await request(
-    "/api/rooms/join",
-    "POST",
-    friend.token,
-    { roomCode: study.code },
-    404,
-  );
-  const listed = await request<Room[]>("/api/rooms", "GET", owner.token);
+  await request(path, "GET", owner.token, undefined, 404);
+  await joinCode(friend.token, study.code, 404);
+  const listed = await request<Session[]>("/api/sessions", "GET", owner.token);
   assert.ok(!listed.some((item) => item.id === study.id));
-  // Repeating the request, or deleting an unknown room, is a 404.
-  await request(
-    `/api/rooms/${study.id}`,
-    "DELETE",
-    owner.token,
-    undefined,
-    404,
-  );
+  // Repeating the request, or deleting an unknown session, is a 404.
+  await request(path, "DELETE", owner.token, undefined, 404);
 
-  const stopped = await request<Timer>(
-    `/api/timers/${timer.id}`,
-    "GET",
-    owner.token,
-  );
-  assert.equal(stopped.status, "CANCELLED");
-  const stats = await request<{ focusedSeconds: number }>(
-    "/api/users/me/stats",
-    "GET",
-    friend.token,
-  );
-  assert.equal(stats.focusedSeconds, 3);
+  // The focus time in progress was credited to registered members at deletion.
+  assert.equal((await myStats(friend.token)).focusedSeconds, 3);
+  assert.equal((await myStats(owner.token)).focusedSeconds, 3);
 });
-void test("a closed room can still be deleted by its owner", async () => {
-  const owner = await user();
-  const study = await room(owner.token);
-  await request(`/api/rooms/${study.id}/close`, "POST", owner.token);
-  await request(
-    `/api/rooms/${study.id}`,
-    "DELETE",
-    owner.token,
-    undefined,
-    204,
-  );
-  assert.equal(await db.studyRoom.count({ where: { id: study.id } }), 0);
-});
-void test("guests can study solo and logout removes their temporary identity", async () => {
+void test("guests can study solo and logout removes their temporary identity and empty session", async () => {
   const visitor = await guest();
-  const timer = await solo(visitor.token);
+  const solo = await makeSession(visitor.token, { solo: true });
+  await act(visitor.token, solo.id, "start");
   advance(2);
   await request("/api/auth/logout", "POST", visitor.token, undefined, 204);
   assert.equal(
     await db.guestSession.findUnique({ where: { id: visitor.guest.id } }),
     null,
   );
+  // Nobody is left in it, so the session goes too.
   assert.equal(
-    (await db.pomodoroSession.findUniqueOrThrow({ where: { id: timer.id } }))
-      .status,
-    "CANCELLED",
+    await db.pomodoroSession.findUnique({ where: { id: solo.id } }),
+    null,
   );
   await request("/api/auth/me", "GET", visitor.token, undefined, 401);
 });
-void test("minigame results require a registered user and a server-side verifier", async () => {
-  const auth = await user();
-  const visitor = await guest();
-  const key = `${prefix}-memory`;
-  await db.miniGame.createMany({
-    data: [
-      { key, name: "Test memory" },
-      { key: `${prefix}-future`, name: "Future game" },
-    ],
-  });
-  await request(
-    `/api/games/${key}/results`,
-    "POST",
-    visitor.token,
-    { score: 999 },
-    403,
-  );
-  await request(
-    `/api/games/${prefix}-future/results`,
-    "POST",
-    auth.token,
-    { score: 999 },
-    501,
-  );
-  await request(
-    `/api/games/${key}/results`,
-    "POST",
-    auth.token,
-    { score: 999999 },
-    400,
-  );
-  await request(
-    `/api/games/${key}/results`,
-    "POST",
-    auth.token,
-    { proof: "valid-server-proof", score: 999999 },
-    201,
-  );
-  const results = await request<{ score: number }[]>(
-    "/api/users/me/game-results",
-    "GET",
-    auth.token,
-  );
-  assert.equal(results[0]?.score, auth.user.id + 10);
+void test("minigame results are recorded for registered players only", async () => {
+  const winner = await user();
+  const loser = await user();
+  await recordMatch(ctx, winner.user.id, loser.user.id);
+  await recordMatch(ctx, winner.user.id, null);
+  await recordMatch(ctx, null, loser.user.id);
+  const won = await myStats(winner.token);
+  assert.deepEqual([won.wins, won.losses, won.played], [2, 0, 2]);
+  const lost = await myStats(loser.token);
+  assert.deepEqual([lost.wins, lost.losses, lost.played], [0, 2, 2]);
 });
 void test("simultaneous shared starts produce exactly one live timer", async () => {
   const auth = await user();
-  const study = await room(auth.token);
+  const study = await makeSession(auth.token);
   const responses = await Promise.all(
     [1, 2].map(async () =>
-      fetch(`${base}/api/rooms/${study.id}/timers`, {
+      fetch(`${base}/api/sessions/${study.id}/timer/start`, {
         method: "POST",
         headers: { Authorization: `Bearer ${auth.token}` },
       }),
@@ -1088,28 +836,21 @@ void test("simultaneous shared starts produce exactly one live timer", async () 
   );
   assert.deepEqual(
     responses.map((response) => response.status).sort(),
-    [201, 409],
+    [200, 409],
   );
-  for (const response of responses)
-    if (response.status === 201) {
-      const value = (await response.json()) as Timer;
-      timerIds.push(value.id);
-    }
   assert.equal(
     await db.pomodoroSession.count({
-      where: { roomId: study.id, status: "ACTIVE" },
+      where: { id: study.id, timerStatus: "RUNNING" },
     }),
     1,
   );
 });
-void test("deleting an account revokes sessions and preserves other users' shared history", async () => {
+void test("deleting an account revokes sessions and hands its sessions to the next member", async () => {
   const owner = await user();
   const friend = await user();
-  const study = await room(owner.token);
-  await request("/api/rooms/join", "POST", friend.token, {
-    roomCode: study.code,
-  });
-  const timer = await shared(owner.token, study.id);
+  const study = await makeSession(owner.token);
+  await joinCode(friend.token, study.code);
+  await act(owner.token, study.id, "start");
   advance(2);
   await request(
     "/api/users/me",
@@ -1126,97 +867,67 @@ void test("deleting an account revokes sessions and preserves other users' share
     204,
   );
   await request("/api/auth/me", "GET", owner.token, undefined, 401);
-  assert.equal(
-    (await db.pomodoroSession.findUniqueOrThrow({ where: { id: timer.id } }))
-      .roomId,
-    null,
-  );
-  const stats = await request<{ focusedSeconds: number }>(
-    "/api/users/me/stats",
-    "GET",
-    friend.token,
-  );
-  assert.equal(stats.focusedSeconds, 2);
+  const next = await db.sessionMember.findFirstOrThrow({
+    where: { sessionId: study.id, isOwner: true },
+  });
+  assert.equal(next.userId, friend.user.id);
+  assert.equal((await myStats(friend.token)).focusedSeconds, 2);
 });
-void test("a person cannot accrue study time in overlapping solo and shared timers", async () => {
+void test("a person cannot accrue study time in overlapping timers", async () => {
   const owner = await user();
   const friend = await user();
-  const study = await room(owner.token);
-  await request("/api/rooms/join", "POST", friend.token, {
-    roomCode: study.code,
-  });
-  const own = await solo(friend.token);
+  const study = await makeSession(owner.token);
+  await joinCode(friend.token, study.code);
+  const own = await makeSession(friend.token, { solo: true });
+  await act(friend.token, own.id, "start");
+  // The friend is busy in a live solo timer, so the shared one can't start.
+  await act(owner.token, study.id, "start", 409);
+  await act(friend.token, own.id, "cancel");
+  await act(owner.token, study.id, "start");
+  const another = await makeSession(friend.token, { solo: true });
+  await act(friend.token, another.id, "start", 409);
   await request(
-    `/api/rooms/${study.id}/timers`,
-    "POST",
-    owner.token,
-    undefined,
-    409,
-  );
-  await request(`/api/timers/${own.id}/cancel`, "POST", friend.token);
-  const together = await shared(owner.token, study.id);
-  await request(
-    "/api/timers",
-    "POST",
-    friend.token,
-    { plannedSeconds: 10 },
-    409,
-  );
-  await request(`/api/timers/${together.id}/leave`, "POST", friend.token);
-  await solo(friend.token);
-  await request(
-    `/api/timers/${together.id}/join`,
+    `/api/sessions/${study.id}/leave`,
     "POST",
     friend.token,
     undefined,
-    409,
+    204,
   );
+  await act(friend.token, another.id, "start");
+  await joinCode(friend.token, study.code, 409);
 });
 void test("simultaneous solo starts allow only one active timer", async () => {
   const visitor = await guest();
+  const first = await makeSession(visitor.token, { solo: true });
+  const second = await makeSession(visitor.token, { solo: true });
   const responses = await Promise.all(
-    [1, 2].map(async () =>
-      fetch(`${base}/api/timers`, {
+    [first, second].map(async (one) =>
+      fetch(`${base}/api/sessions/${one.id}/timer/start`, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${visitor.token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ plannedSeconds: 10 }),
+        headers: { Authorization: `Bearer ${visitor.token}` },
       }),
     ),
   );
   assert.deepEqual(
     responses.map((response) => response.status).sort(),
-    [201, 409],
+    [200, 409],
   );
-  for (const response of responses)
-    if (response.status === 201) {
-      const value = (await response.json()) as Timer;
-      timerIds.push(value.id);
-    }
 });
 void test("joining during a pause does not credit paused time", async () => {
   const owner = await user();
   const friend = await user();
-  const study = await room(owner.token);
-  const timer = await shared(owner.token, study.id);
+  const study = await makeSession(owner.token);
+  await act(owner.token, study.id, "start");
   advance(2);
-  await request(`/api/timers/${timer.id}/pause`, "POST", owner.token);
+  await act(owner.token, study.id, "pause");
   advance(30);
-  await request("/api/rooms/join", "POST", friend.token, {
-    roomCode: study.code,
-  });
+  await joinCode(friend.token, study.code);
   advance(30);
-  await request(`/api/timers/${timer.id}/resume`, "POST", owner.token);
+  await act(owner.token, study.id, "resume");
   advance(8);
   await sweepTimers(ctx);
-  const stats = await request<{
-    focusedSeconds: number;
-    completedFocusSessions: number;
-  }>("/api/users/me/stats", "GET", friend.token);
-  assert.equal(stats.focusedSeconds, 8);
-  assert.equal(stats.completedFocusSessions, 0);
+  assert.equal((await myStats(friend.token)).focusedSeconds, 8);
+  assert.equal((await myStats(owner.token)).focusedSeconds, 10);
 });
 void test("expired guest and registered tokens are rejected", async () => {
   const auth = await user();
@@ -1240,7 +951,7 @@ void test("expired identity cleanup leaves registered study history intact", asy
     0,
   );
   assert.ok(
-    (await db.sessionParticipant.count({
+    (await db.userStat.count({
       where: { user: { username: { startsWith: prefix } } },
     })) > 0,
   );
@@ -1752,40 +1463,22 @@ void test("email verification: an unverified account is emailed a code that prov
 
 void test("unverified accounts can only verify, fix their email or leave", async () => {
   const account = await user(false);
-  await request("/api/rooms", "GET", account.token, undefined, 403);
-  await request("/api/timers", "GET", account.token, undefined, 403);
+  await request("/api/sessions", "GET", account.token, undefined, 403);
   await request("/api/auth/me", "GET", account.token);
   await request("/api/users/me", "GET", account.token);
   await request("/api/auth/logout", "POST", account.token, undefined, 204);
 });
 
-void test("moderation: kick, mute and deleting messages are owner powers", async () => {
+void test("moderation: kick and mute are owner powers", async () => {
   const owner = await user();
   const member = await user();
   const other = await user();
-  const study = await room(owner.token);
-  const path = `/api/rooms/${study.id}`;
-  const join = async (token: string, expected = 200) =>
-    request<Room>(
-      "/api/rooms/join",
-      "POST",
-      token,
-      { roomCode: study.code },
-      expected,
-    );
-  await join(member.token);
-  await join(other.token);
-  const memberId = (r: Room, id: number) =>
+  const study = await makeSession(owner.token);
+  const path = `/api/sessions/${study.id}`;
+  await joinCode(member.token, study.code);
+  const full = await joinCode(other.token, study.code);
+  const memberId = (r: Session, id: number) =>
     r.members.find((m) => m.userId === id)?.id ?? "";
-  const full = await request<Room>(path, "GET", owner.token);
-  const say = (token: string, expected = 201) =>
-    request<{ id: number }>(
-      `${path}/messages`,
-      "POST",
-      token,
-      { content: "hi" },
-      expected,
-    );
 
   // Only the owner moderates; the owner can't be targeted.
   const target = memberId(full, member.user.id);
@@ -1811,47 +1504,19 @@ void test("moderation: kick, mute and deleting messages are owner powers", async
     409,
   );
 
-  // Muted members can read but not post; unmuting restores it.
+  // Muting is stored on the member (the chat server enforces it); unmuting clears it.
+  const mutedOf = async () =>
+    (await request<Session>(path, "GET", owner.token)).members.find(
+      (m) => m.id === target,
+    )?.mutedUntil;
   await request(`${path}/members/${target}/mute`, "POST", owner.token, {
     minutes: 5,
   });
-  await say(member.token, 403);
-  await request(`${path}/messages`, "GET", member.token);
+  assert.ok(await mutedOf());
   await request(`${path}/members/${target}/mute`, "DELETE", owner.token);
-  const mine = await say(member.token);
+  assert.equal(await mutedOf(), null);
 
-  // Authors and the owner may delete a message; other members may not.
-  await request(
-    `${path}/messages/${mine.id}`,
-    "DELETE",
-    other.token,
-    undefined,
-    403,
-  );
-  await request(
-    `${path}/messages/${mine.id}`,
-    "DELETE",
-    member.token,
-    undefined,
-    204,
-  );
-  const again = await say(member.token);
-  await request(
-    `${path}/messages/${again.id}`,
-    "DELETE",
-    owner.token,
-    undefined,
-    204,
-  );
-  await request(
-    `${path}/messages/${again.id}`,
-    "DELETE",
-    owner.token,
-    undefined,
-    404,
-  );
-
-  // A kicked user is removed but can return with the room code.
+  // A kicked user is removed but can return with the session code.
   await request(
     `${path}/members/${target}`,
     "DELETE",
@@ -1860,7 +1525,7 @@ void test("moderation: kick, mute and deleting messages are owner powers", async
     204,
   );
   await request(path, "GET", member.token, undefined, 403);
-  await join(member.token);
+  await joinCode(member.token, study.code);
 });
 
 void test("health reports pending migrations", async () => {
@@ -1873,44 +1538,6 @@ void test("health reports pending migrations", async () => {
     rmSync(dir, { recursive: true });
   }
   assert.equal((await fetch(`${base}/api/health`)).status, 200);
-});
-
-void test("signups that never verify are deleted, freeing the email", async () => {
-  const stale = await user(false);
-  const kept = await user(false);
-  const changed = await user();
-  await db.user.update({
-    where: { id: changed.user.id },
-    data: { emailVerifiedAt: null },
-  });
-  const later = new Date(clock.getTime() + 31 * 60_000);
-  const saved = clock;
-  clock = later;
-  try {
-    await db.user.update({
-      where: { id: kept.user.id },
-      data: { verifyBy: null },
-    });
-    await cleanupExpiredSessions(ctx);
-  } finally {
-    clock = saved;
-  }
-  const exists = async (id: number) =>
-    (await db.user.count({ where: { id } })) === 1;
-  assert.equal(await exists(stale.user.id), false);
-  assert.equal(await exists(kept.user.id), true);
-  assert.equal(await exists(changed.user.id), true);
-  await request(
-    "/api/auth/signup",
-    "POST",
-    undefined,
-    {
-      username: `${prefix}re${count}`,
-      email: stale.user.email,
-      password: "Correct-password-42",
-    },
-    202,
-  );
 });
 
 void test("guests can't take a registered username", async () => {
@@ -1929,43 +1556,22 @@ void test("guests can't take a registered username", async () => {
   ).then((g) => guestIds.push((g as GuestAuth).guest.id));
 });
 
-void test("messages and members say whether the author is a guest", async () => {
+void test("members say whether they are a guest", async () => {
   const owner = await user();
   const visitor = await guest();
-  const study = await room(owner.token);
-  await request("/api/rooms/join", "POST", visitor.token, {
-    roomCode: study.code,
-  });
-  const say = (token: string) =>
-    request<{ isGuest: boolean }>(
-      `/api/rooms/${study.id}/messages`,
-      "POST",
-      token,
-      { content: "hi" },
-      201,
-    );
-  assert.equal((await say(owner.token)).isGuest, false);
-  assert.equal((await say(visitor.token)).isGuest, true);
-  const view = await request<{
-    members: { userId: number | null; isGuest: boolean }[];
-  }>(`/api/rooms/${study.id}`, "GET", owner.token);
+  const study = await makeSession(owner.token);
+  await joinCode(visitor.token, study.code);
+  const view = await request<Session>(
+    `/api/sessions/${study.id}`,
+    "GET",
+    owner.token,
+  );
   assert.deepEqual(
     view.members.map((m) => [m.userId === null, m.isGuest]).sort(),
     [
       [false, false],
       [true, true],
     ],
-  );
-  // The flag outlives the guest identity.
-  await request("/api/auth/logout", "POST", visitor.token, undefined, 204);
-  const log = await request<{ isGuest: boolean }[]>(
-    `/api/rooms/${study.id}/messages`,
-    "GET",
-    owner.token,
-  );
-  assert.deepEqual(
-    log.map((m) => m.isGuest),
-    [false, true],
   );
 });
 
@@ -2072,91 +1678,6 @@ void test("public profile shows safe fields and the friendship with the viewer",
   assert.equal((await view(a.token, a.user.id)).friendship, null);
 });
 
-void test("analytics: daily focus, streaks, averages and hours", async () => {
-  const account = await user();
-  const day = 86_400_000;
-  // Focus on today, yesterday, two days ago, then a gap and five days ago.
-  for (const ago of [0, 1, 2, 5]) {
-    const joinedAt = new Date(clock.getTime() - ago * day);
-    const session = await db.pomodoroSession.create({
-      data: {
-        phase: "FOCUS",
-        status: "COMPLETED",
-        plannedSeconds: 1500,
-        elapsedSeconds: 1500,
-        startedAt: joinedAt,
-        endedAt: new Date(joinedAt.getTime() + 1_500_000),
-      },
-    });
-    timerIds.push(session.id);
-    await db.sessionParticipant.create({
-      data: {
-        sessionId: session.id,
-        userId: account.user.id,
-        joinedAt,
-        creditedAt: joinedAt,
-        focusedSeconds: 1200 + ago * 60,
-        completedAt: new Date(joinedAt.getTime() + 1_500_000),
-      },
-    });
-  }
-  interface Report {
-    daily: {
-      date: string;
-      focusedSeconds: number;
-      completedSessions: number;
-    }[];
-    windowFocusedSeconds: number;
-    activeDays: number;
-    currentStreak: number;
-    longestStreak: number;
-    averageSessionSeconds: number;
-    bestDay: { date: string; focusedSeconds: number } | null;
-    focusedSecondsByHour: number[];
-  }
-  const report = await request<Report>(
-    "/api/users/me/analytics?days=7",
-    "GET",
-    account.token,
-  );
-  assert.equal(report.daily.length, 7);
-  assert.equal(report.daily.at(-1)?.date, clock.toISOString().slice(0, 10));
-  assert.deepEqual(
-    report.daily.map((d) => d.focusedSeconds),
-    [0, 1500, 0, 0, 1320, 1260, 1200],
-  );
-  assert.equal(report.windowFocusedSeconds, 1500 + 1320 + 1260 + 1200);
-  assert.equal(report.activeDays, 4);
-  assert.equal(report.currentStreak, 3);
-  assert.equal(report.longestStreak, 3);
-  assert.equal(report.averageSessionSeconds, Math.round(5280 / 4));
-  assert.equal(report.bestDay?.focusedSeconds, 1500);
-  assert.equal(report.focusedSecondsByHour.length, 24);
-  assert.equal(
-    report.focusedSecondsByHour.reduce((a, b) => a + b, 0),
-    5280,
-  );
-  const hour = clock.getUTCHours();
-  assert.ok((report.focusedSecondsByHour[hour] ?? 0) >= 1200);
-
-  const none = await request<Report>(
-    "/api/users/me/analytics",
-    "GET",
-    (await user()).token,
-  );
-  assert.equal(none.daily.length, 30);
-  assert.equal(none.currentStreak, 0);
-  assert.equal(none.bestDay, null);
-  for (const days of ["0", "366", "x"])
-    await request(
-      `/api/users/me/analytics?days=${days}`,
-      "GET",
-      account.token,
-      undefined,
-      400,
-    );
-});
-
 void test("admin: list, edit, delete and reset two-factor, never the last admin", async () => {
   const admin = await user();
   const plain = await user();
@@ -2205,7 +1726,7 @@ void test("admin: list, edit, delete and reset two-factor, never the last admin"
   );
   await api("/users/2147483647", "GET", admin.token, undefined, 404);
 
-  const owned = await room(target.token);
+  const owned = await makeSession(target.token);
   // Edit: validation, collisions, and a new email must be verified again.
   const path = `/users/${String(target.user.id)}`;
   await api(path, "PATCH", admin.token, {}, 400);
@@ -2246,10 +1767,10 @@ void test("admin: list, edit, delete and reset two-factor, never the last admin"
   );
   await api(`${path}/2fa`, "DELETE", admin.token, undefined, 404);
 
-  // Delete removes the account and its rooms; not yourself, not twice.
+  // Delete removes the account and its sessions; not yourself, not twice.
   await api(path, "DELETE", admin.token, undefined, 204);
   assert.equal(await db.user.count({ where: { id: target.user.id } }), 0);
-  assert.equal(await db.studyRoom.count({ where: { id: owned.id } }), 0);
+  assert.equal(await db.pomodoroSession.count({ where: { id: owned.id } }), 0);
   await api(path, "DELETE", admin.token, undefined, 404);
   await api(
     `/users/${String(admin.user.id)}`,
@@ -2331,7 +1852,7 @@ void test("admin creates users and sets passwords; moderators only look", async 
       expected,
     );
   const first = await login(fresh.password);
-  await request("/api/rooms", "GET", first.token);
+  await request("/api/sessions", "GET", first.token);
 
   // A new password replaces the old and signs the user out everywhere.
   await request(
@@ -2385,7 +1906,7 @@ void test("admin creates users and sets passwords; moderators only look", async 
   );
 });
 
-void test("moderators moderate rooms they belong to, but not staff or the owner", async () => {
+void test("moderators moderate sessions they belong to, but not staff or the owner", async () => {
   const owner = await user();
   const moderator = await user();
   const outsider = await user();
@@ -2404,24 +1925,13 @@ void test("moderators moderate rooms they belong to, but not staff or the owner"
     where: { id: admin.user.id },
     data: { role: "ADMIN" },
   });
-  const study = await room(owner.token);
-  const path = `/api/rooms/${study.id}`;
+  const study = await makeSession(owner.token);
+  const path = `/api/sessions/${study.id}`;
   for (const who of [moderator, member, peer, admin])
-    await request("/api/rooms/join", "POST", who.token, {
-      roomCode: study.code,
-    });
-  const full = await request<Room>(path, "GET", owner.token);
+    await joinCode(who.token, study.code);
+  const full = await request<Session>(path, "GET", owner.token);
   const memberOf = (id: number) =>
     full.members.find((m) => m.userId === id)?.id ?? "";
-  const say = (token: string) =>
-    request<{ id: number }>(
-      `${path}/messages`,
-      "POST",
-      token,
-      { content: "hi" },
-      201,
-    );
-
   // Not a member: a moderator has no say here, and a plain member neither.
   await request(
     `${path}/members/${memberOf(member.user.id)}/mute`,
@@ -2450,15 +1960,7 @@ void test("moderators moderate rooms they belong to, but not staff or the owner"
     403,
   );
 
-  // As a member, a moderator can delete anyone's message, mute and kick.
-  const note = await say(member.token);
-  await request(
-    `${path}/messages/${note.id}`,
-    "DELETE",
-    moderator.token,
-    undefined,
-    204,
-  );
+  // As a member, a moderator can mute and kick.
   await request(
     `${path}/members/${memberOf(member.user.id)}/mute`,
     "POST",
@@ -2640,10 +2142,10 @@ void test("OAuth: an email the provider doesn't vouch for creates nothing until 
   assert.ok(stored.emailVerifiedAt);
   assert.equal(stored.passwordHash, null);
   assert.equal(stored.oAuthAccounts.length, 1);
-  await request("/api/rooms", "GET", session.token);
+  await request("/api/sessions", "GET", session.token);
 });
 
-void test("OAuth: links a verified email, refuses unverified ones, and replaces squatters", async () => {
+void test("OAuth: links a verified email and refuses unverified ones", async () => {
   // Verified provider email + verified password account: same user.
   const owner = await user();
   const linked = await exchange(
@@ -2658,21 +2160,8 @@ void test("OAuth: links a verified email, refuses unverified ones, and replaces 
   );
   assert.equal(refused.searchParams.get("error"), "email_taken");
 
-  // A fresh unverified signup is replaced by the verified provider login.
-  const squatter = await user(false);
-  const claimed = await exchange(
-    await oauth("google", who("squat", { email: squatter.user.email })),
-  );
-  assert.notEqual(claimed.user.id, squatter.user.id);
-  assert.equal(await db.user.count({ where: { id: squatter.user.id } }), 0);
-  await request("/api/auth/me", "GET", squatter.token, undefined, 401);
-
-  // An unverified account with no deadline may hold data: never touched.
+  // An unverified account may hold data: never taken over.
   const legacy = await user(false);
-  await db.user.update({
-    where: { id: legacy.user.id },
-    data: { verifyBy: null },
-  });
   const kept = await oauth(
     "google",
     who("legacy", { email: legacy.user.email }),
@@ -2773,7 +2262,7 @@ void test("a signup creates no user until the emailed code is entered", async ()
     (await db.user.findUniqueOrThrow({ where: { email } })).emailVerifiedAt,
   );
   assert.equal(await db.pendingSignup.count({ where: { email } }), 0);
-  await request("/api/rooms", "GET", done.token);
+  await request("/api/sessions", "GET", done.token);
   // The token is spent.
   await pendingPost("/verify", { pendingToken, code }, 400);
   // A taken username or email is refused up front.

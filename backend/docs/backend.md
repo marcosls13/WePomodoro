@@ -2,7 +2,9 @@
 
 Express 5 + Prisma 7 + PostgreSQL. This single document covers setup, the HTTP
 API, the data model, timer accounting, and testing. A product “server” is a
-`StudyRoom` in the database.
+`PomodoroSession` in the database: a named space with members and one shared
+timer. Chat, minigames and online status are not stored in the database: they
+run over WebSocket, built separately.
 
 Contents:
 
@@ -11,7 +13,7 @@ Contents:
 3. [API reference](#3-api-reference)
 4. [Data model](#4-data-model)
 5. [How timers and statistics work](#5-how-timers-and-statistics-work)
-6. [Minigames](#6-minigames)
+6. [Chat, minigames and WebSocket](#6-chat-minigames-and-websocket)
 7. [Deletion and lifecycle](#7-deletion-and-lifecycle)
 8. [Migrations](#8-migrations)
 9. [Testing](#9-testing)
@@ -33,8 +35,8 @@ npm run dev         # generates the Prisma client, then starts tsx watch
 `db:deploy` changes tables in the configured database; starting the API never
 applies migrations. For a compiled run use `npm run build` then `npm start`.
 
-To browse the database, run `npx prisma studio --config prisma7.config.ts`
-(opens on http://localhost:51212/).
+To browse the database, run `make studio`
+(opens on http://localhost:5555/).
 Production transport should provide HTTPS so bearer tokens aren't sent in clear.
 
 Environment variables:
@@ -49,8 +51,8 @@ Environment variables:
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` (same for `GITHUB_` and `FORTY_TWO_`) | empty                   | Both set enables that provider; empty disables it                    |
 
 In development (`NODE_ENV` not `production`) the API also serves a test console at
-`http://localhost:3000/dev`: presets for the main endpoints, with the token, room,
-timer and room code IDs filled in from earlier responses. It is not mounted
+`http://localhost:3000/dev`: presets for the main endpoints, with the token, session
+ID and session code filled in from earlier responses. It is not mounted
 in production. The OAuth redirect flow itself can't run there: sign in with a
 provider in a browser, paste the `code` from the redirect URL
 (`/auth/oauth?code=…`) into the `oauthCode` variable, and send "Swap the
@@ -109,8 +111,9 @@ Authorization: Bearer <token>
   the current password) don't work for them until they add a password with the
   forgot-password flow.
 - Registered logout revokes the current token and leaves timers running. Guest
-  logout cancels solo timers and removes the temporary identity and its
-  participation; registered users' shared history is preserved.
+  logout removes the temporary identity and its memberships (a guest keeps no
+  stats); sessions it owned pass to another member, and a session left empty is
+  deleted.
 - A worker finalizes elapsed timers about once per second and removes expired
   auth/guest identities every minute.
 
@@ -136,8 +139,8 @@ are JSON, except 204 which has no body. UUID placeholders need real IDs; user ID
 are integers.
 
 Access labels: **Public** = no token; **Authenticated** = registered user or
-guest; **Registered** = registered user; **Member** = room member;
-**Owner** = room owner; **Owner/mod** = owner, or a moderator/admin who is a member (see 3.8); **Timer owner** = solo participant or shared room owner.
+guest; **Registered** = registered user; **Member** = session member;
+**Owner** = the member flagged `isOwner`; **Owner/mod** = owner, or a moderator/admin who is a member (see 3.8).
 
 ### 3.1 Service and authentication
 
@@ -233,15 +236,13 @@ Which user the sign-in resolves to:
   after the first link), signs in as its user.
 - Otherwise, if the provider **vouches for the email** (Google `email_verified`,
   GitHub's primary verified email): an existing account with that email that is
-  verified gets the provider linked; an existing **fresh unverified signup**
-  (`verifyBy` set) is deleted and replaced, so nobody can pre-register a victim's
-  address and share the account; an unverified account with no deadline (older
-  accounts) is left alone and the redirect carries `error=email_taken`. With no
+  verified gets the provider linked; an existing **unverified account** is never
+  taken over (the redirect carries `error=email_taken`). With no
   existing account a new one is created, already verified.
 - If the provider **doesn't vouch** for the email (42, or GitHub without a
   verified email): the email is never linked to an existing account
   (`error=email_taken`). A new account is created **unverified**, like a password
-  signup: `verifyBy` is set, the six-digit code is emailed, and the token is
+  signup: the six-digit code is emailed, and the token is
   limited to the verification routes until the code is entered.
 - A new username comes from the provider's login (lowercased, other characters
   replaced by `_`); on a clash a random four-character suffix is added.
@@ -273,17 +274,14 @@ frontend then asks for it and calls `POST /api/auth/verify-email`. Verification
 is **enforced**: until `emailVerifiedAt` is set, a registered account's token only
 works on `GET /auth/me`, `POST /auth/logout`, `POST /auth/verify-email`,
 `POST /auth/verify-email/resend`, `POST /auth/verify-email/cancel`, and `GET`/`PATCH`/`DELETE /users/me` (so a
-mistyped address can be fixed or the account deleted). `POST /auth/verify-email/cancel` deletes a pending signup (unverified with a
-`verifyBy` deadline) without a password; verified accounts get 409. Everything else answers
+mistyped address can be fixed or the account deleted). `POST /auth/verify-email/cancel` deletes a pending signup without a password; verified accounts get 409. Everything else answers
 403 `Verify your email address first`. Guests have no email and are not affected.
 Changing the email through `PATCH /api/users/me` clears `emailVerifiedAt`, emails
-a code to the new address and puts the account back in this state. Password signup replaces a pending signup on the same email (unverified with a
-`verifyBy` deadline), so the address's real owner is not locked out; verified
-and older accounts are never replaced. The sign-in and reset emails also say to
-reset the password at `FRONTEND_URL/auth/reset-password` if the reader didn't ask. A signup that
-isn't verified within 10 minutes (`User.verifyBy`) is deleted by the minute-by-minute
-cleanup, so nobody can hold an address or username they don't own. Accounts that
-only changed their email, and older accounts, have no deadline and are kept.
+a code to the new address and puts the account back in this state. Password signup replaces a pending signup on the same email, so the address's
+real owner is not locked out; existing accounts are never replaced. The sign-in and reset emails also say to
+reset the password at `FRONTEND_URL/auth/reset-password` if the reader didn't ask. A signup that isn't verified stays a `PendingSignup` row, not a user, and is removed by the
+minute-by-minute cleanup when its code expires, so nobody can hold an address or
+username they don't own.
 `/auth/me` and the profile endpoints include `emailVerifiedAt`.
 
 ### Password recovery flow
@@ -316,15 +314,13 @@ would collide with another account).
 
 ### 3.2 Users and statistics
 
-| Method | Endpoint                       | Access        | Body / query                                    | Response                                       |
-| ------ | ------------------------------ | ------------- | ----------------------------------------------- | ---------------------------------------------- |
-| GET    | `/api/users`                   | Authenticated | Optional `skip`, `take`                         | 200 array of `{ id, username }`; no emails     |
-| GET    | `/api/users/me`                | Registered    | None                                            | 200 own profile                                |
-| PATCH  | `/api/users/me`                | Registered    | At least one of `username`, `email`, `password` | 200 updated profile                            |
-| DELETE | `/api/users/me`                | Registered    | `{ "password" }`                                | 204: delete account and its owned rooms        |
-| GET    | `/api/users/me/stats`          | Registered    | None                                            | 200 study totals and game aggregates           |
-| GET    | `/api/users/me/study-sessions` | Registered    | Optional `skip`, `take`                         | 200 attendance array, each including `session` |
-| GET    | `/api/users/me/game-results`   | Registered    | Optional `skip`, `take`                         | 200 result array, each including `game`        |
+| Method | Endpoint              | Access        | Body / query                                    | Response                                       |
+| ------ | --------------------- | ------------- | ----------------------------------------------- | ---------------------------------------------- |
+| GET    | `/api/users`          | Authenticated | Optional `skip`, `take`                         | 200 array of `{ id, username }`; no emails     |
+| GET    | `/api/users/me`       | Registered    | None                                            | 200 own profile                                |
+| PATCH  | `/api/users/me`       | Registered    | At least one of `username`, `email`, `password` | 200 updated profile                            |
+| DELETE | `/api/users/me`       | Registered    | `{ "password" }`                                | 204: delete account and its memberships        |
+| GET    | `/api/users/me/stats` | Registered    | None                                            | 200 `{ focusedSeconds, wins, losses, played }` |
 
 Profiles contain `id`, `username`, `email`, `emailVerifiedAt`, `role`, `createdAt` and `updatedAt`. Password
 hashes, token hashes and other users' emails are never returned. Personal
@@ -342,31 +338,28 @@ current token valid.
 }
 ```
 
-Deleting an account requires its password and removes its owned rooms,
-authentication, memberships and personal records. Other users' shared study
-history survives, with the deleted room reference set to null.
+Deleting an account requires its password and removes authentication,
+memberships, friendships and personal stats. Sessions the user owned pass to the
+longest-standing remaining member (registered users first); a session left with
+no members is deleted.
 
-Statistics response:
+Statistics response (`played` is `wins + losses`, all games together):
 
 ```json
-{
-  "focusedSeconds": 1800,
-  "completedFocusSessions": 1,
-  "games": [
-    { "gameId": 1, "gamesPlayed": 2, "bestScore": 25, "playedSeconds": 70 }
-  ]
-}
+{ "focusedSeconds": 1800, "wins": 3, "losses": 2, "played": 5 }
 ```
 
-### 3.2a Avatars, public profiles and analytics
+`focusedSeconds` includes focus time in a timer that is running right now.
+Guests have no stats.
 
-| Method | Endpoint                  | Access        | Body / query                                        | Response                                                 |
-| ------ | ------------------------- | ------------- | --------------------------------------------------- | -------------------------------------------------------- |
-| PUT    | `/api/users/me/avatar`    | Registered    | Raw image, `Content-Type` PNG/JPEG/WebP, max 512 KB | 204; replaces the old picture                            |
-| DELETE | `/api/users/me/avatar`    | Registered    | None                                                | 204: back to the default                                 |
-| GET    | `/api/users/:id/avatar`   | **Public**    | None                                                | The image; a neutral default SVG if none or no such user |
-| GET    | `/api/users/:id`          | Authenticated | None                                                | 200 public profile; 404 if unknown                       |
-| GET    | `/api/users/me/analytics` | Registered    | Optional `days` (1–365, default 30)                 | 200 insights, see below                                  |
+### 3.2a Avatars and public profiles
+
+| Method | Endpoint                | Access        | Body / query                                        | Response                                                 |
+| ------ | ----------------------- | ------------- | --------------------------------------------------- | -------------------------------------------------------- |
+| PUT    | `/api/users/me/avatar`  | Registered    | Raw image, `Content-Type` PNG/JPEG/WebP, max 512 KB | 204; replaces the old picture                            |
+| DELETE | `/api/users/me/avatar`  | Registered    | None                                                | 204: back to the default                                 |
+| GET    | `/api/users/:id/avatar` | **Public**    | None                                                | The image; a neutral default SVG if none or no such user |
+| GET    | `/api/users/:id`        | Authenticated | None                                                | 200 public profile; 404 if unknown                       |
 
 **Avatar upload.** Send the file itself as the body, not JSON:
 `fetch(url, { method: "PUT", headers: { Authorization, "Content-Type": file.type }, body: file })`.
@@ -377,33 +370,11 @@ live in the `UserAvatar` table, so no file volume is needed. Use
 `Cross-Origin-Resource-Policy: cross-origin` so the frontend origin can show it.
 It is cached for 60 s, so add `?v=<timestamp>` after an upload to see it at once.
 
-**Public profile.** `{ id, username, createdAt, focusedSeconds,
-completedFocusSessions, friendship }` — never the email. `friendship` is `null`,
+**Public profile.** `{ id, username, createdAt, focusedSeconds, wins, losses,
+friendship }` — never the email. `friendship` is `null`,
 or `{ id, status, direction }` (`direction` is `outgoing` if you asked,
 `incoming` if they did) so the page can offer add, accept or remove; it is null
-for yourself and for guests. Friends' online state stays on `GET /api/friends`.
-
-**Analytics** (UTC days; a session counts on the day and hour it was joined):
-
-```json
-{
-  "days": 30,
-  "daily": [
-    { "date": "2026-10-13", "focusedSeconds": 1500, "completedSessions": 1 }
-  ],
-  "windowFocusedSeconds": 4500,
-  "activeDays": 6,
-  "currentStreak": 3,
-  "longestStreak": 5,
-  "averageSessionSeconds": 1320,
-  "bestDay": { "date": "2026-10-09", "focusedSeconds": 3000 },
-  "focusedSecondsByHour": [0, 0, "… 24 values, hour 0–23 UTC"]
-}
-```
-
-`daily` has one entry per day of the window, zero-filled, oldest first.
-Streaks and `bestDay` cover all history; a streak that ended yesterday is still
-current. A session in progress is counted once its time is settled.
+for yourself and for guests. Friends' sessions stay on `GET /api/friends`.
 
 ### 3.2b Friends
 
@@ -417,127 +388,111 @@ automatically if they had already asked you.
 | POST   | `/api/friends/:id/accept` | None             | 204; only the addressee                   |
 | DELETE | `/api/friends/:id`        | None             | 204: decline, cancel or unfriend          |
 
-Presence is always visible to friends. The client sends a heartbeat every
-~30 s (`PUT /api/presence`, `{ "roomId": "<uuid>" | null }`, 204; the room must be
-one you belong to). A friend counts as online for 60 s after the last heartbeat,
-and `GET /api/friends` adds `presence: { online, room: { id, name, joined } | null }`
-to each friend; `joined` says whether you are already a member of that room.
+`GET /api/friends` adds `presence: { session }` to each friend, where `session`
+is `{ id, name, joined } | undefined`: the friend's most recent open shared
+session (solo timers have no code and are never shown); `joined` says whether
+you are already a member. "Online" is not stored: the WebSocket layer, built
+separately, tells clients who is connected.
 
-If a friend is in a server you haven't joined, ask them for its room code and
-join with `POST /api/rooms/join`. Friend direct messages are not built: they
-wait for a push channel (SSE/WebSocket). Server chat has no push channel yet: poll `GET /api/rooms/:roomId/messages?after=<last id>`.
+If a friend is in a session you haven't joined, ask them for its code and join
+with `POST /api/sessions/join`. Friend direct messages are not built.
 
-### 3.3 Study rooms
+### 3.3 Sessions
 
-Only registered users create and own rooms; guests join with the room's
-shared code. Room details (including the code) and member lists are visible only to
-members. The room listing contains only the caller's open rooms.
+A session is a space with members and **one shared timer**. Anyone, guests
+included, can create or join one; guests keep no stats. Details (including the
+code) and member lists are visible only to members. The listing contains only
+the caller's open sessions.
 
-| Method | Endpoint                                    | Access             | JSON body                           | Response                                                 |
-| ------ | ------------------------------------------- | ------------------ | ----------------------------------- | -------------------------------------------------------- |
-| POST   | `/api/rooms`                                | Registered         | `{ "name" }` plus optional settings | 201 room with members and current timer                  |
-| GET    | `/api/rooms`                                | Authenticated      | None                                | 200 caller's active open rooms, up to 100                |
-| POST   | `/api/rooms/join`                           | Authenticated      | `{ "roomCode" }`                    | 200 joined room; no-op if already a member               |
-| GET    | `/api/rooms/:roomId`                        | Member             | None                                | 200 room, safe member names, current timer               |
-| PATCH  | `/api/rooms/:roomId`                        | Owner              | At least one setting                | 200 updated room                                         |
-| POST   | `/api/rooms/:roomId/leave`                  | Member             | None                                | 204: leave the server; the room code is needed to return |
-| POST   | `/api/rooms/:roomId/close`                  | Owner              | None                                | 200 closed room; live timer cancelled                    |
-| DELETE | `/api/rooms/:roomId`                        | Owner              | None                                | 204 server deleted for good; members keep study history  |
-| POST   | `/api/rooms/:roomId/code`                   | Owner              | None                                | 200 `{ roomCode }`: replaces the room code               |
-| GET    | `/api/rooms/:roomId/messages`               | Member             | `?after=<id>&limit=50`              | 200 chat messages, oldest first                          |
-| POST   | `/api/rooms/:roomId/messages`               | Member             | `{ "content" }` (≤ 2000 chars)      | 201 message; 10 per 10 s per sender                      |
-| POST   | `/api/rooms/:roomId/owner`                  | Owner              | `{ "userId": 2 }`                   | 200 room with transferred ownership                      |
-| DELETE | `/api/rooms/:roomId/members/:memberId`      | Owner/mod          | None                                | 204: kick; they can rejoin with the room code            |
-| POST   | `/api/rooms/:roomId/members/:memberId/mute` | Owner/mod          | `{ "minutes": 1–10080 }`            | 200 `{ mutedUntil }`; can read chat, not post            |
-| DELETE | `/api/rooms/:roomId/members/:memberId/mute` | Owner/mod          | None                                | 200 `{ mutedUntil: null }`                               |
-| DELETE | `/api/rooms/:roomId/messages/:messageId`    | Author, owner, mod | None                                | 204: delete a chat message                               |
-| POST   | `/api/rooms/:roomId/timers`                 | Owner              | None                                | 201 next shared timer                                    |
+| Method | Endpoint                                          | Access        | JSON body                                        | Response                                                     |
+| ------ | ------------------------------------------------- | ------------- | ------------------------------------------------ | ------------------------------------------------------------ |
+| POST   | `/api/sessions`                                   | Authenticated | `{ "name" }`, optional settings, optional `solo` | 201 session with members and timer; the creator is the owner |
+| GET    | `/api/sessions`                                   | Authenticated | None                                             | 200 caller's open sessions, up to 100                        |
+| POST   | `/api/sessions/join`                              | Authenticated | `{ "code" }`                                     | 200 joined session; no-op if already a member                |
+| GET    | `/api/sessions/:sessionId`                        | Member        | None                                             | 200 session, safe member names, timer                        |
+| PATCH  | `/api/sessions/:sessionId`                        | Owner         | At least one setting                             | 200 updated session; 409 unless the timer is idle            |
+| POST   | `/api/sessions/:sessionId/leave`                  | Member        | None                                             | 204: leave; the code is needed to return                     |
+| DELETE | `/api/sessions/:sessionId`                        | Owner         | None                                             | 204 session deleted for good; members keep their stats       |
+| POST   | `/api/sessions/:sessionId/code`                   | Owner         | None                                             | 200 `{ code }`: replaces the session code                    |
+| POST   | `/api/sessions/:sessionId/owner`                  | Owner         | `{ "memberId" }`                                 | 200 session with transferred ownership                       |
+| DELETE | `/api/sessions/:sessionId/members/:memberId`      | Owner/mod     | None                                             | 204: kick; they can rejoin with the code                     |
+| POST   | `/api/sessions/:sessionId/members/:memberId/mute` | Owner/mod     | `{ "minutes": 1–10080 }`                         | 200 `{ mutedUntil }`; for the chat layer to enforce          |
+| DELETE | `/api/sessions/:sessionId/members/:memberId/mute` | Owner/mod     | None                                             | 200 `{ mutedUntil: null }`                                   |
 
-Room settings (creation and update):
+Session settings (creation and update):
 
-| Field                   | Default              | Allowed value                  |
-| ----------------------- | -------------------- | ------------------------------ |
-| `name`                  | Required on creation | 1–80 characters after trimming |
-| `focusSeconds`          | 1500                 | Integer, 1–14400               |
-| `shortBreakSeconds`     | 300                  | Integer, 1–14400               |
-| `longBreakSeconds`      | 900                  | Integer, 1–14400               |
-| `cyclesBeforeLongBreak` | 4                    | Integer, 1–12                  |
+| Field          | Default              | Allowed value                  |
+| -------------- | -------------------- | ------------------------------ |
+| `name`         | Required on creation | 1–80 characters after trimming |
+| `focusSeconds` | 1500                 | Integer, 1–14400               |
+| `breakSeconds` | 300                  | Integer, 1–14400               |
 
-- Membership is permanent: closing the app, disconnecting or leaving a timer never
-  changes it, and a registered member reopens their rooms from `GET /api/rooms`
-  without a code. Only leaving the server or being kicked deletes the row, and
-  then the room code is needed again. A first join during a live timer also joins that
-  interval, unless the caller already participates in another live timer.
-  Joining again as an existing member is a no-op.
-- A room timer starts with all members. If any of them has another live
-  timer, the start returns 409 until they leave or cancel it. This stops
-  overlapping sessions from inflating study totals. Expired guests aren't added
-  to new timers or shown as members.
-- Owners must transfer ownership or close the room before leaving. The new owner
-  must be a registered member.
-- Only the owner can delete a server, open or closed. It cancels the live timer
-  (crediting partial time) and then removes the server with its memberships,
-  chat and messages. Past timers stay with a null room, so
-  everyone's study totals are unchanged. This cannot be undone; closing is the
-  reversible-looking alternative that keeps the data.
-- Every room has one shared code (`StudyRoom.code`, 8 random characters, shown
-  only to members). Kicking is not permanent: the kicked person can rejoin with
-  the current code, so the owner replaces it with `POST /rooms/:roomId/code`, which
-  invalidates the old one at once.
-- Closed rooms reject joining, updates, transfers and new timers.
-- Settings changes affect future intervals, never the current one.
+- **Solo timers** are sessions created with `"solo": true`: they have no code
+  (`code` is null), so nobody can join them, and friends never see them.
+- Membership means "is in this session's timer". Only leaving, being kicked or
+  an expired guest identity deletes the row, and then the code is needed again.
+  Joining again as an existing member is a no-op. Joining while the timer is
+  running also joins the live interval, unless the caller is in another live timer.
+- The owner is the member with `isOwner` (a guest can be one). The owner may
+  leave: the longest-standing remaining member takes over (registered users
+  first), and a session with no members is deleted. The same rule runs when an
+  owner's account is deleted or their guest logs out or expires.
+  `POST …/owner` hands ownership to any member.
+- Deleting a session cancels the live timer first, crediting the focus time
+  earned so far, and then removes the session with its memberships.
+- Every shared session has one code (`PomodoroSession.code`, 8 random
+  characters, shown only to members). Kicking is not permanent: the kicked person
+  can rejoin with the current code, so the owner replaces it with
+  `POST /sessions/:sessionId/code`, which invalidates the old one at once.
+- Only the focus and break lengths can be edited, and only between phases: a
+  `PATCH` while the timer is running or paused returns 409 ("Settings can only
+  change between phases"). The new length applies to the next phase at once.
+- Chat and minigames are only offered during a `BREAK`. That is enforced by the
+  WebSocket layer, which can read `phase` and `timerStatus`; a minigame cut off
+  by the end of the break is never recorded (`recordMatch` is only called for a
+  finished game).
+- **WebSocket:** when a client disconnects or leaves the page, the WebSocket layer
+  should call `leaveSession` (the same function as `POST …/leave`): it credits the
+  focus time earned so far and removes the membership.
 
-### 3.4 Pomodoro timers
+### 3.4 Pomodoro timer
 
-| Method | Endpoint                        | Access                     | JSON body                                  | Response                                        |
-| ------ | ------------------------------- | -------------------------- | ------------------------------------------ | ----------------------------------------------- |
-| POST   | `/api/timers`                   | Authenticated              | `{}` or optional `phase`, `plannedSeconds` | 201 new solo timer                              |
-| GET    | `/api/timers`                   | Authenticated              | None                                       | 200 caller's live timers, up to 100             |
-| GET    | `/api/timers/:timerId`          | Solo participant or Member | None                                       | 200 server-derived countdown                    |
-| POST   | `/api/timers/:timerId/pause`    | Timer owner                | None                                       | 200 paused timer                                |
-| POST   | `/api/timers/:timerId/resume`   | Timer owner                | None                                       | 200 resumed timer                               |
-| POST   | `/api/timers/:timerId/complete` | Timer owner                | None                                       | 200 completed timer, after planned time elapses |
-| POST   | `/api/timers/:timerId/cancel`   | Timer owner                | None                                       | 200 cancelled timer, preserving partial focus   |
-| POST   | `/api/timers/:timerId/join`     | Member                     | None                                       | 200 shared timer after joining/rejoining        |
-| POST   | `/api/timers/:timerId/leave`    | Member                     | None                                       | 200 shared timer after leaving the interval     |
+Each session has one shared timer, driven by the owner:
 
-`POST /api/timers` requires a JSON object; send `{}` for defaults.
+| Method | Endpoint                                | Access | JSON body | Response                                    |
+| ------ | --------------------------------------- | ------ | --------- | ------------------------------------------- |
+| POST   | `/api/sessions/:sessionId/timer/start`  | Owner  | None      | 200 timer running the current phase         |
+| POST   | `/api/sessions/:sessionId/timer/pause`  | Owner  | None      | 200 paused timer; focus time credited       |
+| POST   | `/api/sessions/:sessionId/timer/resume` | Owner  | None      | 200 resumed timer                           |
+| POST   | `/api/sessions/:sessionId/timer/cancel` | Owner  | None      | 200 timer back to idle; focus time credited |
 
-```json
-{ "phase": "FOCUS", "plannedSeconds": 1500 }
-```
+The response has the session's timer fields (`phase`, `timerStatus`,
+`plannedSeconds`, `elapsedSeconds`, `resumedAt`, …) plus `remainingSeconds` and
+`serverTime`. `phase` is `FOCUS` or `BREAK`; `plannedSeconds` is the length of the current
+phase, derived from `phase` and the settings; `timerStatus` is
+`IDLE`, `RUNNING` or `PAUSED`. `GET /api/sessions/:sessionId` returns the same
+fields, so there are no separate timer reads.
 
-`phase` is `FOCUS` (default, 1500 s), `SHORT_BREAK` (300 s) or `LONG_BREAK`
-(900 s). Custom `plannedSeconds` accepts integers 1–14400.
+- The session picks its next phase itself: focus and break alternate. When a phase runs out the
+  server credits everyone, goes back to `IDLE` and sets up the next phase;
+  nothing auto-starts. Cancelling ends the current phase early and keeps the
+  phase (it is not counted as a finished round).
+- One person can be in at most one live (running or paused) timer. A start that
+  would put a member in two returns 409, as do pausing a timer that isn't running,
+  resuming one that isn't paused, or starting one that is already live.
+- Timer actions are also what a WebSocket layer would push to members; the
+  database holds timestamps only, so clients can interpolate the countdown from
+  `serverTime`.
 
-Timer responses contain the stored fields plus `elapsedSeconds`,
-`remainingSeconds` and `serverTime`. Dates are ISO timestamps. Statuses are
-`ACTIVE`, `PAUSED`, `COMPLETED` or `CANCELLED`.
+### 3.5 Chat and minigames
 
-- A shared room chooses its next phase itself: focus, short break, focus, and a
-  long break after the configured cycle count. The owner requests each interval;
-  nothing auto-starts. Cancelling a phase does not count as completion.
-- One person can be in at most one live timer, and each room has at most one.
-  A conflicting start/join returns 409. Pausing an inactive timer, resuming a
-  non-paused one, completing early, or cancelling a completed timer also returns 409.
-- Interval join/leave applies to shared timers; leaving keeps room membership.
-  Cancel a solo timer to stop it.
-- There is no WebSocket layer: the frontend can poll the room/timer endpoint
-  about once per second and interpolate the countdown from the server response.
-
-### 3.5 Minigames
-
-| Method | Endpoint                  | Access        | JSON body                          | Response                                          |
-| ------ | ------------------------- | ------------- | ---------------------------------- | ------------------------------------------------- |
-| GET    | `/api/games`              | Authenticated | None                               | 200 up to 100 enabled `{ id, key, name }` entries |
-| POST   | `/api/games/:key/results` | Registered    | Game-specific verification payload | 201 server-verified `GameResult`                  |
-
-See [Minigames](#6-minigames) for how to add a game.
+There are no chat or minigame endpoints. Chat messages and live game state live
+in memory in the WebSocket server (built by a teammate), so nothing is kept when
+someone leaves or reconnects. See [section 6](#6-chat-minigames-and-websocket).
 
 ### 3.6 Pagination and errors
 
-`/api/users`, `/api/users/me/study-sessions` and `/api/users/me/game-results`
-accept `?skip=0&take=20`. `skip` is an integer 0–1000000, `take` an integer
+`/api/users` accepts `?skip=0&take=20`. `skip` is an integer 0–1000000, `take` an integer
 1–100. Invalid, negative, fractional or repeated values return 400. Responses are
 plain arrays with no total-count envelope.
 
@@ -548,12 +503,11 @@ Errors are JSON, for example `{ "error": "A valid Bearer token is required" }`.
 | 400    | Invalid JSON, body, pagination, UUID or action input                                    |
 | 401    | Missing/invalid/expired token, failed login, or incorrect password                      |
 | 403    | Insufficient permissions, guest using a registered endpoint, or rejected browser origin |
-| 404    | Missing record, code, game or endpoint; inaccessible solo timers also return 404        |
-| 409    | Duplicate value, closed room, timer conflict, invalid transition or concurrent change   |
+| 404    | Missing record, code or endpoint; sessions you are not in return 403 or 404             |
+| 409    | Duplicate value, timer conflict, invalid transition or concurrent change                |
 | 413    | JSON body exceeds 16 KB                                                                 |
 | 429    | Authentication attempt limit exceeded                                                   |
 | 500    | Unexpected server error; internal details are not returned                              |
-| 501    | Game result verifier has not been implemented                                           |
 
 ### 3.7 Examples
 
@@ -562,25 +516,26 @@ curl -X POST http://localhost:3000/api/auth/signup \
   -H 'Content-Type: application/json' \
   -d '{"email":"learner@example.com","username":"learner","password":"a-long-local-password"}'
 
-curl -X POST http://localhost:3000/api/rooms \
+curl -X POST http://localhost:3000/api/sessions \
   -H 'Authorization: Bearer YOUR_TOKEN' \
   -H 'Content-Type: application/json' \
   -d '{"name":"Study group"}'
 ```
 
-The room details contain its `code`.
-Friends authenticate (or enter as guests), then call `/api/rooms/join` with it. The owner calls `/api/rooms/ROOM_UUID/timers` to start a
-shared interval. Solo callers use `/api/timers` instead.
+The session details contain its `code`. Friends authenticate (or enter as
+guests), then call `/api/sessions/join` with it. The owner calls
+`/api/sessions/SESSION_UUID/timer/start` to start the shared timer. For a private
+timer, create the session with `{"name":"Solo","solo":true}`.
 
 ### 3.8 Administration and roles
 
 Site-wide roles (`User.role`, shown in `/auth/me`):
 
-| Role        | Can do                                                                                                                                                                                                                                                       |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `USER`      | Everything normal; moderates only rooms they own.                                                                                                                                                                                                            |
-| `MODERATOR` | In rooms they are a **member** of: what an owner can for chat and people (delete any message, mute, kick), except against the owner or other staff. Plus a read-only list of users **without** emails or 2FA state. Not room settings, ownership or closing. |
-| `ADMIN`     | Everything a moderator can, plus full user management below. Like anyone, they act in a room only as a member; they can't read private rooms they haven't joined.                                                                                            |
+| Role        | Can do                                                                                                                                                                                                                                |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `USER`      | Everything normal; moderates only sessions they own.                                                                                                                                                                                  |
+| `MODERATOR` | In sessions they are a **member** of: what an owner can for people (mute, kick), except against the owner or other staff. Plus a read-only list of users **without** emails or 2FA state. Not session settings, ownership or closing. |
+| `ADMIN`     | Everything a moderator can, plus full user management below. Like anyone, they act in a session only as a member; they can't read private sessions they haven't joined.                                                               |
 
 Nobody is admin by default. Make the first one on the server, then promote others
 through the API:
@@ -589,19 +544,19 @@ through the API:
 npm run users:role -- alice admin    # or: moderator | user
 ```
 
-Moderators join rooms the normal way (the room code), so private chats stay private.
+Moderators join sessions the normal way (the code), so private sessions stay private.
 
 All `/api/admin/*` routes need a verified staff account; `GET`s are open to
 moderators (reduced view), everything else is admin-only (403 otherwise).
 
-| Method | Endpoint                   | Body / query                                            | Response                                                                 |
-| ------ | -------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------ |
-| GET    | `/api/admin/users`         | `skip`, `take`, optional `q` (name or email)            | 200 users: admins get `email`, `emailVerifiedAt`, `twoFactorEnabled` too |
-| GET    | `/api/admin/users/:id`     | None                                                    | 200 one user (same views); 404                                           |
-| POST   | `/api/admin/users`         | `{ username, email, password, role? }`                  | 201 user; the email counts as verified; 409 if taken                     |
-| PATCH  | `/api/admin/users/:id`     | At least one of `username`, `email`, `password`, `role` | 200 updated user                                                         |
-| DELETE | `/api/admin/users/:id`     | None                                                    | 204: deletes the account and the rooms it owns; 409 for yourself         |
-| DELETE | `/api/admin/users/:id/2fa` | None                                                    | 204: switches two-factor off (lost email access); 404 if not on          |
+| Method | Endpoint                   | Body / query                                            | Response                                                                       |
+| ------ | -------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| GET    | `/api/admin/users`         | `skip`, `take`, optional `q` (name or email)            | 200 users: admins get `email`, `emailVerifiedAt`, `twoFactorEnabled` too       |
+| GET    | `/api/admin/users/:id`     | None                                                    | 200 one user (same views); 404                                                 |
+| POST   | `/api/admin/users`         | `{ username, email, password, role? }`                  | 201 user; the email counts as verified; 409 if taken                           |
+| PATCH  | `/api/admin/users/:id`     | At least one of `username`, `email`, `password`, `role` | 200 updated user                                                               |
+| DELETE | `/api/admin/users/:id`     | None                                                    | 204: deletes the account; its sessions pass to other members; 409 for yourself |
+| DELETE | `/api/admin/users/:id/2fa` | None                                                    | 204: switches two-factor off (lost email access); 404 if not on                |
 
 Passwords can be **set** but never read: only a one-way scrypt hash is stored.
 Setting one (on create or `PATCH`) signs that user out of every session and
@@ -613,54 +568,43 @@ demoting the last administrator returns 409.
 
 ## 4. Data model
 
-Twenty PostgreSQL tables. `LoginChallenge` backs two-factor login; `OAuthAccount`
-and `OAuthCode` back OAuth sign-in.
+Thirteen PostgreSQL tables. `LoginChallenge` backs two-factor login;
+`OAuthAccount` and `OAuthCode` back OAuth sign-in; `PendingSignup` holds a signup
+until its emailed code is entered. Chat, presence and minigames have no tables.
 
-| Table                | Purpose                                                                | Main relationships                                                           |
-| -------------------- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `User`               | Registered profile and optional password hash                          | Owns rooms; has login sessions, memberships, study history, and game results |
-| `AuthSession`        | A registered user's login, identified by a hashed token with an expiry | Belongs to one user                                                          |
-| `UserAvatar`         | Profile picture bytes (PNG/JPEG/WebP, max 512 KB)                      | One per user; deleted with the account                                       |
-| `GuestSession`       | Temporary guest identity, display name, hashed token and expiry        | Can join rooms and study sessions; cannot own rooms or save game results     |
-| `StudyRoom`          | Shared space with Pomodoro settings                                    | Owned by a registered user; has memberships and timer sessions               |
-| `RoomMember`         | Who belongs to a room until they leave or are kicked                   | One room and exactly one user OR guest                                       |
-| `PomodoroSession`    | One focus or break interval, solo or shared                            | Optional room; has participant records                                       |
-| `SessionParticipant` | Individual attendance and actual focus time for an interval            | One session and exactly one user OR guest                                    |
-| `MiniGame`           | Catalogue of games with a stable key such as `memory`                  | Has game results                                                             |
-| `GameResult`         | One registered user's verified game attempt                            | A user and a game                                                            |
-| `EmailToken`         | One-time email codes: verification, password reset, 2FA on/off         | Belongs to one user                                                          |
-| `LoginChallenge`     | Short-lived step between password and session; holds the code's hash   | Belongs to one user                                                          |
-| `OAuthAccount`       | A Google, GitHub or 42 identity linked to a user                       | Belongs to one user; unique per provider identity and per user and provider  |
-| `OAuthCode`          | One-time code (about a minute) swapped for a session after OAuth       | Belongs to one user                                                          |
-| `Friendship`         | A friend request between two registered users, pending or accepted     | Two users                                                                    |
-| `Message`            | A chat message in a server                                             | One room; author is a user or guest, cleared if they are deleted             |
-| `Presence`           | A registered user's last heartbeat and the server they are in          | One user, optional room                                                      |
+| Table             | Purpose                                                                | Main relationships                                                          |
+| ----------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `User`            | Registered profile and optional password hash                          | Has login sessions, memberships, friendships and one `UserStat`             |
+| `AuthSession`     | A registered user's login, identified by a hashed token with an expiry | Belongs to one user                                                         |
+| `UserAvatar`      | Profile picture bytes (PNG/JPEG/WebP, max 512 KB)                      | One per user; deleted with the account                                      |
+| `GuestSession`    | Temporary guest identity, display name, hashed token and expiry        | Can own, create and join sessions; keeps no stats                           |
+| `PomodoroSession` | A study session: settings, join code and the one shared timer          | Has members; solo timers are sessions with a null `code`                    |
+| `SessionMember`   | Who is in a session (and so in its timer), owner flag, focus progress  | One session and exactly one user OR guest                                   |
+| `UserStat`        | Lifetime study seconds, minigame wins and losses of a registered user  | One per user; deleted with the account                                      |
+| `EmailToken`      | One-time email codes: verification, password reset, 2FA on/off         | Belongs to one user                                                         |
+| `LoginChallenge`  | Short-lived step between password and session; holds the code's hash   | Belongs to one user                                                         |
+| `OAuthAccount`    | A Google, GitHub or 42 identity linked to a user                       | Belongs to one user; unique per provider identity and per user and provider |
+| `OAuthCode`       | One-time code (about a minute) swapped for a session after OAuth       | Belongs to one user                                                         |
+| `Friendship`      | A friend request between two registered users, pending or accepted     | Two users                                                                   |
+| `PendingSignup`   | A signup waiting for its emailed code; becomes a `User` when proven    | None                                                                        |
 
 ```mermaid
 erDiagram
   User ||--o{ AuthSession : authenticates
   User ||--o{ OAuthAccount : signs_in_with
-  User ||--o{ StudyRoom : owns
-  StudyRoom ||--o{ RoomMember : includes
-  StudyRoom ||--o{ Message : holds
+  User ||--o| UserStat : totals
   User ||--o{ Friendship : requests
-  User ||--o| Presence : heartbeats
-  User o|--o{ RoomMember : joins
-  GuestSession o|--o{ RoomMember : joins
-  StudyRoom o|--o{ PomodoroSession : hosts
-  PomodoroSession ||--o{ SessionParticipant : records
-  User o|--o{ SessionParticipant : studies
-  GuestSession o|--o{ SessionParticipant : studies
-  User ||--o{ GameResult : plays
-  MiniGame ||--o{ GameResult : records
+  PomodoroSession ||--o{ SessionMember : includes
+  User o|--o{ SessionMember : joins
+  GuestSession o|--o{ SessionMember : joins
 ```
 
-A membership or attendance record references exactly one identity, a registered
-user **or** a guest. The two optional links are an exclusive choice; PostgreSQL
-CHECK constraints enforce it, and unique pairs stop duplicate rows for the same
-person. A room membership means “belongs to this room”; a session participant
-means “attended this particular interval”. They are deliberately separate:
-someone can belong to a room while running a solo timer.
+A membership references exactly one identity, a registered user **or** a guest.
+The two optional links are an exclusive choice; PostgreSQL CHECK constraints
+enforce it, and unique pairs stop duplicate rows for the same person. A session
+member is "in this session's timer": there is no separate attendance table.
+Per-phase history is not kept; lifetime totals live in `UserStat`, so leaving or
+deleting a session never erases study time.
 
 ### Reading the schema
 
@@ -672,33 +616,35 @@ someone can belong to a room while running a solo timer.
   UUID IDs because the migrations don't create a database default.
 - `@updatedAt` is maintained by Prisma, not a trigger; direct SQL updates must set
   it themselves.
-- Fields such as `user`, `members` and `participants` are **Prisma relation
+- Fields such as `user`, `members` and `session` are **Prisma relation
   fields**, not columns. The foreign-key column is, for example, `userId`.
 
 ### Design choices
 
 - The integer `User.id`, email, username and timestamps were preserved. New
-  temporary/session/room records use UUIDs; games use integer IDs.
+  session and member records use UUIDs.
 - Guests are separate from users, so no fake email or nullable email is needed.
-  Guest history is temporary and removed with the guest identity.
-- A room owner is always a registered user and also gets a membership, created in
-  the same transaction as the room.
-- A room has one shared join code, random and case-sensitive (`StudyRoom.code`,
-  unique). Anyone who has it can join, guests included; the owner replaces it
-  with `POST /rooms/:roomId/code`.
-- Leaving a server or being kicked deletes the `RoomMember` row. Membership is
-  one current record, not a log of visits; attendance (`SessionParticipant`)
-  stores study history and its `leftAt` only records leaving a timer.
-- `plannedSeconds` is snapshotted on each interval so changing room settings
-  never rewrites history.
+  A guest can create and join sessions, but nothing of a guest is kept: its
+  memberships go with the identity and it has no `UserStat`.
+- The owner is a flag on the member (`SessionMember.isOwner`), so a guest can own
+  a session. A partial unique index allows at most one owner per session. When the
+  owner leaves, is deleted or expires, the longest-standing member (registered
+  users first) takes over, and a session with no members is deleted.
+- A session has one shared join code, random and case-sensitive
+  (`PomodoroSession.code`, unique). Anyone who has it can join, guests included;
+  the owner replaces it with `POST /sessions/:sessionId/code`. A solo timer has a
+  null code, so nobody can join it.
+- Leaving or being kicked deletes the `SessionMember` row, after crediting the
+  focus time earned so far to the member's `UserStat`.
+- The length of the current phase is derived from `phase` and the settings
+  (`focusSeconds` or `breakSeconds`), which can only change while the timer is
+  idle, so a running phase is never rewritten.
 - There is no database write every second. Clients derive the countdown from
   server timestamps.
-- Statistics are computed from history; there are no redundant totals. Indexed
-  foreign keys and user/time indexes support future date filtering.
-- Minigames are independent of timers. Guests may play, but only registered users
-  keep scores. Scores are signed integers; each game decides what is valid.
-- Leaderboards are intentionally deferred. Friends and server chat exist;
-  friend direct messages are not built yet (they need a push channel).
+- Study time is added to `UserStat.focusedSeconds` when it is earned (on pause,
+  phase end, leave, kick, delete and cancel), so reading stats needs no
+  history.
+- Leaderboards are intentionally deferred. Friend direct messages are not built.
 
 ### 4.1 User
 
@@ -712,13 +658,11 @@ A permanent registered account. Guests have no `User` row.
 | `passwordHash`       | `String?`   | Null if omitted            | Salted scrypt hash; never a plain password; null for OAuth-only accounts              |
 | `emailVerifiedAt`    | `DateTime?` | Null until verified        | When the owner proved control of `email`; clear on change                             |
 | `twoFactorEnabledAt` | `DateTime?` | Null = off                 | When emailed-code two-factor was turned on; sign-in asks for a code while it is set   |
-| `verifyBy`           | `DateTime?` | Set at signup (+30 min)    | Unverified past this, the account is deleted; cleared on verify                       |
 | `role`               | `Role`      | `USER`                     | `USER`, `MODERATOR` or `ADMIN`; set with `npm run users:role`, then via the admin API |
 | `createdAt`          | `DateTime`  | `now()`                    | Account creation time                                                                 |
 | `updatedAt`          | `DateTime`  | `@updatedAt`               | Last account modification                                                             |
 
-Relations: `authSessions`, `oAuthAccounts`, `oAuthCodes`, `ownedRooms`,
-`memberships`, `studyHistory`, `gameResults`. A null hash preserves pre-existing
+Relations: `authSessions`, `oAuthAccounts`, `oAuthCodes`, `memberships`, `stat`. A null hash preserves pre-existing
 profiles and OAuth-only accounts and never grants password login. Database uniqueness is case-sensitive; API normalization applies to new
 writes and does not rewrite older records.
 
@@ -749,120 +693,72 @@ A temporary identity for visitors without an account.
 | Field         | Type          | Default / rule                    | Meaning                        |
 | ------------- | ------------- | --------------------------------- | ------------------------------ |
 | `id`          | UUID `String` | Primary key; `uuid()`             | Guest identity                 |
-| `displayName` | `String`      | Required; SQL rejects blank names | Name shown to room members     |
+| `displayName` | `String`      | Required; SQL rejects blank names | Name shown to session members  |
 | `tokenHash`   | `String`      | Unique; required                  | Hash of the guest bearer token |
 | `expiresAt`   | `DateTime`    | Required; after `createdAt`       | Guest validity deadline        |
 | `createdAt`   | `DateTime`    | `now()`                           | Guest entry time               |
 
-Relations: `memberships`, `studyHistory`. Guests may study solo, join rooms and
-join shared timers, but cannot own rooms or persist minigame results. Guest study
-records are temporary; there is no guest-to-account history transfer.
+Relation: `memberships`. Guests can create and join sessions (including solo
+timers) and own them, but keep no stats and no minigame results. Their
+memberships are removed with the identity; there is no guest-to-account transfer.
 
-### 4.4 StudyRoom
+### 4.4 PomodoroSession
 
-| Field                   | Type          | Default / rule                    | Meaning                               |
-| ----------------------- | ------------- | --------------------------------- | ------------------------------------- |
-| `id`                    | UUID `String` | Primary key; `uuid()`             | Room identity                         |
-| `name`                  | `String`      | Required; SQL rejects blank names | Human-readable name                   |
-| `code`                  | `String`      | Unique, random, 8 characters      | Shared join code; owner can replace   |
-| `ownerId`               | `Int`         | Required foreign key → `User.id`  | Registered owner                      |
-| `focusSeconds`          | `Int`         | 1500; positive                    | Duration of future focus intervals    |
-| `shortBreakSeconds`     | `Int`         | 300; positive                     | Duration of future short breaks       |
-| `longBreakSeconds`      | `Int`         | 900; positive                     | Duration of future long breaks        |
-| `cyclesBeforeLongBreak` | `Int`         | 4; positive                       | Completed focuses before a long break |
-| `createdAt`             | `DateTime`    | `now()`                           | Room creation                         |
-| `updatedAt`             | `DateTime`    | `@updatedAt`                      | Last setting/ownership change         |
-| `closedAt`              | `DateTime?`   | Null if omitted                   | Closed marker; null means open        |
+A session is the "server" and carries its one shared timer.
 
-Relations: `owner`, `members`, `sessions`. Index: `ownerId`. The API limits
-durations to 1–14400 s and cycles to 1–12 on top of the SQL positive checks.
-Prefer closing over deleting a room to keep its history and name.
+| Field            | Type            | Default / rule                    | Meaning                                          |
+| ---------------- | --------------- | --------------------------------- | ------------------------------------------------ |
+| `id`             | UUID `String`   | Primary key; `uuid()`             | Session identity                                 |
+| `name`           | `String`        | Required; SQL rejects blank names | Human-readable name                              |
+| `code`           | `String?`       | Unique, random, 8 characters      | Shared join code; null for a solo timer          |
+| `focusSeconds`   | `Int`           | 1500; positive                    | Length of focus phases                           |
+| `breakSeconds`   | `Int`           | 300; positive                     | Length of breaks                                 |
+| `phase`          | `PomodoroPhase` | `FOCUS`                           | Running phase, or the next one while idle        |
+| `timerStatus`    | `TimerStatus`   | `IDLE`                            | `IDLE`, `RUNNING` or `PAUSED`                    |
+| `resumedAt`      | `DateTime?`     | Set exactly while `RUNNING`       | When the timer last (re)started                  |
+| `elapsedSeconds` | `Int`           | 0; nonnegative                    | Active time before `resumedAt`, excluding pauses |
+| `createdAt`      | `DateTime`      | `now()`                           | Creation time                                    |
 
-### 4.5 RoomMember
+Relation: `members`. Index: `timerStatus` (for the worker). SQL CHECKs:
+`PomodoroSession_timer_check` (`elapsedSeconds ≥ 0`, `RUNNING` if and only if
+`resumedAt` is set) and `PomodoroSession_settings_check` (non-blank name,
+positive durations). The API limits durations to 1–14400 s.
 
-| Field            | Type           | Default / rule                        | Meaning                                                     |
-| ---------------- | -------------- | ------------------------------------- | ----------------------------------------------------------- |
-| `id`             | UUID `String`  | Primary key; `uuid()`                 | Membership ID, used for removal                             |
-| `roomId`         | UUID `String`  | Required foreign key → `StudyRoom.id` | Room joined                                                 |
-| `userId`         | `Int?`         | Foreign key → `User.id`               | Registered member, if applicable                            |
-| `guestSessionId` | UUID `String?` | Foreign key → `GuestSession.id`       | Guest member, if applicable                                 |
-| `joinedAt`       | `DateTime`     | `now()`                               | First membership creation time                              |
-| `mutedUntil`     | `DateTime?`    | Null                                  | While in the future, sending chat messages is refused (403) |
+| `timerStatus` | `resumedAt` | Behavior                                              |
+| ------------- | ----------- | ----------------------------------------------------- |
+| `IDLE`        | Null        | Between phases; `phase` is the next one to start      |
+| `RUNNING`     | Required    | Server computes current elapsed time from `resumedAt` |
+| `PAUSED`      | Null        | Stored `elapsedSeconds` stays frozen                  |
 
-Unique pairs `(roomId, userId)` and `(roomId, guestSessionId)`; PostgreSQL permits
-nulls in those pairs, so the exactly-one-identity CHECK closes the both-empty
-loophole. A member list also filters expired guests.
+SQL validates the resulting row, not the transition history, so the services
+enforce allowed transitions.
 
-### 4.6 PomodoroSession
+### 4.5 SessionMember
 
-One focus or break interval. It stores the common timer, not each person's total.
-
-| Field            | Type            | Default / rule                         | Meaning                                      |
-| ---------------- | --------------- | -------------------------------------- | -------------------------------------------- |
-| `id`             | UUID `String`   | Primary key; `uuid()`                  | Interval identity                            |
-| `roomId`         | UUID `String?`  | Foreign key → `StudyRoom.id`; nullable | Shared room; normally null for solo          |
-| `phase`          | `PomodoroPhase` | `FOCUS`                                | `FOCUS`, `SHORT_BREAK` or `LONG_BREAK`       |
-| `status`         | `SessionStatus` | `ACTIVE`                               | `ACTIVE`, `PAUSED`, `COMPLETED`, `CANCELLED` |
-| `plannedSeconds` | `Int`           | 1500; positive                         | Duration snapshot                            |
-| `startedAt`      | `DateTime`      | `now()`                                | Original start, retained through pauses      |
-| `endedAt`        | `DateTime?`     | Null for live intervals                | Completion/cancellation time                 |
-| `resumedAt`      | `DateTime?`     | Null until resumed                     | Start of the most recent running segment     |
-| `pausedAt`       | `DateTime?`     | Required only while paused             | Last pause time                              |
-| `elapsedSeconds` | `Int`           | 0; between 0 and `plannedSeconds`      | Active time committed at transitions         |
-
-Indexes: `(roomId, startedAt)` for room history and `(status, startedAt)` for the
-worker. A custom SQL **partial unique index** allows at most one `ACTIVE` or
-`PAUSED` interval per non-null room; solo intervals don't conflict. That each
-identity is in only one live timer is an application/transaction rule, not
-covered by this index.
-
-| State     | `endedAt` | `pausedAt` | Behavior                                   |
-| --------- | --------- | ---------- | ------------------------------------------ |
-| ACTIVE    | Null      | Null       | Server computes current elapsed time       |
-| PAUSED    | Null      | Required   | Stored elapsed time stays frozen           |
-| COMPLETED | Required  | Null       | Planned time elapsed; attendance finalized |
-| CANCELLED | Required  | Null       | Partial attendance kept; not a completion  |
-
-Update status and timestamps together in one write. SQL also checks positive
-durations, `0 ≤ elapsedSeconds ≤ plannedSeconds`, and that end/pause timestamps
-are not earlier than the running segment's start. SQL validates the resulting
-row, not the whole transition history, so services must enforce allowed
-transitions.
-
-A deleted room sets `roomId` to null on its historical sessions, so null can mean
-“former shared room” as well as “solo”.
-
-### 4.7 SessionParticipant
-
-Individual attendance for an interval; the source of personal study time.
-
-| Field            | Type           | Default / rule                              | Meaning                                |
-| ---------------- | -------------- | ------------------------------------------- | -------------------------------------- |
-| `id`             | UUID `String`  | Primary key; `uuid()`                       | Attendance identity                    |
-| `sessionId`      | UUID `String`  | Required foreign key → `PomodoroSession.id` | Attended interval                      |
-| `userId`         | `Int?`         | Foreign key → `User.id`                     | Registered participant                 |
-| `guestSessionId` | UUID `String?` | Foreign key → `GuestSession.id`             | Guest participant                      |
-| `joinedAt`       | `DateTime`     | `now()`                                     | Original attendance start              |
-| `leftAt`         | `DateTime?`    | Null while attending                        | Departure or finalization boundary     |
-| `creditedAt`     | `DateTime`     | `now()`; not before `joinedAt`              | Last boundary used for time accounting |
-| `focusedSeconds` | `Int`          | 0; nonnegative                              | Persisted actual focus time            |
-| `completedAt`    | `DateTime?`    | Null unless personal completion             | Full planned focus interval completed  |
+| Field            | Type           | Default / rule                           | Meaning                                              |
+| ---------------- | -------------- | ---------------------------------------- | ---------------------------------------------------- |
+| `id`             | UUID `String`  | Primary key; `uuid()`                    | Membership ID, used for kick, mute and ownership     |
+| `sessionId`      | UUID `String`  | Required foreign key → `PomodoroSession` | Session joined (cascade)                             |
+| `userId`         | `Int?`         | Foreign key → `User.id`                  | Registered member, if applicable                     |
+| `guestSessionId` | UUID `String?` | Foreign key → `GuestSession.id`          | Guest member, if applicable                          |
+| `joinedAt`       | `DateTime`     | `now()`                                  | Membership creation time                             |
+| `mutedUntil`     | `DateTime?`    | Null                                     | While in the future the member may read but not post |
+| `isOwner`        | `Boolean`      | `false`                                  | At most one per session (partial unique index)       |
+| `creditedAt`     | `DateTime`     | `now()`; not before `joinedAt`           | Focus time is counted from here, then moved forward  |
 
 Unique pairs `(sessionId, userId)` and `(sessionId, guestSessionId)`; indexes on
-`(userId, joinedAt)` and `guestSessionId`. A room finishing does not mean someone
-who left early or arrived late completed the interval.
+`userId` and `guestSessionId`. PostgreSQL permits nulls in those pairs, so
+`SessionMember_identity_check` (exactly one identity) closes the both-empty
+loophole. A member list also filters expired guests.
 
-### 4.8 MiniGame and 4.9 GameResult
+### 4.6 UserStat
 
-`MiniGame`: `id` (Int, autoincrement), `key` (unique stable API identifier),
-`name`, `isEnabled` (default true).
+`userId` (primary key, cascade), `focusedSeconds`, `wins`, `losses` (all default
+0, CHECKed nonnegative). Only registered users have a row; it is created on first
+credit or result. "Games played" is `wins + losses`, all games together; there is
+no per-game or per-phase history.
 
-`GameResult`: `id` (UUID), `userId` → `User`, `gameId` → `MiniGame`, `score`
-(signed Int), `durationSeconds` (Int, ≥ 0), `playedAt` (`now()`). Indexes:
-`(userId, playedAt)`, `(userId, gameId, score)`, `gameId`. There is no guest
-relation; persistent scores require registration.
-
-### 4.10 Account recovery, two-factor and OAuth tables
+### 4.7 Account recovery, two-factor and OAuth tables
 
 `EmailToken` backs email verification, password reset and the codes for turning
 two-factor on or off; `LoginChallenge` backs two-factor sign-in; `OAuthAccount`
@@ -897,161 +793,137 @@ transaction. Reset requests answer identically whether or not the email exists.
 Verification sets `emailVerifiedAt`; changing the email clears it. Expired tokens
 and challenges are removed by `cleanupExpiredSessions`.
 
-### 4.11 Friends, chat and presence
+### 4.8 Friends
 
 `Friendship`: `requesterId` → `addresseeId`, `status` `PENDING`/`ACCEPTED`,
-`createdAt`, `respondedAt`. Both users cascade. SQL rejects a friendship with
+`createdAt`. Both users cascade. SQL rejects a friendship with
 yourself and a second row for the same pair in either direction. Declining,
 cancelling and unfriending delete the row.
-
-`Message`: integer `id` (the polling cursor), `roomId` (cascade), `userId?` /
-`guestSessionId?` (set null when the author goes), `authorName` snapshot,
-`isGuest` (snapshot, so the badge survives the guest expiring), `content`
-(1–2000 chars, not blank), `createdAt`.
-
-`Presence`: one row per user (`userId`, `roomId?`, `seenAt`). A `seenAt` older than
-60 s means offline; the room is set null if the room is deleted.
 
 ---
 
 ## 5. How timers and statistics work
 
-**Running time.** While `ACTIVE`:
+**Running time.** While `RUNNING`:
 
 ```text
-runningSince = resumedAt ?? startedAt
-elapsed      = min(plannedSeconds,
-                   elapsedSeconds + floor((serverNow - runningSince) / 1000))
-remaining    = plannedSeconds - elapsed
+planned   = phase == FOCUS ? focusSeconds : breakSeconds
+elapsed   = min(planned,
+                elapsedSeconds + floor((serverNow - resumedAt) / 1000))
+remaining = planned - elapsed
 ```
 
 `elapsedSeconds` stores accumulated active time at the last pause. Pausing
-commits elapsed time and attendance. Resuming sets `resumedAt`, clears `pausedAt`
-and starts a new running segment; `startedAt` never changes. There is no full
+commits it and clears `resumedAt`; resuming sets `resumedAt` again. There is no
 pause-event audit log.
 
 **Finalization.** A timer continues when clients disconnect. The worker (once a
-second, safe on every instance) and read routes finalize expired intervals,
-including after a backend restart. Finalization uses the scheduled deadline, not
-the later polling time, so polling delays can't inflate statistics. Transactions
-and row locks (room before session, always) prevent concurrent starts and
-double-crediting.
+second, safe on every instance) and read routes finalize an expired phase,
+including after a backend restart: everyone is credited up to the scheduled
+deadline (not the later polling time, so delays can't inflate statistics), the
+timer goes back to `IDLE`, and the next phase is chosen: after a focus phase a
+break, after a break focus. Transactions and row locks
+(session first, always) prevent concurrent starts and double-crediting.
 
-**Crediting focus.** Personal `focusedSeconds` is credited on pause, leave,
-cancel and completion, and computed live for statistics reads. For a segment,
-accounting starts at the latest of `creditedAt`, `joinedAt` and the running
-segment's start; pauses, absences and breaks add zero; focus is capped at the
-planned duration. Accounting is in whole seconds, so sub-second fragments round
-down at boundaries.
+**Crediting focus.** Registered members earn focus seconds straight into
+`UserStat.focusedSeconds`. Credit is applied when the timer is **paused**, when a
+phase **ends**, and when a member **leaves or is kicked**, or the session is
+**deleted** or its timer **cancelled**, so no earned time is lost. Only a
+`RUNNING` focus phase counts: the seconds since the latest of `creditedAt`,
+`joinedAt` and `resumedAt`, after which `creditedAt` moves forward; pauses,
+absences and breaks add zero. Accounting is in whole seconds, so sub-second fragments round
+down at boundaries. Guests have no `UserStat`, so they keep nothing.
 
-Leaving sets `leftAt`. Rejoining reuses the row, clears `leftAt`/`completedAt`
-and sets `creditedAt` to the rejoin time, keeping prior focused seconds without
-crediting the absence or double-crediting an earlier segment.
+Example: in a 1500-second focus phase the owner earns 1500 s and a friend who
+arrives 900 s late earns 600 s. Never multiply session duration by member count.
 
-Example: in a 1500-second interval, the owner can earn 1500 s and a friend who
-arrives 900 s late earns 600 s. Only the owner gets `completedAt`. Never multiply
-room duration by member count; use participant records.
+A WebSocket disconnect should call `leaveSession`, which credits the time earned
+so far and removes the member.
 
-**Statistics** (`stats/stats.service.ts`, history is the source of truth):
+**Statistics** (`stats/stats.service.ts`):
 
-- `focusedSeconds`: sum of persisted personal focus time, including partial and
-  cancelled intervals, plus uncommitted current focus time on API reads.
-- `completedFocusSessions`: participant records with `completedAt` whose
-  interval is a `COMPLETED` focus.
-- Per game: result count, best score and total duration for that user.
-- Breaks never count toward focus; guest records never appear in user statistics.
-- A new profile returns zero totals and an empty game list; an unknown user
-  returns null. The API runs the query in a transaction for a consistent snapshot.
+- `focusedSeconds`: `UserStat.focusedSeconds` plus uncommitted focus time in a
+  timer running right now (computed on read).
+- `wins`, `losses`, `played` (`wins + losses`): minigame totals over all games.
+  The game server records a finished match with `recordMatch(ctx, winnerId,
+loserId)` in the same file, which adds one win and one loss in one
+  transaction; a `null` id (a guest) is skipped.
+- Breaks never count toward focus; guests never appear in statistics.
+- A new profile returns zero totals; an unknown user returns null.
 
 ---
 
-## 6. Minigames
+## 6. Chat, minigames and WebSocket
 
-No actual games exist yet, so the default verifier registry is empty. An enabled
-catalogue entry without a verifier returns **501** on result submission; a
-missing or disabled game returns 404. A client-supplied `score`, `userId` or
-duration is never accepted as authority.
+Chat, minigames and the "online" state are not stored in the database and have no
+HTTP endpoints. A teammate is building a WebSocket server for them:
 
-To add a game:
-
-1. Register it in the catalogue (writes to `DATABASE_URL` only when you run it):
-
-   ```bash
-   npm run games:manage -- add memory "Memory"
-   npm run games:manage -- disable memory
-   npm run games:manage -- enable memory
-   ```
-
-2. Add its verifier in `src/games/registry.ts`. It receives the authenticated
-   user ID and the unknown payload, verifies an authoritative attempt/proof and
-   returns `{ score, durationSeconds }`. Reject bad payloads with
-   `ApiError(400, …)` and atomically consume attempt identifiers so a proof can't
-   be replayed. `GameResult` has no attempt ID, so add attempt storage if replay
-   protection needs it.
-3. The shared service validates the result (score within PostgreSQL integer
-   range, duration 0–86400) and records it in private history and statistics.
-
-Games aren't tied to a particular break. Disable games rather than deleting
-entries that have results.
+- **Chat** is per session and in memory only: nobody who leaves or disconnects
+  gets earlier messages back. Muting is stored (`SessionMember.mutedUntil`) and
+  must be enforced when a message is sent.
+- **Minigames** run on the server, which decides the winner and then calls
+  `recordMatch(ctx, winnerId, loserId)` (`src/stats/stats.service.ts`). Only
+  registered players keep a win or loss; draws do not exist.
+- **Online/presence** is the socket connection. There is no `Presence` table.
+- **Timer pushes** can reuse `timerAction` and `timerView` from
+  `src/timers/timers.service.ts`; the worker's `settle` is where a phase ends.
+- **Disconnects** should call `leaveSession` so focus time is credited.
 
 ---
 
 ## 7. Deletion and lifecycle
 
-| Parent action          | Database behavior                                                                                                                                                                 | Implemented API behavior                                                 |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| Delete User            | Cascade logins, OAuth links and codes, memberships, friendships, presence, attendance, results; chat messages keep their text with the author cleared; owned rooms block deletion | Account deletion cancels/deletes owned rooms first, then the user        |
-| Delete GuestSession    | Cascade guest memberships and attendance; chat messages keep their text                                                                                                           | Logout/cleanup also cancels solo timers and settles shared attendance    |
-| Delete StudyRoom       | Cascade memberships, messages; set historical session room IDs to null                                                                                                            | Owner `DELETE /rooms/:id` or account deletion; close keeps the data      |
-| Delete PomodoroSession | Cascade attendance                                                                                                                                                                | Ordinary cancellation retains the session and partial history            |
-| Delete MiniGame        | Blocked if results reference it                                                                                                                                                   | CLI disables instead                                                     |
-| Close StudyRoom        | SQL only stores a timestamp                                                                                                                                                       | Cancels the live timer, saves partial time, rejects new joins and timers |
+| Parent action          | Database behavior                                                           | Implemented API behavior                                                             |
+| ---------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| Delete User            | Cascade logins, OAuth links and codes, memberships, friendships, `UserStat` | Account deletion hands owned sessions to another member; an empty session is deleted |
+| Delete GuestSession    | Cascade the guest's memberships                                             | Logout/cleanup then hands its sessions on or deletes them when empty                 |
+| Delete PomodoroSession | Cascade memberships; `UserStat` is untouched                                | Owner `DELETE /sessions/:id` credits the live timer first; close keeps the data      |
+| Close PomodoroSession  | SQL only stores a timestamp                                                 | Cancels the live timer, saves earned time, rejects new joins and timer actions       |
+| Leave / kick           | Deletes the `SessionMember` row                                             | Credits earned focus time first; the owner leaving passes ownership on               |
 
 Expiry is not an automatic SQL deletion. Authentication checks it on every
 request and `cleanupExpiredSessions()` removes expired identities periodically.
-Timer rows left with no participants (a deleted guest's solo timer) are removed by
-the same periodic cleanup, which also drops stale presence. Deleting a user
-who owns rooms is blocked at the database level until those rooms are transferred
-or deleted; closing alone doesn't lift that.
+The same cleanup finds sessions without an owner (their last owner was a guest
+that expired, for example) and gives them to the longest-standing member
+(registered users first) or deletes them when empty.
 
 ### Application rules the schema can't enforce
 
-Room ownership and closure, membership, expiry, allowed transitions,
-solo-timer participant count, non-overlapping attendance and game-specific
-scores live in the services. Foreign keys alone do not enforce these
+Session ownership and closure, membership, expiry, allowed timer transitions and
+non-overlapping live timers (one per person) live in the services. Foreign keys alone do not enforce these
 permissions, so preserve the service checks when adding endpoints. Critical
 writes use serializable transactions with retries on Prisma `P2034`; multi-record
-operations are atomic. Don't create a timer and add attendance as separate
-requests.
+operations are atomic.
 
 ---
 
 ## 8. Migrations
 
 `schema.prisma` describes the models, while hand-written SQL in the migrations
-adds the CHECK constraints and the partial unique live-timer index. Preserve them
+adds the CHECK constraints and partial unique indexes. Preserve them
 in future migrations. `prisma db push` is not a substitute.
 
-| Migration                               | Contents                                                                                          |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `20261001114431_init`                   | Original `User` table                                                                             |
-| `20261001115727_remove_password`        | Drops the old plain `password` column                                                             |
-| `20261006160000_study_platform`         | Nullable `User.passwordHash`, the other 8 tables, enums, indexes, FKs, CHECKs, partial index      |
-| `20261006170000_timer_accounting`       | `resumedAt`, `creditedAt`, timestamp CHECKs, `(status, startedAt)` index                          |
-| `20261007140000_account_recovery_2fa`   | `User.emailVerifiedAt`; `EmailToken`, `TwoFactor`, `RecoveryCode`, `LoginChallenge` with CHECKs   |
-| `20261007160000_password_reset_code`    | `PASSWORD_RESET_CODE` purpose, `EmailToken.failedAttempts` and its CHECK                          |
-| `20261009120000_personal_invites`       | `Invite`; existing room codes become the owner's code; drops `StudyRoom.inviteCode`               |
-| `20261009130000_servers_friends_chat`   | Drops `RoomMember.leftAt` (deleting rows that had left); `Friendship`, `Message` with CHECKs      |
-| `20261009140000_presence_join_requests` | `Presence`, `JoinRequest` with CHECK                                                              |
-| `20261009150000_member_invited_by`      | `RoomMember.invitedById`                                                                          |
-| `20261013120000_moderation`             | `RoomMember.mutedUntil`; `RoomBan`                                                                |
-| `20261013120100_lowercase_emails`       | Lowercases old mixed-case emails unless that would collide with another account                   |
-| `20261013130000_signup_verify_deadline` | `User.verifyBy`                                                                                   |
-| `20261013140000_message_is_guest`       | `Message.isGuest`                                                                                 |
-| `20261113120000_room_code`              | `StudyRoom.code` (backfilled); drops `Invite`, `RoomBan`, `JoinRequest`, `RoomMember.invitedById` |
-| `20261013150000_avatar_roles`           | `Role` enum and `User.role`; `UserAvatar` with size and type CHECKs                               |
-| `20261015080914_email_2fa`              | `User.twoFactorEnabledAt`, `LoginChallenge.codeHash`; drops `TwoFactor`, `RecoveryCode`           |
-| `20261013160000_moderator_role`         | Adds `MODERATOR` to `Role`                                                                        |
+| Migration                               | Contents                                                                                                                                                                                                                                                                                                                     |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `20261001114431_init`                   | Original `User` table                                                                                                                                                                                                                                                                                                        |
+| `20261001115727_remove_password`        | Drops the old plain `password` column                                                                                                                                                                                                                                                                                        |
+| `20261006160000_study_platform`         | Nullable `User.passwordHash`, the other 8 tables, enums, indexes, FKs, CHECKs, partial index                                                                                                                                                                                                                                 |
+| `20261006170000_timer_accounting`       | `resumedAt`, `creditedAt`, timestamp CHECKs, `(status, startedAt)` index                                                                                                                                                                                                                                                     |
+| `20261007140000_account_recovery_2fa`   | `User.emailVerifiedAt`; `EmailToken`, `TwoFactor`, `RecoveryCode`, `LoginChallenge` with CHECKs                                                                                                                                                                                                                              |
+| `20261007160000_password_reset_code`    | `PASSWORD_RESET_CODE` purpose, `EmailToken.failedAttempts` and its CHECK                                                                                                                                                                                                                                                     |
+| `20261009120000_personal_invites`       | `Invite`; existing room codes become the owner's code; drops `StudyRoom.inviteCode`                                                                                                                                                                                                                                          |
+| `20261009130000_servers_friends_chat`   | Drops `RoomMember.leftAt` (deleting rows that had left); `Friendship`, `Message` with CHECKs                                                                                                                                                                                                                                 |
+| `20261009140000_presence_join_requests` | `Presence`, `JoinRequest` with CHECK                                                                                                                                                                                                                                                                                         |
+| `20261009150000_member_invited_by`      | `RoomMember.invitedById`                                                                                                                                                                                                                                                                                                     |
+| `20261013120000_moderation`             | `RoomMember.mutedUntil`; `RoomBan`                                                                                                                                                                                                                                                                                           |
+| `20261013120100_lowercase_emails`       | Lowercases old mixed-case emails unless that would collide with another account                                                                                                                                                                                                                                              |
+| `20261013130000_signup_verify_deadline` | `User.verifyBy`                                                                                                                                                                                                                                                                                                              |
+| `20261013140000_message_is_guest`       | `Message.isGuest`                                                                                                                                                                                                                                                                                                            |
+| `20261113120000_room_code`              | `StudyRoom.code` (backfilled); drops `Invite`, `RoomBan`, `JoinRequest`, `RoomMember.invitedById`                                                                                                                                                                                                                            |
+| `20261013150000_avatar_roles`           | `Role` enum and `User.role`; `UserAvatar` with size and type CHECKs                                                                                                                                                                                                                                                          |
+| `20261015080914_email_2fa`              | `User.twoFactorEnabledAt`, `LoginChallenge.codeHash`; drops `TwoFactor`, `RecoveryCode`                                                                                                                                                                                                                                      |
+| `20261013160000_moderator_role`         | Adds `MODERATOR` to `Role`                                                                                                                                                                                                                                                                                                   |
+| `20261116120000_session_model`          | `StudyRoom`+`PomodoroSession`+`RoomMember`+`SessionParticipant` become `PomodoroSession`+`SessionMember`; `UserStat` (filled from old attendance); drops `Message`, `Presence`, `MiniGame`, `GameResult`, `User.verifyBy`, `Friendship.respondedAt`, closed rooms and the long-break settings; phases become `FOCUS`/`BREAK` |
 
 The study-platform migration preserves existing profiles and never drops user
 data. The timer-accounting migration keeps original start times and gives
@@ -1068,9 +940,8 @@ npm run db:migrate -- --name describe_the_change   # new migration on a dev DB
 Client generation runs automatically before dev, build and tests. Don't edit
 deployed migrations; add a new one.
 
-Future features should add models when concrete: direct messages (they need a
-push channel), game attempts (replay protection), external-account identities
-(OAuth), event logs (full pause/attendance audit).
+Future features should add models when concrete: direct messages (they need the
+WebSocket layer), event logs (full pause/attendance audit).
 
 ---
 
@@ -1100,47 +971,42 @@ codes, resend, attempt limits and expiry), OAuth sign-in against fake providers
 code, unverified provider emails, linking, replacing an unverified signup,
 username clashes, no password login for OAuth-only accounts), reserved 42
 logins (signup, guest, rename, fail open, cache, Google suffix), pending signups
-replaced by the email's owner, room joins for users and guests, the shared room code and its rotation,
-permanent membership with leave and kick, friends, presence, server
-chat, solo and shared
-timers, pause/resume/completion, snapshot settings, late joins, expiry,
-long-break cycles, statistics isolation and break filtering, game totals, unique
-constraints, identity checks, duration/status checks, foreign keys, deletion
-behavior, concurrent starts, legacy-user migration preservation and secret-field
-exclusion. CI runs the full suite against its own PostgreSQL service.
+replaced by the email's owner, sessions for users and guests, the shared code and
+its rotation, leave and kick, owner handover, friends, the shared timer
+(pause/resume/cancel, phase cycle, long breaks), focus credited on leave, kick,
+close and delete, stats isolation, unique constraints, identity checks, timer
+CHECKs, deletion behavior, concurrent starts, legacy-user migration preservation
+and secret-field exclusion. CI runs the full suite against its own PostgreSQL
+service.
 
 ---
 
 ## 10. Source map and frontend integration
 
-| File                                        | Role                                                            |
-| ------------------------------------------- | --------------------------------------------------------------- |
-| `src/index.ts`                              | Startup, timer/session worker, graceful shutdown                |
-| `src/app.ts`                                | Injectable Express app, CORS, JSON parsing, consistent errors   |
-| `src/api/router.ts`                         | The endpoint contract above                                     |
-| `src/api/common.ts`                         | Validation, identity types, retryable serializable transactions |
-| `src/api/lifecycle.ts`                      | Logout, account deletion, expired-session cleanup               |
-| `src/auth/auth.service.ts`                  | Passwords, token issuance/authentication, profiles              |
-| `src/rooms/rooms.service.ts`                | Memberships, settings, owner actions                            |
-| `src/auth/twofactor.service.ts`             | Emailed codes: sign-in challenge, turning two-factor on/off     |
-| `src/auth/oauth.providers.ts`               | Google, GitHub and 42: token swap and profile fetch             |
-| `src/auth/oauth.service.ts`                 | OAuth state, link or create the user, one-time code exchange    |
-| `src/auth/reserved.service.ts`              | Reserved 42 logins: cached lookup, fail open, 409               |
-| `src/friends/friends.service.ts`            | Friend requests, accept, list, remove                           |
-| `src/friends/social.service.ts`             | Presence heartbeat                                              |
-| `src/chat/chat.service.ts`                  | Server chat messages                                            |
-| `src/dev.ts`                                | Dev-only test console at `/dev` (not mounted in production)     |
-| `src/timers/timers.service.ts`              | Clock math, attendance, transitions, finalization               |
-| `src/stats/stats.service.ts`                | Stored and live focus statistics, analytics over time           |
-| `src/users/users.service.ts`                | Avatars and public profiles                                     |
-| `src/users/role.ts`                         | `users:role` CLI to grant or remove admin                       |
-| `src/admin/admin.service.ts`                | Admin guard and user management                                 |
-| `src/games/games.service.ts`                | Verified game result submission                                 |
-| `src/games/registry.ts`                     | Extension point for game verifiers                              |
-| `src/games/manage.ts`                       | Catalogue management CLI                                        |
-| `prisma/schema.prisma`                      | Data model                                                      |
-| `compose.test.yml`                          | Disposable test database, separate from the app Compose file    |
-| `test/api.test.ts`, `test/database.test.ts` | HTTP and real-PostgreSQL integration cases                      |
+| File                                        | Role                                                               |
+| ------------------------------------------- | ------------------------------------------------------------------ |
+| `src/index.ts`                              | Startup, timer worker, graceful shutdown                           |
+| `src/app.ts`                                | Injectable Express app, CORS, JSON parsing, consistent errors      |
+| `src/api/router.ts`                         | The endpoint contract above                                        |
+| `src/api/common.ts`                         | Validation, identity types, retryable serializable transactions    |
+| `src/api/lifecycle.ts`                      | Logout, account deletion, expired-session cleanup                  |
+| `src/auth/auth.service.ts`                  | Passwords, token issuance/authentication, profiles                 |
+| `src/rooms/rooms.service.ts`                | Sessions: create/join/leave, settings, owner and moderator actions |
+| `src/auth/twofactor.service.ts`             | Emailed codes: sign-in challenge, turning two-factor on/off        |
+| `src/auth/oauth.providers.ts`               | Google, GitHub and 42: token swap and profile fetch                |
+| `src/auth/oauth.service.ts`                 | OAuth state, link or create the user, one-time code exchange       |
+| `src/auth/reserved.service.ts`              | Reserved 42 logins: cached lookup, fail open, 409                  |
+| `src/friends/friends.service.ts`            | Friend requests, accept, list, remove                              |
+| `src/friends/social.service.ts`             | `areFriends` helper                                                |
+| `src/dev.ts`                                | Dev-only test console at `/dev` (not mounted in production)        |
+| `src/timers/timers.service.ts`              | Shared timer: clock math, crediting, owner handover, finalization  |
+| `src/stats/stats.service.ts`                | Stored and live statistics, `recordMatch` for the game server      |
+| `src/users/users.service.ts`                | Avatars and public profiles                                        |
+| `src/users/role.ts`                         | `users:role` CLI to grant or remove admin                          |
+| `src/admin/admin.service.ts`                | Admin guard and user management                                    |
+| `prisma/schema.prisma`                      | Data model                                                         |
+| `compose.test.yml`                          | Disposable test database, separate from the app Compose file       |
+| `test/api.test.ts`, `test/database.test.ts` | HTTP and real-PostgreSQL integration cases                         |
 
 `dotenv` is a runtime dependency so a production install can load its
 environment. The old unauthenticated `users.ts` router and the `users.service.ts`
@@ -1153,8 +1019,9 @@ backend origin (for example `http://localhost:3000`), use
 password and keep the returned token; every other request must send
 `Authorization: Bearer <token>` or it returns 401. The user directory exposes
 usernames, not other people's emails. Don't duplicate timer/auth logic in React
-or write to Prisma from the browser, and don't submit claimed study totals: poll
-the room/timer endpoints and show server-derived remaining time locally.
+or write to Prisma from the browser, and don't submit claimed study totals: read the
+session endpoint (or the WebSocket pushes) and show server-derived remaining time
+locally.
 
 References:
 [Express 5 error handling](https://expressjs.com/en/5x/guide/error-handling/),

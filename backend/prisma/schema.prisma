@@ -9,8 +9,7 @@ datasource db {
 
 enum PomodoroPhase {
   FOCUS
-  SHORT_BREAK
-  LONG_BREAK
+  BREAK
 }
 
 enum EmailTokenPurpose {
@@ -35,11 +34,11 @@ enum FriendshipStatus {
   ACCEPTED
 }
 
-enum SessionStatus {
-  ACTIVE
+enum TimerStatus {
+  // Between phases: waiting for the owner to start `phase`.
+  IDLE
+  RUNNING
   PAUSED
-  COMPLETED
-  CANCELLED
 }
 
 model User {
@@ -52,10 +51,6 @@ model User {
   // Set when the owner proves they control `email`; clear it whenever the
   // email changes. Null means unverified (all pre-existing accounts).
   emailVerifiedAt DateTime?
-  // Set at signup; the account is deleted if the email isn't verified by then, so
-  // nobody can hold someone else's address. Null for older accounts and cleared
-  // on verification. An email change does not set it.
-  verifyBy        DateTime?
   // Site-wide permission level. Granted with `npm run users:role`; only an admin
   // can then change others through /api/admin.
   role            Role      @default(USER)
@@ -69,14 +64,10 @@ model User {
   oAuthAccounts      OAuthAccount[]
   oAuthCodes         OAuthCode[]
   loginChallenges    LoginChallenge[]
-  ownedRooms         StudyRoom[]
-  friendRequests     Friendship[]         @relation("FriendshipRequester")
-  friendInvites      Friendship[]         @relation("FriendshipAddressee")
-  messages           Message[]
-  presence           Presence?
-  memberships        RoomMember[]
-  studyHistory       SessionParticipant[]
-  gameResults        GameResult[]
+  friendRequests     Friendship[]     @relation("FriendshipRequester")
+  friendInvites      Friendship[]     @relation("FriendshipAddressee")
+  memberships        SessionMember[]
+  stat               UserStat?
 }
 
 // Profile picture, stored in the database so it needs no file volume. The API
@@ -149,56 +140,55 @@ model GuestSession {
   expiresAt   DateTime
   createdAt   DateTime @default(now())
 
-  memberships  RoomMember[]
-  studyHistory SessionParticipant[]
-  messages     Message[]
+  memberships SessionMember[]
 
   @@index([expiresAt])
 }
 
-model StudyRoom {
-  id                    String            @id @default(uuid()) @db.Uuid
-  name                  String
-  // The shared code that lets anyone who has it join. Random; the owner can
-  // replace it.
-  code                  String            @unique
-  ownerId               Int
-  focusSeconds          Int               @default(1500)
-  shortBreakSeconds     Int               @default(300)
-  longBreakSeconds      Int               @default(900)
-  cyclesBeforeLongBreak Int               @default(4)
-  createdAt             DateTime          @default(now())
-  updatedAt             DateTime          @updatedAt
-  // Closing keeps a room's data. The owner can also delete it for good; study
-  // history survives either way (sessions keep their rows with a null room).
-  closedAt              DateTime?
-  owner                 User              @relation(fields: [ownerId], references: [id], onDelete: Restrict)
-  members               RoomMember[]
-  messages              Message[]
-  presence              Presence[]
-  sessions              PomodoroSession[]
+// A study session is the server people join: its settings, its join code, its
+// chat and its one shared timer. The owner is the member with isOwner = true.
+model PomodoroSession {
+  id             String          @id @default(uuid()) @db.Uuid
+  name           String
+  // The shared code that lets anyone who has it join; the owner can replace it.
+  // Null for a solo timer: nobody can join it.
+  code           String?         @unique
+  focusSeconds   Int             @default(1500)
+  breakSeconds   Int             @default(300)
+  // The timer. `phase` is the running phase, or the next one while IDLE.
+  phase          PomodoroPhase   @default(FOCUS)
+  timerStatus    TimerStatus     @default(IDLE)
+  // Set exactly while RUNNING: the moment it last (re)started.
+  resumedAt      DateTime?
+  // Active time before resumedAt, excluding pauses.
+  elapsedSeconds Int             @default(0)
+  createdAt      DateTime        @default(now())
+  members        SessionMember[]
 
-  @@index([ownerId])
+  @@index([timerStatus])
 }
 
-model RoomMember {
-  id             String        @id @default(uuid()) @db.Uuid
-  roomId         String        @db.Uuid
+// Someone (a user or a guest) who is in a session. Members are in the timer: a
+// member who leaves or is kicked is deleted, and rejoining needs the code.
+model SessionMember {
+  id             String          @id @default(uuid()) @db.Uuid
+  sessionId      String          @db.Uuid
   // Exactly one identity; enforced by a SQL CHECK in the migration.
   userId         Int?
-  guestSessionId String?       @db.Uuid
-  joinedAt       DateTime      @default(now())
+  guestSessionId String?         @db.Uuid
+  joinedAt       DateTime        @default(now())
   // While in the future the member can read the chat but not post.
   mutedUntil     DateTime?
-  room           StudyRoom     @relation(fields: [roomId], references: [id], onDelete: Cascade)
-  user           User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  guestSession   GuestSession? @relation(fields: [guestSessionId], references: [id], onDelete: Cascade)
+  // Exactly one per session; a partial unique index in the migration.
+  isOwner        Boolean         @default(false)
+  // Focus time is counted from here, then moved forward.
+  creditedAt     DateTime        @default(now())
+  session        PomodoroSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  user           User?           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  guestSession   GuestSession?   @relation(fields: [guestSessionId], references: [id], onDelete: Cascade)
 
-  // Membership lasts until the person leaves the server or is kicked (the row is
-  // deleted, so rejoining needs the room code). Closing the app or disconnecting never
-  // touches it; presence in a timer is SessionParticipant.leftAt.
-  @@unique([roomId, userId])
-  @@unique([roomId, guestSessionId])
+  @@unique([sessionId, userId])
+  @@unique([sessionId, guestSessionId])
   @@index([userId])
   @@index([guestSessionId])
 }
@@ -211,7 +201,6 @@ model Friendship {
   addresseeId Int
   status      FriendshipStatus @default(PENDING)
   createdAt   DateTime         @default(now())
-  respondedAt DateTime?
   requester   User             @relation("FriendshipRequester", fields: [requesterId], references: [id], onDelete: Cascade)
   addressee   User             @relation("FriendshipAddressee", fields: [addresseeId], references: [id], onDelete: Cascade)
 
@@ -220,102 +209,15 @@ model Friendship {
   @@index([addresseeId, status])
 }
 
-// Chat for a server. Messages outlive their author, so the name is a snapshot
-// and the author link is cleared (not deleted) when the account or guest goes.
-model Message {
-  id             Int           @id @default(autoincrement())
-  roomId         String        @db.Uuid
-  userId         Int?
-  guestSessionId String?       @db.Uuid
-  authorName     String
-  // Snapshot, like authorName: still known after the guest identity expires.
-  isGuest        Boolean       @default(false)
-  content        String
-  createdAt      DateTime      @default(now())
-  room           StudyRoom     @relation(fields: [roomId], references: [id], onDelete: Cascade)
-  user           User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
-  guestSession   GuestSession? @relation(fields: [guestSessionId], references: [id], onDelete: SetNull)
-
-  @@index([roomId, id])
-}
-
-// Where a registered user is right now. The client sends a heartbeat; a row
-// whose seenAt is older than the freshness window means offline.
-model Presence {
-  userId Int        @id
-  roomId String?    @db.Uuid
-  seenAt DateTime
-  user   User       @relation(fields: [userId], references: [id], onDelete: Cascade)
-  room   StudyRoom? @relation(fields: [roomId], references: [id], onDelete: SetNull)
-
-  @@index([seenAt])
-}
-
-model PomodoroSession {
-  id             String               @id @default(uuid()) @db.Uuid
-  // Null means a solo timer; a room session shares a timer across participants.
-  roomId         String?              @db.Uuid
-  phase          PomodoroPhase        @default(FOCUS)
-  status         SessionStatus        @default(ACTIVE)
-  // Snapshot the duration so changing room settings doesn't rewrite history.
-  plannedSeconds Int                  @default(1500)
-  startedAt      DateTime             @default(now())
-  endedAt        DateTime?
-  resumedAt      DateTime?
-  pausedAt       DateTime?
-  // Accumulated active time at the last pause; exclude paused time.
-  elapsedSeconds Int                  @default(0)
-  room           StudyRoom?           @relation(fields: [roomId], references: [id], onDelete: SetNull)
-  participants   SessionParticipant[]
-
-  @@index([roomId, startedAt])
-  @@index([status, startedAt])
-}
-
-model SessionParticipant {
-  id             String          @id @default(uuid()) @db.Uuid
-  sessionId      String          @db.Uuid
-  // Exactly one identity; enforced by a SQL CHECK in the migration.
-  userId         Int?
-  guestSessionId String?         @db.Uuid
-  joinedAt       DateTime        @default(now())
-  leftAt         DateTime?
-  creditedAt     DateTime        @default(now())
-  // Actual focused time for this person, excluding pauses and late arrival.
-  focusedSeconds Int             @default(0)
-  // Set when this person completes a focus interval, not merely on room completion.
-  completedAt    DateTime?
-  session        PomodoroSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  user           User?           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  guestSession   GuestSession?   @relation(fields: [guestSessionId], references: [id], onDelete: Cascade)
-
-  @@unique([sessionId, userId])
-  @@unique([sessionId, guestSessionId])
-  @@index([userId, joinedAt])
-  @@index([guestSessionId])
-}
-
-model MiniGame {
-  id        Int          @id @default(autoincrement())
-  key       String       @unique
-  name      String
-  isEnabled Boolean      @default(true)
-  results   GameResult[]
-}
-
-model GameResult {
-  id              String   @id @default(uuid()) @db.Uuid
-  userId          Int
-  gameId          Int
-  score           Int
-  durationSeconds Int
-  playedAt        DateTime @default(now())
-  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  game            MiniGame @relation(fields: [gameId], references: [id], onDelete: Restrict)
-
-  @@index([userId, playedAt])
-  @@index([userId, gameId, score])
-  @@index([gameId])
+// Lifetime totals of a registered user: time studied and minigame wins/losses
+// (played = wins + losses, all games together). Guests have none. Kept apart from
+// SessionMember so leaving or deleting a session doesn't erase them.
+model UserStat {
+  userId         Int  @id
+  focusedSeconds Int  @default(0)
+  wins           Int  @default(0)
+  losses         Int  @default(0)
+  user           User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 enum OAuthProvider {

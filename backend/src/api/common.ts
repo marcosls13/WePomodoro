@@ -117,7 +117,12 @@ export async function transaction<T>(
         typeof error === "object" &&
         error !== null &&
         "code" in error &&
-        error.code === "P2034"
+        // P2034: Prisma's own conflict; raw FOR UPDATE queries surface Postgres's
+        // serialization failure (40001) as P2010 instead.
+        (error.code === "P2034" ||
+          (error.code === "P2010" &&
+            error instanceof Error &&
+            error.message.includes("40001")))
       )
         continue;
       throw error;

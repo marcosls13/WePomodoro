@@ -2,7 +2,6 @@ import { randomBytes } from "node:crypto";
 import {
   ApiError,
   identity,
-  registered,
   transaction,
   type Actor,
   type Context,
@@ -10,21 +9,19 @@ import {
 } from "../api/common.js";
 import {
   activeMember,
-  attend,
-  cancelRoomTimer,
-  leaveTimer,
-  liveStatuses,
-  lockRoom,
+  available,
+  cancelTimer,
+  dropMember,
+  lockSession,
+  ownerMember,
   settle,
   timerView,
 } from "../timers/timers.service.js";
 
-export interface RoomSettings {
+export interface SessionSettings {
   name?: string;
   focusSeconds?: number;
-  shortBreakSeconds?: number;
-  longBreakSeconds?: number;
-  cyclesBeforeLongBreak?: number;
+  breakSeconds?: number;
 }
 
 function isUniqueClash(error: unknown) {
@@ -36,11 +33,19 @@ function isUniqueClash(error: unknown) {
   );
 }
 
-async function roomView(tx: Transaction, roomId: string, now: Date) {
-  const room = await tx.studyRoom.findUniqueOrThrow({ where: { id: roomId } });
-  const members = await tx.roomMember.findMany({
+async function sessionView(
+  tx: Transaction,
+  actor: Actor,
+  sessionId: string,
+  now: Date,
+) {
+  const found = await tx.pomodoroSession.findUniqueOrThrow({
+    where: { id: sessionId },
+  });
+  const session = await settle(tx, found, now);
+  const members = await tx.sessionMember.findMany({
     where: {
-      roomId,
+      sessionId,
       OR: [
         { userId: { not: null } },
         { guestSession: { expiresAt: { gt: now } } },
@@ -52,23 +57,24 @@ async function roomView(tx: Transaction, roomId: string, now: Date) {
       guestSessionId: true,
       joinedAt: true,
       mutedUntil: true,
+      isOwner: true,
       user: { select: { username: true } },
       guestSession: { select: { displayName: true } },
     },
     orderBy: { joinedAt: "asc" },
   });
-  const session = await tx.pomodoroSession.findFirst({
-    where: { roomId, status: { in: [...liveStatuses] } },
-  });
-  const current = session ? await settle(tx, session, now) : null;
   return {
-    ...room,
+    ...timerView(session, now),
     members: members.map(({ user, guestSession, ...member }) => ({
       ...member,
       isGuest: member.userId === null,
+      // Lets the client tell which member is the caller.
+      isMe:
+        (actor.userId !== null && member.userId === actor.userId) ||
+        (actor.guestSessionId !== null &&
+          member.guestSessionId === actor.guestSessionId),
       displayName: user?.username ?? guestSession?.displayName,
     })),
-    timer: current ? timerView(current, now) : null,
   };
 }
 
@@ -84,19 +90,22 @@ function newRoomCode() {
   ).join("");
 }
 
-/** The owner replaces the room code; the old one stops working at once. */
-export async function rotateCode(ctx: Context, actor: Actor, roomId: string) {
+/** The owner replaces the session code; the old one stops working at once. */
+export async function rotateCode(
+  ctx: Context,
+  actor: Actor,
+  sessionId: string,
+) {
   return transaction(ctx, async (tx) => {
-    const room = await lockRoom(tx, roomId);
-    if (room.ownerId !== actor.userId)
-      throw new ApiError(403, "Only the owner can change the room code");
-    if (room.closedAt) throw new ApiError(409, "Room is closed");
+    const session = await lockSession(tx, sessionId);
+    await ownerMember(tx, actor, sessionId);
+    if (!session.code) throw new ApiError(409, "A solo timer has no code");
     for (let attempt = 0; ; attempt++)
       try {
         return {
-          roomCode: (
-            await tx.studyRoom.update({
-              where: { id: roomId },
+          code: (
+            await tx.pomodoroSession.update({
+              where: { id: sessionId },
               data: { code: newRoomCode() },
             })
           ).code,
@@ -107,26 +116,33 @@ export async function rotateCode(ctx: Context, actor: Actor, roomId: string) {
   });
 }
 
-export async function createRoom(
+/** Anyone, guests included, can create a session. `solo` makes one with no code. */
+export async function createSession(
   ctx: Context,
   actor: Actor,
-  settings: RoomSettings & { name: string },
+  input: SessionSettings & { name: string; solo?: boolean },
 ) {
-  const ownerId = registered(actor);
+  const { solo, ...settings } = input;
   for (let attempt = 0; ; attempt++) {
     try {
       return await transaction(ctx, async (tx) => {
         const now = ctx.now();
-        const room = await tx.studyRoom.create({
+        const session = await tx.pomodoroSession.create({
           data: {
             ...settings,
-            code: newRoomCode(),
-            ownerId,
+            code: solo ? null : newRoomCode(),
             createdAt: now,
-            members: { create: { userId: ownerId, joinedAt: now } },
+            members: {
+              create: {
+                ...identity(actor),
+                isOwner: true,
+                joinedAt: now,
+                creditedAt: now,
+              },
+            },
           },
         });
-        return roomView(tx, room.id, now);
+        return sessionView(tx, actor, session.id, now);
       });
     } catch (error) {
       if (attempt < 3 && isUniqueClash(error)) continue;
@@ -135,168 +151,155 @@ export async function createRoom(
   }
 }
 
-export async function listRooms(ctx: Context, actor: Actor) {
-  // Only rooms this identity currently belongs to; the room code is only shown to members.
-  return ctx.db.studyRoom.findMany({
-    where: {
-      closedAt: null,
-      members: { some: identity(actor) },
-    },
+export async function listSessions(ctx: Context, actor: Actor) {
+  // Only sessions this identity belongs to; the code is only shown to members.
+  return ctx.db.pomodoroSession.findMany({
+    where: { members: { some: identity(actor) } },
     orderBy: { createdAt: "desc" },
     take: 100,
   });
 }
 
-export async function getRoom(ctx: Context, actor: Actor, roomId: string) {
+export async function getSession(
+  ctx: Context,
+  actor: Actor,
+  sessionId: string,
+) {
   return transaction(ctx, async (tx) => {
-    await lockRoom(tx, roomId);
-    await activeMember(tx, actor, roomId);
-    return roomView(tx, roomId, ctx.now());
+    await lockSession(tx, sessionId);
+    await activeMember(tx, actor, sessionId);
+    return sessionView(tx, actor, sessionId, ctx.now());
   });
 }
 
-export async function joinRoom(ctx: Context, actor: Actor, code: string) {
+export async function joinSession(ctx: Context, actor: Actor, code: string) {
   return transaction(ctx, async (tx) => {
-    const found = await tx.studyRoom.findUnique({ where: { code } });
-    if (!found) throw new ApiError(404, "Room code not found");
+    const found = await tx.pomodoroSession.findUnique({ where: { code } });
+    if (!found) throw new ApiError(404, "Session code not found");
     // Recheck after taking the lock in case the code was just replaced.
-    const room = await lockRoom(tx, found.id);
-    if (room.code !== code) throw new ApiError(404, "Room code not found");
-    if (room.closedAt) throw new ApiError(409, "Room is closed");
+    const session = await lockSession(tx, found.id);
+    if (session.code !== code)
+      throw new ApiError(404, "Session code not found");
     const now = ctx.now();
-    await addMember(tx, room.id, actor, now);
-    return roomView(tx, room.id, now);
+    await addMember(tx, session.id, actor, now);
+    return sessionView(tx, actor, session.id, now);
   });
 }
 
 /**
- * Adds a member and joins a running timer. Already a member (code used before):
- * nothing to do; a running timer is then joined through the timer's own action.
+ * Adds a member. Joining a live timer means being in it, so the person must not
+ * be in another live timer. Already a member (code used before): nothing to do.
  */
 export async function addMember(
   tx: Transaction,
-  roomId: string,
+  sessionId: string,
   actor: Actor,
   now: Date,
 ) {
-  const member = await tx.roomMember.findFirst({
-    where: { roomId, ...identity(actor) },
+  const member = await tx.sessionMember.findFirst({
+    where: { sessionId, ...identity(actor) },
   });
   if (member) return;
-  await tx.roomMember.create({
-    data: { roomId, ...identity(actor), joinedAt: now },
-  });
-  const session = await tx.pomodoroSession.findFirst({
-    where: { roomId, status: { in: [...liveStatuses] } },
-  });
-  if (session) {
-    const current = await settle(tx, session, now);
-    if (liveStatuses.includes(current.status as "ACTIVE" | "PAUSED"))
-      await attend(tx, actor, current, now);
-  }
-}
-
-export async function leaveRoom(ctx: Context, actor: Actor, roomId: string) {
-  return transaction(ctx, async (tx) => {
-    const room = await lockRoom(tx, roomId);
-    if (room.ownerId === actor.userId && !room.closedAt)
-      throw new ApiError(
-        409,
-        "Transfer ownership or close the room before leaving",
-      );
-    const member = await activeMember(tx, actor, roomId);
-    const now = ctx.now();
-    const session = await tx.pomodoroSession.findFirst({
-      where: { roomId, status: { in: [...liveStatuses] } },
-    });
-    if (session)
-      await leaveTimer(tx, actor, await settle(tx, session, now), now);
-    await tx.roomMember.delete({ where: { id: member.id } });
+  const session = await settle(tx, await lockSession(tx, sessionId), now);
+  if (session.timerStatus !== "IDLE")
+    await available(tx, actor, now, sessionId);
+  await tx.sessionMember.create({
+    data: { sessionId, ...identity(actor), joinedAt: now, creditedAt: now },
   });
 }
 
-export async function updateRoom(
+/** Leaving is allowed for the owner too: the next member takes over. */
+export async function leaveSession(
   ctx: Context,
   actor: Actor,
-  roomId: string,
-  settings: RoomSettings,
+  sessionId: string,
 ) {
   return transaction(ctx, async (tx) => {
-    const room = await lockRoom(tx, roomId);
-    if (room.ownerId !== actor.userId)
-      throw new ApiError(403, "Only the owner can change room settings");
-    if (room.closedAt) throw new ApiError(409, "Room is closed");
-    return tx.studyRoom.update({ where: { id: roomId }, data: settings });
+    const session = await lockSession(tx, sessionId);
+    const member = await activeMember(tx, actor, sessionId);
+    await dropMember(tx, session, member, ctx.now());
   });
 }
 
-export async function manageRoom(
+export async function updateSession(
   ctx: Context,
   actor: Actor,
-  roomId: string,
-  action: "close" | "transfer",
-  newOwnerId?: number,
+  sessionId: string,
+  settings: SessionSettings,
 ) {
   return transaction(ctx, async (tx) => {
-    const room = await lockRoom(tx, roomId);
-    if (room.ownerId !== actor.userId)
-      throw new ApiError(403, "Only the owner can manage the room");
-    if (action === "close") {
-      await cancelRoomTimer(tx, roomId, ctx.now());
-      return tx.studyRoom.update({
-        where: { id: roomId },
-        data: { closedAt: room.closedAt ?? ctx.now() },
-      });
-    }
-    if (room.closedAt) throw new ApiError(409, "Room is closed");
-    const member = await tx.roomMember.findFirst({
-      where: { roomId, userId: newOwnerId },
-    });
-    if (!member?.userId)
-      throw new ApiError(
-        400,
-        "The new owner must be an active registered member",
-      );
-    return tx.studyRoom.update({
-      where: { id: roomId },
-      data: { ownerId: member.userId },
+    const session = await lockSession(tx, sessionId);
+    await ownerMember(tx, actor, sessionId);
+    // A running phase keeps its length: settings change between phases only.
+    const settled = await settle(tx, session, ctx.now());
+    if (settled.timerStatus !== "IDLE")
+      throw new ApiError(409, "Settings can only change between phases");
+    return tx.pomodoroSession.update({
+      where: { id: sessionId },
+      data: settings,
     });
   });
 }
 
-export async function deleteRoom(ctx: Context, actor: Actor, roomId: string) {
+export async function transferOwner(
+  ctx: Context,
+  actor: Actor,
+  sessionId: string,
+  newOwnerMemberId: string,
+) {
+  return transaction(ctx, async (tx) => {
+    await lockSession(tx, sessionId);
+    const owner = await ownerMember(tx, actor, sessionId);
+    const target = await tx.sessionMember.findFirst({
+      where: { id: newOwnerMemberId, sessionId },
+    });
+    if (!target) throw new ApiError(400, "The new owner must be a member");
+    // Clear the old flag first: at most one owner at any moment.
+    await tx.sessionMember.update({
+      where: { id: owner.id },
+      data: { isOwner: false },
+    });
+    await tx.sessionMember.update({
+      where: { id: target.id },
+      data: { isOwner: true },
+    });
+    return tx.pomodoroSession.findUniqueOrThrow({ where: { id: sessionId } });
+  });
+}
+
+export async function deleteSession(
+  ctx: Context,
+  actor: Actor,
+  sessionId: string,
+) {
   await transaction(ctx, async (tx) => {
-    const room = await lockRoom(tx, roomId);
-    if (room.ownerId !== actor.userId)
-      throw new ApiError(403, "Only the owner can delete the room");
-    await cancelRoomTimer(tx, roomId, ctx.now());
-    await tx.studyRoom.delete({ where: { id: roomId } });
+    const session = await lockSession(tx, sessionId);
+    await ownerMember(tx, actor, sessionId);
+    // Credit the focus time in progress before the members go with it (cascade).
+    await cancelTimer(tx, session, ctx.now());
+    await tx.pomodoroSession.delete({ where: { id: sessionId } });
   });
 }
 
 /**
- * Who may moderate a room: its owner, or a moderator/admin who is a member of
- * it. Returns the capacity so callers can protect staff from moderators.
+ * Who may moderate a session: its owner, or a moderator/admin who is a member.
+ * Returns the capacity so callers can protect staff from moderators.
  */
 export async function moderatorOf(
   tx: Transaction,
   actor: Actor,
-  room: { id: string; ownerId: number },
+  sessionId: string,
 ) {
-  if (room.ownerId === actor.userId) return "OWNER" as const;
-  if (actor.userId !== null) {
+  const member = await tx.sessionMember.findFirst({
+    where: { sessionId, ...identity(actor) },
+  });
+  if (member?.isOwner) return "OWNER" as const;
+  if (member?.userId) {
     const user = await tx.user.findUnique({
-      where: { id: actor.userId },
+      where: { id: member.userId },
       select: { role: true },
     });
-    if (
-      user &&
-      user.role !== "USER" &&
-      (await tx.roomMember.findFirst({
-        where: { roomId: room.id, userId: actor.userId },
-      }))
-    )
-      return user.role;
+    if (user && user.role !== "USER") return user.role;
   }
   throw new ApiError(403, "Only the owner or a moderator can do this");
 }
@@ -316,30 +319,23 @@ async function protectStaff(
     throw new ApiError(403, "Moderators can't act on other staff");
 }
 
-/** Owner or moderator kicks a member, who can rejoin with the room code. */
+/** Owner or moderator kicks a member, who can rejoin with the code. */
 export async function removeMember(
   ctx: Context,
   actor: Actor,
-  roomId: string,
+  sessionId: string,
   memberId: string,
 ) {
   return transaction(ctx, async (tx) => {
-    const room = await lockRoom(tx, roomId);
-    const by = await moderatorOf(tx, actor, room);
-    const member = await tx.roomMember.findFirst({
-      where: { id: memberId, roomId },
+    const session = await lockSession(tx, sessionId);
+    const by = await moderatorOf(tx, actor, sessionId);
+    const member = await tx.sessionMember.findFirst({
+      where: { id: memberId, sessionId },
     });
     if (!member) throw new ApiError(404, "Member not found");
-    if (member.userId === room.ownerId)
-      throw new ApiError(409, "The owner cannot be removed");
+    if (member.isOwner) throw new ApiError(409, "The owner cannot be removed");
     await protectStaff(tx, by, member.userId);
-    const now = ctx.now();
-    const session = await tx.pomodoroSession.findFirst({
-      where: { roomId, status: { in: [...liveStatuses] } },
-    });
-    if (session)
-      await leaveTimer(tx, member, await settle(tx, session, now), now);
-    await tx.roomMember.delete({ where: { id: memberId } });
+    await dropMember(tx, session, member, ctx.now());
   });
 }
 
@@ -347,23 +343,22 @@ export async function removeMember(
 export async function muteMember(
   ctx: Context,
   actor: Actor,
-  roomId: string,
+  sessionId: string,
   memberId: string,
   minutes: number | null,
 ) {
   return transaction(ctx, async (tx) => {
-    const room = await lockRoom(tx, roomId);
-    const by = await moderatorOf(tx, actor, room);
-    const member = await tx.roomMember.findFirst({
-      where: { id: memberId, roomId },
+    await lockSession(tx, sessionId);
+    const by = await moderatorOf(tx, actor, sessionId);
+    const member = await tx.sessionMember.findFirst({
+      where: { id: memberId, sessionId },
     });
     if (!member) throw new ApiError(404, "Member not found");
-    if (member.userId === room.ownerId)
-      throw new ApiError(409, "The owner cannot be muted");
+    if (member.isOwner) throw new ApiError(409, "The owner cannot be muted");
     await protectStaff(tx, by, member.userId);
     const mutedUntil =
       minutes === null ? null : new Date(ctx.now().getTime() + minutes * 60000);
-    await tx.roomMember.update({
+    await tx.sessionMember.update({
       where: { id: memberId },
       data: { mutedUntil },
     });

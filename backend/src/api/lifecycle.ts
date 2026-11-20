@@ -6,14 +6,7 @@ import {
   type Actor,
   type Context,
 } from "./common.js";
-import {
-  cancelRoomTimer,
-  leaveTimer,
-  liveStatuses,
-  lockRoom,
-  settle,
-  timerAction,
-} from "../timers/timers.service.js";
+import { keepOwner } from "../timers/timers.service.js";
 
 export async function endIdentity(
   ctx: Context,
@@ -22,20 +15,16 @@ export async function endIdentity(
 ) {
   if (deleteAccount) {
     const userId = registered(actor);
-    // Account deletion also deletes the rooms the user owns, like an owner's
-    // DELETE /rooms/:id. Closing a room alone keeps it.
+    // Their memberships go with the account. Sessions they owned pass to the
+    // next member, and a session left empty is deleted.
     await transaction(ctx, async (tx) => {
-      const rooms = await tx.studyRoom.findMany({
-        where: { ownerId: userId },
-        orderBy: { id: "asc" },
+      const memberships = await tx.sessionMember.findMany({
+        where: { userId },
+        select: { sessionId: true },
+        orderBy: { sessionId: "asc" },
       });
-      for (const room of rooms) {
-        await lockRoom(tx, room.id);
-        await cancelRoomTimer(tx, room.id, ctx.now());
-        await tx.studyRoom.delete({ where: { id: room.id } });
-      }
-      // A concurrent ownership transfer may cause FK rejection; never delete others' rooms.
       await tx.user.delete({ where: { id: userId } });
+      for (const { sessionId } of memberships) await keepOwner(tx, sessionId);
     });
     return;
   }
@@ -46,36 +35,18 @@ export async function endIdentity(
     });
     return;
   }
-  // Guest logout deletes its temporary identity. Registered study history survives.
-  const solos = await ctx.db.pomodoroSession.findMany({
-    where: {
-      roomId: null,
-      status: { in: [...liveStatuses] },
-      participants: { some: identity(actor) },
-    },
-  });
-  for (const solo of solos) await timerAction(ctx, actor, solo.id, "cancel");
+  // Guest logout deletes its temporary identity and its memberships. Nothing
+  // of a guest is kept, so there is no progress to credit.
   await transaction(ctx, async (tx) => {
-    const memberships = await tx.roomMember.findMany({
+    const memberships = await tx.sessionMember.findMany({
       where: identity(actor),
-      orderBy: { roomId: "asc" },
+      select: { sessionId: true },
+      orderBy: { sessionId: "asc" },
     });
-    for (const member of memberships) {
-      await lockRoom(tx, member.roomId);
-      const session = await tx.pomodoroSession.findFirst({
-        where: { roomId: member.roomId, status: { in: [...liveStatuses] } },
-      });
-      if (session)
-        await leaveTimer(
-          tx,
-          actor,
-          await settle(tx, session, ctx.now()),
-          ctx.now(),
-        );
-    }
     await tx.guestSession.deleteMany({
       where: { id: actor.guestSessionId ?? "" },
     });
+    for (const { sessionId } of memberships) await keepOwner(tx, sessionId);
   });
 }
 
@@ -83,19 +54,15 @@ export async function cleanupExpiredSessions(ctx: Context) {
   await ctx.db.authSession.deleteMany({
     where: { expiresAt: { lte: ctx.now() } },
   });
-  // Deleting a user or guest cascades their attendance but not the timer rows,
-  // so drop sessions nobody attended (solo timers, rooms without participants).
-  await ctx.db.pomodoroSession.deleteMany({
-    where: { participants: { none: {} } },
+  // A session with no owner has lost its last member or its guest owner expired:
+  // pass it on, or delete it when empty.
+  const orphans = await ctx.db.pomodoroSession.findMany({
+    where: { members: { none: { isOwner: true } } },
+    select: { id: true },
+    take: 100,
   });
-  // Stale heartbeats are already "offline".
-  await ctx.db.presence.deleteMany({
-    where: { seenAt: { lte: new Date(ctx.now().getTime() - 3600_000) } },
-  });
-  // Signups that never proved their email free the address for its real owner.
-  await ctx.db.user.deleteMany({
-    where: { emailVerifiedAt: null, verifyBy: { lte: ctx.now() } },
-  });
+  for (const { id } of orphans)
+    await transaction(ctx, (tx) => keepOwner(tx, id));
   await ctx.db.emailToken.deleteMany({
     where: { expiresAt: { lte: ctx.now() } },
   });

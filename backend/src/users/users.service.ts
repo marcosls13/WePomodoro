@@ -69,7 +69,8 @@ export async function publicProfile(ctx: Context, actor: Actor, id: number) {
   return {
     ...user,
     focusedSeconds: stats?.focusedSeconds ?? 0,
-    completedFocusSessions: stats?.completedFocusSessions ?? 0,
+    wins: stats?.wins ?? 0,
+    losses: stats?.losses ?? 0,
     friendship: row && {
       id: row.id,
       status: row.status,

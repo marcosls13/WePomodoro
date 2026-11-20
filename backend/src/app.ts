@@ -8,7 +8,6 @@ import helmet from "helmet";
 import { Prisma } from "./generated/prisma/client.js";
 import { ApiError, type Context } from "./api/common.js";
 import { createRouter, type RateLimits } from "./api/router.js";
-import type { GameVerifiers } from "./games/games.service.js";
 import { devRouter } from "./dev.js";
 
 export function createApp(
@@ -18,7 +17,6 @@ export function createApp(
     /** Number of reverse proxies in front of the app; 0 when directly exposed. */
     trustProxy?: number;
     rateLimits?: RateLimits;
-    gameVerifiers?: GameVerifiers;
     onError?: (error: unknown) => void;
     /** Dev only: let `X-Dev-User` act as any user without a token. Ignored in production. */
     devAuth?: boolean;
@@ -59,10 +57,7 @@ export function createApp(
 
   if (dev) app.use("/dev", devRouter(ctx, devAuth));
 
-  app.use(
-    "/api",
-    createRouter(ctx, options.gameVerifiers, options.rateLimits, devAuth),
-  );
+  app.use("/api", createRouter(ctx, options.rateLimits, devAuth));
 
   app.use((req, res) => {
     res.status(404).json({ error: "Endpoint not found" });

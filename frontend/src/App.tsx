@@ -13,6 +13,8 @@ import ResetPassword from "./pages/ResetPassword";
 import Me from "./pages/Me";
 import Profile from "./pages/Profile";
 import Admin from "./pages/Admin";
+import Sessions from "./pages/Sessions";
+import Session from "./pages/Session";
 import Tomato from "./Tomato";
 import ThemeToggle from "./ThemeToggle";
 import VerifyGate from "./VerifyGate";
@@ -34,6 +36,7 @@ export default function App() {
           <NavLink to="/home" end>
             Home
           </NavLink>
+          <NavLink to="/sessions">Sessions</NavLink>
           <NavLink to="/UserInfo">Community</NavLink>
           <NavLink to="/about">About</NavLink>
           <NavLink to="/me">Me</NavLink>
@@ -52,6 +55,8 @@ export default function App() {
             <Route path="/home" element={<Home />} />
             <Route path="/about" element={<About />} />
             <Route path="/me" element={<Me />} />
+            <Route path="/sessions" element={<Sessions />} />
+            <Route path="/sessions/:id" element={<Session />} />
             <Route path="/UserInfo" element={<UserInfo />} />
             <Route path="/users/:id" element={<Profile />} />
             <Route path="/admin" element={<Admin />} />

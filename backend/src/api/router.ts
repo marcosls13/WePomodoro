@@ -13,7 +13,6 @@ import {
   ApiError,
   body,
   email,
-  identity,
   integer,
   pagination,
   profileSelect,
@@ -49,46 +48,33 @@ import {
 } from "../auth/twofactor.service.js";
 import { devActor } from "../dev.js";
 import {
-  deleteMessage,
-  listMessages,
-  sendMessage,
-} from "../chat/chat.service.js";
-import { setPresence } from "../friends/social.service.js";
-import {
   acceptFriend,
   listFriends,
   removeFriend,
   requestFriend,
 } from "../friends/friends.service.js";
 import {
-  createRoom,
-  deleteRoom,
-  getRoom,
-  joinRoom,
-  leaveRoom,
-  listRooms,
-  manageRoom,
+  createSession,
+  deleteSession,
+  getSession,
+  joinSession,
+  leaveSession,
+  listSessions,
+  transferOwner,
   muteMember,
   removeMember,
   rotateCode,
-  updateRoom,
-  type RoomSettings,
+  updateSession,
+  type SessionSettings,
 } from "../rooms/rooms.service.js";
-import {
-  getTimer,
-  startRoom,
-  startSolo,
-  sweepTimers,
-  timerAction,
-  timerView,
-} from "../timers/timers.service.js";
+import { sweepTimers, timerAction } from "../timers/timers.service.js";
 import {
   confirmPasswordReset,
   requestPasswordReset,
   verifyResetCode,
 } from "../auth/reset.service.js";
 import { sendVerificationCode, verifyEmail } from "../auth/verify.service.js";
-import { getAnalytics, getUserStatistics } from "../stats/stats.service.js";
+import { getUserStatistics } from "../stats/stats.service.js";
 import {
   avatarMaxBytes,
   avatarTypes,
@@ -106,7 +92,6 @@ import {
   resetTwoFactor,
   updateUser,
 } from "../admin/admin.service.js";
-import { recordGame, type GameVerifiers } from "../games/games.service.js";
 import { endIdentity } from "./lifecycle.js";
 import { migrationsPending } from "./migrations.js";
 import {
@@ -127,23 +112,12 @@ function actor(res: Response): Actor {
   return res.locals.actor as Actor;
 }
 
-function settings(input: Record<string, unknown>): RoomSettings {
-  const result: RoomSettings = {};
+function settings(input: Record<string, unknown>): SessionSettings {
+  const result: SessionSettings = {};
   if (input.name !== undefined) result.name = text(input.name, "name");
-  for (const key of [
-    "focusSeconds",
-    "shortBreakSeconds",
-    "longBreakSeconds",
-  ] as const)
+  for (const key of ["focusSeconds", "breakSeconds"] as const)
     if (input[key] !== undefined)
       result[key] = integer(input[key], key, 1, 14400);
-  if (input.cyclesBeforeLongBreak !== undefined)
-    result.cyclesBeforeLongBreak = integer(
-      input.cyclesBeforeLongBreak,
-      "cyclesBeforeLongBreak",
-      1,
-      12,
-    );
   return result;
 }
 
@@ -154,13 +128,6 @@ function currentPassword(value: unknown) {
       400,
       "Password must be a string of at most 128 characters",
     );
-  return value;
-}
-
-function phase(value: unknown) {
-  if (value === undefined) return "FOCUS";
-  if (value !== "FOCUS" && value !== "SHORT_BREAK" && value !== "LONG_BREAK")
-    throw new ApiError(400, "Invalid timer phase");
   return value;
 }
 
@@ -207,7 +174,6 @@ function tooMany(message: string) {
 
 export function createRouter(
   ctx: Context,
-  verifiers: GameVerifiers = {},
   limits: RateLimits = defaultRateLimits,
   devAuth = false,
 ) {
@@ -627,30 +593,6 @@ export function createRouter(
     );
   });
 
-  router.get("/users/me/study-sessions", async (req, res) => {
-    const id = registered(actor(res));
-    await sweepTimers(ctx);
-    res.json(
-      await ctx.db.sessionParticipant.findMany({
-        where: { userId: id },
-        ...pagination(req),
-        include: { session: true },
-        orderBy: [{ joinedAt: "desc" }, { id: "desc" }],
-      }),
-    );
-  });
-
-  router.get("/users/me/game-results", async (req, res) => {
-    res.json(
-      await ctx.db.gameResult.findMany({
-        where: { userId: registered(actor(res)) },
-        ...pagination(req),
-        include: { game: true },
-        orderBy: [{ playedAt: "desc" }, { id: "desc" }],
-      }),
-    );
-  });
-
   router.put(
     "/users/me/avatar",
     raw({ type: avatarTypes, limit: avatarMaxBytes }),
@@ -669,18 +611,6 @@ export function createRouter(
   router.delete("/users/me/avatar", async (req, res) => {
     await clearAvatar(ctx, actor(res));
     res.sendStatus(204);
-  });
-
-  router.get("/users/me/analytics", async (req, res) => {
-    const { days } = req.query;
-    res.json(
-      await getAnalytics(
-        ctx.db,
-        registered(actor(res)),
-        ctx.now(),
-        days === undefined ? 30 : integer(Number(days), "days", 1, 365),
-      ),
-    );
   });
 
   router.get("/users/:id", async (req, res) => {
@@ -770,169 +700,111 @@ export function createRouter(
     res.sendStatus(204);
   });
 
-  router.get("/rooms", async (req, res) => {
-    res.json(await listRooms(ctx, actor(res)));
+  router.get("/sessions", async (req, res) => {
+    res.json(await listSessions(ctx, actor(res)));
   });
 
-  router.post("/rooms", async (req, res) => {
+  router.post("/sessions", async (req, res) => {
     const input = body(req);
     res.status(201).json(
-      await createRoom(ctx, actor(res), {
+      await createSession(ctx, actor(res), {
         ...settings(input),
         name: text(input.name, "name"),
+        solo: input.solo === true,
       }),
     );
   });
 
-  router.post("/rooms/join", async (req, res) => {
+  router.post("/sessions/join", async (req, res) => {
     res.json(
-      await joinRoom(ctx, actor(res), text(body(req).roomCode, "roomCode", 64)),
+      await joinSession(ctx, actor(res), text(body(req).code, "code", 64)),
     );
   });
 
-  router.get("/rooms/:roomId", async (req, res) => {
-    res.json(await getRoom(ctx, actor(res), uuid(req.params.roomId)));
+  router.get("/sessions/:sessionId", async (req, res) => {
+    res.json(await getSession(ctx, actor(res), uuid(req.params.sessionId)));
   });
 
-  router.patch("/rooms/:roomId", async (req, res) => {
+  router.patch("/sessions/:sessionId", async (req, res) => {
     const update = settings(body(req));
     if (!Object.keys(update).length)
-      throw new ApiError(400, "Provide a room setting to update");
+      throw new ApiError(400, "Provide a session setting to update");
     res.json(
-      await updateRoom(ctx, actor(res), uuid(req.params.roomId), update),
+      await updateSession(ctx, actor(res), uuid(req.params.sessionId), update),
     );
   });
 
-  router.post("/rooms/:roomId/leave", async (req, res) => {
-    await leaveRoom(ctx, actor(res), uuid(req.params.roomId));
+  router.post("/sessions/:sessionId/leave", async (req, res) => {
+    await leaveSession(ctx, actor(res), uuid(req.params.sessionId));
     res.sendStatus(204);
   });
 
-  router.post("/rooms/:roomId/close", async (req, res) => {
-    res.json(
-      await manageRoom(ctx, actor(res), uuid(req.params.roomId), "close"),
-    );
-  });
-
-  router.delete("/rooms/:roomId", async (req, res) => {
-    await deleteRoom(ctx, actor(res), uuid(req.params.roomId));
+  router.delete("/sessions/:sessionId", async (req, res) => {
+    await deleteSession(ctx, actor(res), uuid(req.params.sessionId));
     res.sendStatus(204);
   });
 
   // The owner replaces the room code, e.g. after kicking someone.
-  router.post("/rooms/:roomId/code", async (req, res) => {
-    res.json(await rotateCode(ctx, actor(res), uuid(req.params.roomId)));
+  router.post("/sessions/:sessionId/code", async (req, res) => {
+    res.json(await rotateCode(ctx, actor(res), uuid(req.params.sessionId)));
   });
 
-  router.post("/rooms/:roomId/owner", async (req, res) => {
+  router.post("/sessions/:sessionId/owner", async (req, res) => {
     res.json(
-      await manageRoom(
+      await transferOwner(
         ctx,
         actor(res),
-        uuid(req.params.roomId),
-        "transfer",
-        integer(body(req).userId, "userId", 1, 2147483647),
+        uuid(req.params.sessionId),
+        uuid(body(req).memberId),
       ),
     );
   });
 
-  router.delete("/rooms/:roomId/members/:memberId", async (req, res) => {
+  router.delete("/sessions/:sessionId/members/:memberId", async (req, res) => {
     await removeMember(
       ctx,
       actor(res),
-      uuid(req.params.roomId),
+      uuid(req.params.sessionId),
       uuid(req.params.memberId),
     );
     res.sendStatus(204);
   });
 
-  router.post("/rooms/:roomId/members/:memberId/mute", async (req, res) => {
-    res.json(
-      await muteMember(
-        ctx,
-        actor(res),
-        uuid(req.params.roomId),
-        uuid(req.params.memberId),
-        integer(body(req).minutes, "minutes", 1, 10080),
-      ),
-    );
-  });
-
-  router.delete("/rooms/:roomId/members/:memberId/mute", async (req, res) => {
-    res.json(
-      await muteMember(
-        ctx,
-        actor(res),
-        uuid(req.params.roomId),
-        uuid(req.params.memberId),
-        null,
-      ),
-    );
-  });
-
-  router.delete("/rooms/:roomId/messages/:messageId", async (req, res) => {
-    await deleteMessage(
-      ctx,
-      actor(res),
-      uuid(req.params.roomId),
-      integer(Number(req.params.messageId), "messageId", 1, 2147483647),
-    );
-    res.sendStatus(204);
-  });
-
-  router.post("/rooms/:roomId/timers", async (req, res) => {
-    res
-      .status(201)
-      .json(await startRoom(ctx, actor(res), uuid(req.params.roomId)));
-  });
-
-  router.post("/timers", async (req, res) => {
-    const input = body(req);
-    const timerPhase = phase(input.phase);
-    const defaults = { FOCUS: 1500, SHORT_BREAK: 300, LONG_BREAK: 900 };
-    res
-      .status(201)
-      .json(
-        await startSolo(
+  router.post(
+    "/sessions/:sessionId/members/:memberId/mute",
+    async (req, res) => {
+      res.json(
+        await muteMember(
           ctx,
           actor(res),
-          timerPhase,
-          input.plannedSeconds === undefined
-            ? defaults[timerPhase]
-            : integer(input.plannedSeconds, "plannedSeconds", 1, 14400),
+          uuid(req.params.sessionId),
+          uuid(req.params.memberId),
+          integer(body(req).minutes, "minutes", 1, 10080),
         ),
       );
-  });
+    },
+  );
 
-  router.get("/timers", async (req, res) => {
-    await sweepTimers(ctx);
-    const now = ctx.now();
-    const sessions = await ctx.db.pomodoroSession.findMany({
-      where: {
-        status: { in: ["ACTIVE", "PAUSED"] },
-        participants: { some: { ...identity(actor(res)), leftAt: null } },
-      },
-      take: 100,
-      orderBy: { startedAt: "desc" },
-    });
-    res.json(sessions.map((session) => timerView(session, now)));
-  });
-
-  router.get("/timers/:timerId", async (req, res) => {
-    res.json(await getTimer(ctx, actor(res), uuid(req.params.timerId)));
-  });
-
-  for (const action of [
-    "pause",
-    "resume",
-    "complete",
-    "cancel",
-    "join",
-    "leave",
-  ] as const)
-    router.post(`/timers/:timerId/${action}`, async (req, res) => {
+  router.delete(
+    "/sessions/:sessionId/members/:memberId/mute",
+    async (req, res) => {
       res.json(
-        await timerAction(ctx, actor(res), uuid(req.params.timerId), action),
+        await muteMember(
+          ctx,
+          actor(res),
+          uuid(req.params.sessionId),
+          uuid(req.params.memberId),
+          null,
+        ),
+      );
+    },
+  );
+
+  // The owner drives the one timer of the session.
+  for (const action of ["start", "pause", "resume", "cancel"] as const)
+    router.post(`/sessions/:sessionId/timer/${action}`, async (req, res) => {
+      res.json(
+        await timerAction(ctx, actor(res), uuid(req.params.sessionId), action),
       );
     });
 
@@ -954,80 +826,6 @@ export function createRouter(
   router.delete("/friends/:id", async (req, res) => {
     await removeFriend(ctx, actor(res), uuid(req.params.id));
     res.sendStatus(204);
-  });
-
-  router.put("/presence", async (req, res) => {
-    const { roomId } = body(req);
-    await setPresence(
-      ctx,
-      actor(res),
-      roomId === null || roomId === undefined ? null : uuid(roomId),
-    );
-    res.sendStatus(204);
-  });
-
-  router.get("/rooms/:roomId/messages", async (req, res) => {
-    const { after, limit } = req.query;
-    res.json(
-      await listMessages(
-        ctx,
-        actor(res),
-        uuid(req.params.roomId),
-        after === undefined
-          ? undefined
-          : integer(Number(after), "after", 0, 2147483647),
-        limit === undefined ? 50 : integer(Number(limit), "limit", 1, 100),
-      ),
-    );
-  });
-
-  // Chat is capped per identity so one client cannot flood a room.
-  const perSender = rateLimit({
-    windowMs: 10_000,
-    limit: 10,
-    standardHeaders: "draft-7",
-    legacyHeaders: false,
-    keyGenerator: (_req, res) =>
-      `chat:${actor(res).userId ?? actor(res).guestSessionId}`,
-    handler: tooMany("You are sending messages too fast"),
-  });
-
-  router.post("/rooms/:roomId/messages", perSender, async (req, res) => {
-    res
-      .status(201)
-      .json(
-        await sendMessage(
-          ctx,
-          actor(res),
-          uuid(req.params.roomId),
-          text(body(req).content, "content", 2000),
-        ),
-      );
-  });
-
-  router.get("/games", async (req, res) => {
-    res.json(
-      await ctx.db.miniGame.findMany({
-        where: { isEnabled: true },
-        orderBy: { key: "asc" },
-        take: 100,
-        select: { id: true, key: true, name: true },
-      }),
-    );
-  });
-
-  router.post("/games/:key/results", async (req, res) => {
-    res
-      .status(201)
-      .json(
-        await recordGame(
-          ctx,
-          actor(res),
-          text(req.params.key, "game key", 64),
-          body(req),
-          verifiers,
-        ),
-      );
   });
   return router;
 }

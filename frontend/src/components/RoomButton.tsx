@@ -1,10 +1,10 @@
-import { ButtonHTMLAttributes } from "react";
+import type { ButtonHTMLAttributes } from "react";
 
 interface RoomButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   children: React.ReactNode;
 }
 
-export function RoomButton({ children, ...props }: SubmitButtonProps) {
+export function RoomButton({ children, ...props }: RoomButtonProps) {
   return (
     <button
       type="submit"

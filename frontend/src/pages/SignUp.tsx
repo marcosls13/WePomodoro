@@ -1,4 +1,3 @@
-import { useState } from "react";
 import SignUpForm from "../components/SignupForm";
 export default function SignUp() {
   return (

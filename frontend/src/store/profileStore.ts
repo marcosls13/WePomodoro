@@ -1,11 +1,13 @@
 import { create } from 'zustand';
+import { api } from '../api';
 
 // 1. Tipado estricto del dominio. Define exactamente qué forma tiene un usuario.
 interface UserProfile {
   id: number;
-  login_42: string;
-  name: string;
-  avatarUrl: string | null;
+  username: string;
+  email: string;
+  role: "USER" | "MODERATOR" | "ADMIN";
+  emailVerifiedAt: string | null;
 }
 
 // 2. El contrato del Store: Qué datos guarda y qué acciones expone.
@@ -13,21 +15,16 @@ interface ProfileState {
   user: UserProfile | null;
   isLoading: boolean;
   error: string | null;
-  
-  // Acciones asíncronas
+  // avatarVersion: number;
   fetchUser: () => Promise<void>;
   updateUsername: (newName: string) => Promise<void>;
+  // bumpAvatar: () => void;
 }
 
 // 3. Creación del motor de estado
-export const useProfileStore = create<ProfileState>((set, get) => ({
+export const useProfileStore = create<ProfileState>((set) => ({
   // Estado inicial. Usamos tu login real de 42 como mock inicial.
-  user: { 
-    id: 1, 
-    login_42: 'fdurban-', 
-    name: 'Fernando', 
-    avatarUrl: null 
-  },
+  user: null,
   isLoading: false,
   error: null,
 
@@ -35,10 +32,7 @@ export const useProfileStore = create<ProfileState>((set, get) => ({
   fetchUser: async () => {
     set({ isLoading: true, error: null });
     try {
-      // Reemplazar con la llamada real a la API de tu backend
-      // const response = await fetch('/api/users/me');
-      // const data = await response.json();
-      // set({ user: data, isLoading: false });
+      set({ user: await api<UserProfile>("/users/me"), isLoading: false });
     } catch (error) {
       set({ error: 'Error al obtener el perfil de la base de datos', isLoading: false });
     }
@@ -46,17 +40,10 @@ export const useProfileStore = create<ProfileState>((set, get) => ({
 
   // Acción pura que usamos en el Profile.tsx
   updateUsername: async (newName: string) => {
-    try {
-      // 1. Aquí harías el PATCH a tu backend
-      // await fetch('/api/users/me', { method: 'PATCH', body: JSON.stringify({ name: newName }) });
-      
-      // 2. Zustand actualiza la UI al instante inyectando el nuevo nombre
-      set((state) => ({
-        user: state.user ? { ...state.user, name: newName } : null
-      }));
-    } catch (error) {
-      console.error("Fallo al actualizar el nombre:", error);
-      // Aquí podrías manejar la reversión del estado si la API falla
-    }
-  }
+    const user = await api<UserProfile>("/users/me", {
+      method: "PATCH",
+      body: JSON.stringify({ username: newName }),
+    });
+    set({ user });
+  },
 }));

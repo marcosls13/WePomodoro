@@ -1,14 +1,14 @@
 import { useState, useCallback } from 'react'
-import { motion, AnimatePresence } from 'motion/react'
+import { motion, AnimatePresence, type Transition } from 'motion/react'
 import Timer from '../components/Timer'
 import Chat from '../components/Chat'
 import TimeConfig from '../components/TimeConfig'
 
 export default function Room() {
-  const [roomConfig, setRoomConfig] = useState(null);
+  const [roomConfig, setRoomConfig] = useState <{workDuration: number; restDuration: number} | null>(null);
   const [isRestTime, setIsRestTime] = useState(false);
 
-  const handleStartRoom = ({ workDuration, restDuration }) => {
+  const handleStartRoom = ({ workDuration, restDuration }: { workDuration: number; restDuration: number }) => {
     setRoomConfig({ workDuration, restDuration });
   };
 
@@ -16,7 +16,7 @@ export default function Room() {
      setIsRestTime((prev) => !prev);
   }, []);
 
-  const smoothTransition = {
+  const smoothTransition: Transition = {
     type: "spring",
     bounce: 0.1,
     duration: 0.7

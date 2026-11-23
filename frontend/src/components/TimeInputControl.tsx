@@ -1,6 +1,6 @@
-import { useState } from "react";
+// import { useState } from "react";
 
-export default function TimeInputControl({ label, value, onChange }) {
+export default function TimeInputControl({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
   
   const handleDecrement = () => {
     if (value > 1) onChange(value - 1);

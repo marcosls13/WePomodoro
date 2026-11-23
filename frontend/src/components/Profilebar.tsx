@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { NavLink } from "react-router-dom";
-import { motion, AnimatePresence } from "motion/react";
+import { NavLink } from "react-router";
+import { motion, AnimatePresence, type Variants } from "motion/react";
 import { Calculator, History, Code, Add, Profile, Burger } from "./icons/Icons";
 
-const sidebarVariants = {
+const sidebarVariants: Variants = {
   hidden: { x: "100%", opacity: 0 },
   visible: {
     x: 0,
@@ -27,7 +27,7 @@ const sidebarVariants = {
   },
 };
 
-const itemVariants = {
+const itemVariants: Variants = {
   hidden: { x: 20, opacity: 0 },
   visible: { x: 0, opacity: 1 },
 };
@@ -55,7 +55,7 @@ export default function Profilebar() {
             className="fixed top-20 right-0 z-45 flex flex-col gap-2 w-fit rounded-full bg-white shadow-xl m-6 p-3 items-center"
           >
             <motion.div variants={itemVariants}>
-              <NavLink to="/chat">
+              <NavLink to="/createRoom">
                 <div className="bg-red-600 p-3 rounded-full">
                   <Calculator />
                 </div>
@@ -63,28 +63,13 @@ export default function Profilebar() {
             </motion.div>
 
             <motion.div variants={itemVariants}>
-              <NavLink to="/chat">
+              <NavLink to="/friends">
                 <div className="bg-red-600 rounded-full p-3 flex items-center justify-center">
                   <History />
                 </div>
               </NavLink>
             </motion.div>
 
-            <motion.div variants={itemVariants}>
-              <NavLink to="/chat">
-                <div className="bg-red-600 rounded-full p-3 flex items-center justify-center">
-                  <Code />
-                </div>
-              </NavLink>
-            </motion.div>
-
-            <motion.div variants={itemVariants}>
-              <NavLink to="/chat">
-                <div className="bg-red-600 rounded-full p-3">
-                  <Add />
-                </div>
-              </NavLink>
-            </motion.div>
 
             <motion.div variants={itemVariants} className="mt-auto">
               <NavLink to="/profile">

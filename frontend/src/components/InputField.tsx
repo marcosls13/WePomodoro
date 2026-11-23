@@ -1,8 +1,7 @@
-import React, { InputHtmlAttributes } from "react";
+import type { InputHTMLAttributes } from "react";
 
-interface InputFieldProps extends InputHtmlAttributes<HTMLInputElement> {
+interface InputFieldProps extends InputHTMLAttributes<HTMLInputElement> {
   label: string;
-  input: string;
 }
 
 export function InputField({ label, id, ...props }: InputFieldProps) {

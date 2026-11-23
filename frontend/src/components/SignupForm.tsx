@@ -1,33 +1,27 @@
 import { useState } from "react";
+import { useNavigate } from "react-router";
 import { InputField } from "./InputField";
 import { FormHeader } from "./FormHeader";
 import { SubmitButton } from "./SubmitButton";
+import { post, errMsg } from "../api";
 
 export default function SignUpForm() {
-  const [name, setName] = useState("");
-  const [lastname, setLastName] = useState("");
+  const navigate = useNavigate();
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-
-  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+  const [error, setError] = useState("");
+  
+  async function handleSubmit(e: React.SubmitEvent<HTMLFormElement>) {
     e.preventDefault();
+    setError("");
     try {
-      const res = await fetch("/api/example/users", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, email }),
+      const { pendingToken } = await post<{ pendingToken: string }>("/auth/signup", {
+        email, username, password,
       });
-      if (!res.ok) {
-        // TODO: show an error
-        return;
-      }
-      setName("");
-      setLastName("");
-      setUsername("");
-      setEmail("");
+      void navigate("/signup/verify", {state: { pendingToken } });
     } catch {
-      // network failure
+      setError("Could not sign up (username or email might be taken)");
     }
   }
 
@@ -35,22 +29,15 @@ export default function SignUpForm() {
     <div className="w-full max-w-md animate-slide-up [animation-delay:150ms]">
       <div className="bg-white p-8 rounded-2xl shadow-xl border border-gray-100">
         <FormHeader title="Sign Up" subtitle="Take Advantage" />
-        <form onSubmit={handleSubmit} className="flex flex-col gap-5">
+        <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-5">
           <InputField
-            id="name"
-            label="Name"
+            id="username"
+            label="Username"
+            type="username"
             required
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. Antonio"
-          />
-          <InputField
-            id="lastname"
-            label="Last Name"
-            required
-            value={lastname}
-            onChange={(e) => setLastname(e.target.value)}
-            placeholder="e.g. Pérez"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            placeholder="Username"
           />
           <InputField
             id="email"

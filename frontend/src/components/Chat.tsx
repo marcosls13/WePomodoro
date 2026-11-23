@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type SubmitEvent } from "react";
 
 export default function Chat() {
   // Estado inicial con un mensaje de bienvenida del sistema
@@ -7,7 +7,7 @@ export default function Chat() {
   ]);
   const [inputText, setInputText] = useState("");
 
-  const handleSendMessage = (e) => {
+  const handleSendMessage = (e: SubmitEvent) => {
     e.preventDefault();
     if (!inputText.trim()) return;
 

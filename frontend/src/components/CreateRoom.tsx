@@ -1,28 +1,44 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router';
 import { SubmitButton } from "../components/SubmitButton";
 import { FormHeader } from "../components/FormHeader";
 import  FormWrapper from "../components/FormWrapper";
+import { post, errMsg } from "../api";
+import { useAuthStore } from "../authStore";
 
 type PanelMode = 'idle' | 'create' | 'join';
 
-interface SignInFormProps {
+interface CreateRoomProps {
   onSwitchMode: () => void;
 }
 
-export default function CreatePanel({ onSwitchMode }: SigInFormProps) {
+export default function CreateRoom({ onSwitchMode }: CreateRoomProps) {
+  const navigate = useNavigate();
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const [mode, setMode] = useState<PanelMode>('idle');
   const [inputValue, setInputValue] = useState('');
+  const [error, setError] = useState("");
 
-  const handleAction = (targetMode: 'create' | 'join') => {
+  const handleAction = async (targetMode: 'create' | 'join') => {
     if (mode === 'idle') {
       setMode(targetMode);
       setInputValue('');
+      setError('');
       return;
     }
 
     if (mode === targetMode) {
-      if (inputValue.trim() === '') return;
-      console.log(`Acción: ${targetMode}, Valor: ${inputValue}`);
+      if (inputValue.trim() === '')
+        return;
+      try {
+        const session =
+          targetMode === 'create'
+            ? await post<{ id: string }>('/sessions', { name: inputValue.trim(), solo: false })
+            : await post<{ id: string }>('/sessions/join', { code: inputValue.trim() });
+        void navigate(`/sessions/${session.id}`);
+      } catch (err) {
+        setError(errMsg(err));
+      }
     }
   };
 

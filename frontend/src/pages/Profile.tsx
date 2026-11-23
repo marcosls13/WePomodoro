@@ -6,26 +6,26 @@ export default function Profile() {
   const updateUsername = useProfileStore((state) => state.updateUsername);
 
   const [isEditing, setIsEditing] = useState(false);
-  const [draftName, setDraftName] = useState(user?.name || '');
+  const [draftUsername, setDraftUsername] = useState(user?.username || '');
 
   const handleSave = async () => {
-    if (draftName.trim() === '' || draftName === user?.name) {
+    if (draftUsername.trim() === '' || draftUsername === user?.username) {
       setIsEditing(false);
       return;
     } 
-    await updateUsername(draftName);
+    await updateUsername(draftUsername);
     setIsEditing(false);
   };
 
-  if (!user) return <div className="animate-pulse text-gray-500">Cargando perfil...</div>;
+//   if (!user) return <div className="animate-pulse text-gray-500">Cargando perfil...</div>;
 
   return (
     <div className="space-y-8">
       <section className="flex items-center space-x-6">
         <div className="w-24 h-24 rounded-full bg-gray-200 border-2 border-gray-300 overflow-hidden flex-shrink-0">
           <img 
-            src={user.avatarUrl || '/default-avatar.png'} 
-            alt={`Avatar de ${user.name}`} 
+            // src={user.avatarUrl || '/default-avatar.png'} 
+            // alt={`Avatar de ${user.username}`} 
             className="w-full h-full object-cover"
           />
         </div>
@@ -39,7 +39,7 @@ export default function Profile() {
           
           <div className="flex justify-between items-center">
             <span className="text-sm font-medium text-gray-600">Nombre de usuario (Login)</span>
-            <span className="text-sm font-mono bg-gray-200 px-2 py-1 rounded">{user.login_42}</span>
+            {/* <span className="text-sm font-mono bg-gray-200 px-2 py-1 rounded">{user.username}</span> */}
           </div>
 
           <div className="flex justify-between items-center pt-4 border-t border-gray-200">
@@ -49,8 +49,8 @@ export default function Profile() {
               <div className="flex space-x-2">
                 <input 
                   type="text" 
-                  value={draftName}
-                  onChange={(e) => setDraftName(e.target.value)}
+                  value={draftUsername}
+                  onChange={(e) => setDraftUsername(e.target.value)}
                   className="px-3 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-black outline-none"
                   autoFocus
                 />
@@ -69,7 +69,7 @@ export default function Profile() {
               </div>
             ) : (
               <div className="flex items-center space-x-4">
-                <span className="text-base font-semibold">{user.name}</span>
+                {/* <span className="text-base font-semibold">{user.username}</span> */}
                 <button 
                   onClick={() => setIsEditing(true)}
                   className="text-sm text-blue-600 hover:text-blue-800 font-medium transition-colors"

@@ -1,8 +1,8 @@
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import SigninForm from "../components/SigninForm"; 
-import CreatePanel from "../components/CreatePanel";
+import CreateRoom from "../components/CreateRoom";
 
 export default function Home() {
   const [loginMode, setLoginMode] = useState(false);    
@@ -50,7 +50,7 @@ export default function Home() {
               transition={{ duration: 0.3, ease: "easeInOut" }}
               className="w-full"
             >
-              <CreatePanel onSwitchMode={() => setLoginMode(true)} />
+              <CreateRoom onSwitchMode={() => setLoginMode(true)} />
             </motion.div>
           )}
         </AnimatePresence>

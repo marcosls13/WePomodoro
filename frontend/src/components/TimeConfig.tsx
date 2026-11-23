@@ -1,11 +1,11 @@
-import { useState } from "react";
+import { useState, type SubmitEvent } from "react";
 
-export default function TimeConfig({ onStartRoom }) {
+export default function TimeConfig({ onStartRoom }: {onStartRoom: (c: {workDuration: number; restDuration: number }) => void }) {
   // Valores por defecto en minutos (ej: 25 min trabajo, 5 min descanso)
   const [workMinutes, setWorkMinutes] = useState(25);
   const [restMinutes, setRestMinutes] = useState(5);
 
-  const handleSubmit = (e) => {
+  const handleSubmit = (e: SubmitEvent) => {
     e.preventDefault();
     
     // Convertimos minutos a milisegundos que es lo que espera tu Timer

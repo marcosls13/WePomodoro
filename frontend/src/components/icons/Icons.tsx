@@ -1,4 +1,4 @@
-import { SVGProps } from "react";
+import type { SVGProps } from "react";
 
 // 1. Definimos la configuración global por defecto
 const DEFAULT_SIZE = 24;
@@ -10,14 +10,14 @@ interface IconProps extends SVGProps<SVGSVGElement> {
 }
 
 
-export const FortyTwoIcon = ({ size = DEFAULT_SIZE, fill = DEFAULT_COLOR, ...props }: IconProps) => (
+export const FortyTwoIcon = ({ size = DEFAULT_SIZE, fill = DEFAULT_COLOR }: IconProps) => (
 <svg width={size} height={size} fill={fill} role="img" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
 <title>42</title>
 <path d="M19.581 16.851H24v-4.439ZM24 3.574h-4.419v4.42l-4.419 4.418v4.44h4.419v-4.44L24 7.993Zm-4.419 0h-4.419v4.42zm-6.324 8.838H4.419l8.838-8.838H8.838L0 12.412v3.595h8.838v4.419h4.419z"/>
 </svg>
 );
 
-export const GoogleIcon = ({ size = DEFAULT_SIZE, fill = DEFAULT_COLOR, ...props }: IconProps) => (
+export const GoogleIcon = ({ size = DEFAULT_SIZE, fill = DEFAULT_COLOR }: IconProps) => (
 <svg width={size} height={size} viewBox="0 0 24 24" id="meteor-icon-kit__solid-google" fill="none" xmlns="http://www.w3.org/2000/svg">
 <g clip-path="url(#clip0_1292_3960)">
 <g clip-path="url(#clip1_1292_3960)">
@@ -35,7 +35,7 @@ export const GoogleIcon = ({ size = DEFAULT_SIZE, fill = DEFAULT_COLOR, ...props
 </svg>
 );
 
-export const GitHubIcon = ({ size = DEFAULT_SIZE, fill = DEFAULT_COLOR, ...props }: IconProps) => (
+export const GitHubIcon = ({ size = DEFAULT_SIZE, fill = DEFAULT_COLOR }: IconProps) => (
 	<svg width={size} height={size} viewBox="0 0 20 20" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlnsXlink="http://www.w3.org/1999/xlink">
 
     <title>github [#142]</title>
@@ -132,8 +132,6 @@ export const History = () =>
 (
 	 <svg
               fill="#FFFFFF"
-              height="800px"
-              width="800px"
               version="1.1"
               id="Layer_1"
               xmlns="http://www.w3.org/2000/svg"

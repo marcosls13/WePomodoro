@@ -2,8 +2,13 @@ import { useState } from "react";
 import { InputField } from "./InputField";
 import { FormHeader } from "./FormHeader";
 import { SubmitButton } from "./SubmitButton";
+import FormWrapper from "./FormWrapper";
 
-export default function SignUpForm() {
+interface SignUpFormProps {
+  onSwitchMode: () => void;
+}
+
+export default function SignUpForm({ onSwitchForm }: SignUpFormProps) {
   const [name, setName] = useState("");
   const [lastname, setLastName] = useState("");
   const [username, setUsername] = useState("");
@@ -32,8 +37,7 @@ export default function SignUpForm() {
   }
 
   return (
-    <div className="w-full max-w-md animate-slide-up [animation-delay:150ms]">
-      <div className="bg-white p-8 rounded-2xl shadow-xl border border-gray-100">
+    <FormWrapper>
         <FormHeader title="Sign Up" subtitle="Take Advantage" />
         <form onSubmit={handleSubmit} className="flex flex-col gap-5">
           <InputField
@@ -71,7 +75,6 @@ export default function SignUpForm() {
           />
           <SubmitButton>Sign Up</SubmitButton>
         </form>
-      </div>
-    </div>
+      </FormWrapper>
   );
 }

@@ -5,7 +5,7 @@ interface FormHeaderProps {
 
 export function FormHeader({ title, subtitle }: FormHeaderProps) {
   return (
-    <div className="mb-8 text-center">
+    <div className="mb-2 text-center">
       <h2 className="text-2xl font-bold text-gray-900 dark:text-white">
         {title}
       </h2>

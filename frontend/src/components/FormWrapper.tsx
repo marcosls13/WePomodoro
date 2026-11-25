@@ -6,10 +6,8 @@ interface FormWrapperProps {
 
 export default function FormWrapper({ children }: FormWrapperProps) {
   return (
-    <div className="w-full">
-      <div className="bg-white p-5 rounded-2xl shadow-xl border border-gray-100 dark:bg-slate-800 dark:border-slate-900">
+      <section className="bg-white p-5 rounded-b-2xl border border-gray-100 dark:bg-slate-800 dark:border-slate-900 w-full flex flex-col items-center-justify-center">
         {children}
-      </div>
-    </div>
+      </section>
   );
 }

@@ -77,12 +77,6 @@ export default function SignInForm({ onSwitchMode }: SignInFormProps) {
             <GitHubIcon />
           </OAuthSubmitButton>
         </div>
-        <button
-          onClick={onSwitchMode}
-          className="text-sm font-bold text-gray-500 hover:text-black transition-colors"
-        >
-          Back
-        </button>
       </div>
     </FormWrapper>
   );

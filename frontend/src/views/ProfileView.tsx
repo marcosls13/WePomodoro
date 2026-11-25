@@ -1,4 +1,4 @@
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet } from "react-router";
 
 // 1. Extraemos la función fuera del componente. No se recrea en cada render.
 // 2. Limpiamos las redundancias de Tailwind y arreglamos las clases inexistentes.

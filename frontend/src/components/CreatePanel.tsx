@@ -5,11 +5,16 @@ import FormWrapper from "../components/FormWrapper";
 
 type PanelMode = "idle" | "create" | "join";
 
-interface SignInFormProps {
-  onSwitchMode: () => void;
+export interface RoomSubmitPayload {
+  action: "create" | "join";
+  value: string;
 }
 
-export default function CreatePanel({ onSwitchMode }: SigInFormProps) {
+interface CreatePanelProps {
+  onSubmitRoom: (payload: RoomSubmitPayload) => void;
+}
+
+export default function CreatePanel({ onSubmitRoom }: CreatePanelProps) {
   const [mode, setMode] = useState<PanelMode>("idle");
   const [inputValue, setInputValue] = useState("");
 
@@ -21,14 +26,18 @@ export default function CreatePanel({ onSwitchMode }: SigInFormProps) {
     }
 
     if (mode === targetMode) {
-      if (inputValue.trim() === "") return;
-      console.log(`Acción: ${targetMode}, Valor: ${inputValue}`);
+      const trimmed = inputValue.trim();
+      if (!trimmed) return;
+      onSubmitRoom({
+        action: targetMode,
+        value: targetMode === "join" ? trimmed.toUpperCase() : trimmed,
+      });
     }
   };
 
   return (
+   <div className="w-full max-w-md min-h-[450px] flex justify-center items-center">
     <FormWrapper>
-      <section className="flex flex-col flex-auto items-center justify-center min-h-[300px]">
         <FormHeader title="Join the session" subtitle="Come on bro" />
         <div className="relative flex flex-col items-center justify-center w-full">
           <div
@@ -82,7 +91,7 @@ export default function CreatePanel({ onSwitchMode }: SigInFormProps) {
         </div>
 
         <div
-          className={`transition-all duration-500 ease-out mt-6 ${mode !== "idle" ? "opacity-100 transform translate-y-0" : "opacity-0 pointer-events-none transform translate-y-2"}`}
+          className={`flex items-center justify-center transition-all duration-500 ease-out mt-6 ${mode !== "idle" ? "opacity-100 transform translate-y-0" : "opacity-0 pointer-events-none transform translate-y-2"}`}
         >
           <button
             onClick={() => setMode("idle")}
@@ -91,13 +100,7 @@ export default function CreatePanel({ onSwitchMode }: SigInFormProps) {
             Cancel
           </button>
         </div>
-        <button
-          onClick={onSwitchMode}
-          className="mt-4 text-sm font-bold text-gray-500 hover:text-black transition-colors"
-        >
-          Discover our advantages by Signing Up
-        </button>
-      </section>
     </FormWrapper>
+    </div>
   );
 }

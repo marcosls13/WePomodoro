@@ -1,4 +1,4 @@
-import { Navigate, Outlet } from "react-router-dom";
+import { Navigate, Outlet } from "react-router";
 import { useState } from "react";
 import { useAuthStore } from "../authStore";
 import Profilebar from "../components/Profilebar";

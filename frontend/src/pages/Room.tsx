@@ -1,13 +1,17 @@
 import { useState, useCallback } from "react";
+import { useLocation } from "react-router";
 import { motion, AnimatePresence } from "motion/react";
+import { useProfileStore } from "../store/profileStore"
 import Timer from "../components/Timer";
 import Chat from "../components/Chat";
 import Games from "../components/Games";
 import TimeConfig from "../components/TimeConfig";
+import CreatePanel from "../components/CreatePanel";
 
 export default function Room() {
   const [roomConfig, setRoomConfig] = useState(null);
   const [isRestTime, setIsRestTime] = useState(false);
+  const user = useProfileStore((state) => state.user);
 
   const handleStartRoom = ({ workDuration, restDuration }) => {
     setRoomConfig({ workDuration, restDuration });
@@ -26,7 +30,7 @@ export default function Room() {
   if (!roomConfig) {
     return (
       <div className="flex w-full items-center justify-center bg-gray-50 dark:bg-slate-950">
-        <TimeConfig onStartRoom={handleStartRoom} />
+	<TimeConfig onStartRoom={handleStartRoom}/>
       </div>
     );
   }

@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { NavLink } from "react-router-dom";
+import { NavLink } from "react-router";
 import { motion, AnimatePresence } from "motion/react";
-import { Calculator, History, Code, Add, Profile, Burger } from "./icons/Icons";
+import { Add, Profile, Friends, Burger } from "./icons/Icons";
 import NightSwitch from "./NightSwitch";
 
 const sidebarVariants = {
@@ -57,32 +57,16 @@ export default function Profilebar() {
             exit="exit"
             className="fixed top-20 right-0 z-45 flex flex-col gap-2 w-fit rounded-full bg-white shadow-xl m-6 p-3 items-center dark:bg-slate-900"
           >
-            <motion.div variants={itemVariants}>
-              <NavLink to="/chat">
-                <div className="bg-red-600 p-3 rounded-full">
-                  <Calculator />
-                </div>
-              </NavLink>
-            </motion.div>
 
+	    <motion.div variants={itemVariants}>
+	    <NavLink to="/friends">
+	    <div className="bg-red-600 rounded-full p-3">
+	    <Friends/>
+	    </div>
+	    </NavLink>
+	    </motion.div>
             <motion.div variants={itemVariants}>
-              <NavLink to="/chat">
-                <div className="bg-red-600 rounded-full p-3 flex items-center justify-center">
-                  <History />
-                </div>
-              </NavLink>
-            </motion.div>
-
-            <motion.div variants={itemVariants}>
-              <NavLink to="/chat">
-                <div className="bg-red-600 rounded-full p-3 flex items-center justify-center">
-                  <Code />
-                </div>
-              </NavLink>
-            </motion.div>
-
-            <motion.div variants={itemVariants}>
-              <NavLink to="/chat">
+              <NavLink to="/lobby">
                 <div className="bg-red-600 rounded-full p-3">
                   <Add />
                 </div>

@@ -7,6 +7,7 @@ import Room from "./pages/Room";
 import Profile from "./pages/Profile";
 import MainPage from "./pages/MainPage";
 import RoomLobby from "./pages/RoomLobby";
+import Friends from "./pages/Friends";
 import CreatePanel from "./components/CreatePanel";
 import { PublicLayout } from "./layouts/PublicLayout";
 import { ProtectedLayout } from "./layouts/ProtectedLayout";
@@ -26,8 +27,8 @@ function App() {
       <Route element={<ProtectedLayout />}>
         <Route path="/lobby" element={<RoomLobby />} />
 	<Route path="/room/:roomId" element={<Room/>}/>
-        <Route path="/profile" element={<Profile />}>
-        </Route>
+        <Route path="/profile" element={<Profile />}/>
+	<Route path="/friends" element={<Friends/>}/>
         <Route path="create" element={<MainPage />} />
       </Route>
     </Routes>

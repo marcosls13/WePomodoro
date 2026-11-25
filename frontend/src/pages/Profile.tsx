@@ -3,6 +3,7 @@ import { useProfileStore } from "../store/profileStore";
 import { InputField } from "../components/InputField";
 import ActivityBoard from "../components/ActivityBoard";
 import TwoFactorAuthForm from "../components/TwoFactorAuthForm";
+import ConfirmEmailButton from "../components/ConfirmEmailButton";
 
 export default function Profile() {
   const user = useProfileStore((state) => state.user);
@@ -96,6 +97,14 @@ export default function Profile() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <ActivityBoard />
         <TwoFactorAuthForm />
+	<ConfirmEmailButton
+    email={user.email}
+    isVerified={user.emailVerified}
+    onConfirmEmail={async (targetEmail) => {
+      // Conecta aquí tu endpoint o servicio de verificación de email
+      console.log("Sending confirmation to:", targetEmail);
+    }}
+  />
       </div>
     </div>
   );

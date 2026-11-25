@@ -37,11 +37,11 @@ export default function Home() {
         </div>
       </div>
 
-      <div className="w-full max-w-md bg-transparent">
+      <div className="flex flex-col gap-1 w-full max-w-md bg-transparent">
         <div
           role="tablist"
           aria-label="Authentication mode"
-          className="grid grid-cols-3 gap-1 rounded-t-2xl bg-white border border-gray-100 dark:border-slate-900  p-1 dark:bg-slate-800"
+          className="grid grid-cols-3 gap-1 rounded-full bg-white border border-gray-100 dark:border-slate-900  p-1 dark:bg-slate-800"
         >
           {MODE_OPTIONS.map((option) => {
             const active = panelMode === option.id;

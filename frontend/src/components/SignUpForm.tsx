@@ -40,7 +40,7 @@ export default function SignUpForm({ onSwitchForm }: SignUpFormProps) {
     <FormWrapper>
         <FormHeader title="Sign Up" subtitle="Take Advantage" />
         <form onSubmit={handleSubmit} className="flex flex-col gap-5">
-	<div className="flex md:flex-row md:gap-2">
+	<div className="flex flex-col md:flex-row md:gap-2">
           <InputField
             id="name"
             label="Name"

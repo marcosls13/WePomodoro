@@ -8,7 +8,6 @@ import helmet from "helmet";
 import { Prisma } from "./generated/prisma/client.js";
 import { ApiError, type Context } from "./api/common.js";
 import { createRouter, type RateLimits } from "./api/router.js";
-import { devRouter } from "./dev.js";
 
 export function createApp(
   ctx: Context,
@@ -18,12 +17,8 @@ export function createApp(
     trustProxy?: number;
     rateLimits?: RateLimits;
     onError?: (error: unknown) => void;
-    /** Dev only: let `X-Dev-User` act as any user without a token. Ignored in production. */
-    devAuth?: boolean;
   } = {},
 ) {
-  const dev = process.env.NODE_ENV !== "production";
-  const devAuth = dev && options.devAuth === true;
   const app = express();
   app.disable("x-powered-by");
   app.use(helmet());
@@ -35,8 +30,6 @@ export function createApp(
   app.use(
     cors((req, callback) => {
       const origin = req.headers.origin;
-      // No Origin (curl, native clients) or the API's own origin (the /dev
-      // console) is not cross-origin.
       const sameSite = origin === `${req.protocol}://${req.headers.host}`;
       if (!origin || sameSite || origins.includes(origin))
         callback(null, { origin: true });
@@ -52,12 +45,10 @@ export function createApp(
   });
 
   app.get("/", (req, res) => {
-    res.json({ service: "WePomodoro API", health: "/api/health", dev: "/dev" });
+    res.json({ service: "WePomodoro API", health: "/api/health" });
   });
 
-  if (dev) app.use("/dev", devRouter(ctx, devAuth));
-
-  app.use("/api", createRouter(ctx, options.rateLimits, devAuth));
+  app.use("/api", createRouter(ctx, options.rateLimits));
 
   app.use((req, res) => {
     res.status(404).json({ error: "Endpoint not found" });

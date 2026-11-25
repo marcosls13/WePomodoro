@@ -1,119 +1,96 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router';
-import { SubmitButton } from "../components/SubmitButton";
-import { FormHeader } from "../components/FormHeader";
-import  FormWrapper from "../components/FormWrapper";
-import { post, errMsg } from "../api";
-import { useAuthStore } from "../authStore";
+import { useState } from "react";
+import { useNavigate } from "react-router";
+import { FormHeader } from "./FormHeader";
+import FormWrapper from "./FormWrapper";
+import { SubmitButton } from "./SubmitButton";
+import TimeInputControl from "./TimeInputControl";
+// import { createRoom, joinRoom, type RoomHandle } from "../roomClient";
+import { errMsg } from "../api";
 
-type PanelMode = 'idle' | 'create' | 'join';
-
-interface CreateRoomProps {
-  onSwitchMode: () => void;
-}
-
-export default function CreateRoom({ onSwitchMode }: CreateRoomProps) {
+export default function CreateRoom() {
   const navigate = useNavigate();
-  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
-  const [mode, setMode] = useState<PanelMode>('idle');
-  const [inputValue, setInputValue] = useState('');
+  const [focusMinutes, setFocusMinutes] = useState(25);
+  const [breakMinutes, setBreakMinutes] = useState(5);
+//   const [created, setCreated] = useState<RoomHandle | null>(null);
+  const [code, setCode] = useState("");
+  const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
-
-  const handleAction = async (targetMode: 'create' | 'join') => {
-    if (mode === 'idle') {
-      setMode(targetMode);
-      setInputValue('');
-      setError('');
-      return;
-    }
-
-    if (mode === targetMode) {
-      if (inputValue.trim() === '')
-        return;
-      try {
-        const session =
-          targetMode === 'create'
-            ? await post<{ id: string }>('/sessions', { name: inputValue.trim(), solo: false })
-            : await post<{ id: string }>('/sessions/join', { code: inputValue.trim() });
-        void navigate(`/sessions/${session.id}`);
-      } catch (err) {
-        setError(errMsg(err));
-      }
-    }
-  };
-
-  return (
-    <FormWrapper>
-    <section className="flex flex-col flex-auto items-center justify-center min-h-[300px]">
-      <FormHeader title="Join the session" subtitle="Come on bro"/>
-      <div className="relative flex flex-col items-center justify-center w-full">
-        
-        <div 
-          className={`flex flex-col items-center transition-all duration-500 ease-out overflow-hidden
-            ${mode === 'join' ? 'max-h-0 opacity-0 pointer-events-none transform -translate-y-4' : 'max-h-48 opacity-100 transform translate-y-0'}
-          `}
-        >
-          <div 
-            className={`transition-all duration-500 ease-out overflow-hidden flex flex-col items-center w-full
-              ${mode === 'create' ? 'max-h-20 opacity-100 mb-4 transform scale-100' : 'max-h-0 opacity-0 mb-0 transform scale-95'}
-            `}
-          >
-            <input
-              type="text"
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              placeholder="Enter room name"
-              className="px-4 py-3 border-2 border-black rounded-full font-mono focus:outline-none focus:border-red-600 w-64"
-            />
-          </div>
-          
-          <SubmitButton onClick={() => handleAction('create')}>
-            {mode === 'create' ? 'Create Room' : 'Create Room'}
-          </SubmitButton>
-        </div>
-
-        <div 
-          className={`flex flex-col items-center transition-all duration-500 ease-out overflow-hidden
-            ${mode === 'create' ? 'max-h-0 opacity-0 pointer-events-none transform translate-y-4' : 'max-h-48 opacity-100 transform translate-y-0 mt-4'}
-            ${mode === 'join' && 'mt-0'} 
-          `}
-        >
-          <div 
-            className={`transition-all duration-500 ease-out overflow-hidden flex flex-col items-center w-full
-              ${mode === 'join' ? 'max-h-20 opacity-100 mb-4 transform scale-100' : 'max-h-0 opacity-0 mb-0 transform scale-95'}
-            `}
-          >
-            <input
-              type="text"
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              placeholder="Room code"
-              className="px-4 py-3 border-2 border-black rounded-full font-mono focus:outline-none focus:border-red-600 uppercase w-64"
-            />
-          </div>
-          
-          <SubmitButton onClick={() => handleAction('join')}>
-            {mode === 'join' ? 'Join Room' : 'Join Room'}
-          </SubmitButton>
-        </div>
-
-      </div>
-
-      <div className={`transition-all duration-500 ease-out mt-6 ${mode !== 'idle' ? 'opacity-100 transform translate-y-0' : 'opacity-0 pointer-events-none transform translate-y-2'}`}>
-        <button 
-          onClick={() => setMode('idle')}
-          className="text-sm font-bold text-gray-400 hover:text-black transition-colors"
-        >
-          Cancel
-        </button>
-      </div>
-<button 
-        onClick={onSwitchMode}
-        className="mt-4 text-sm font-bold text-gray-500 hover:text-black transition-colors"
-      >
-        Discover our advantages by Signing Up
-      </button>
-    </section>
-    </FormWrapper>
-  );
 }
+//   const run = async (action: () => Promise<void>) => {
+//     setError("");
+//     try {
+//       await action();
+//     } catch (err) {
+//       setError(errMsg(err));
+//     }
+//   };
+
+//   const create = () =>
+//     run(async () => {
+//       setCreated(
+//         await createRoom({
+//           focusSeconds: focusMinutes * 60,
+//           breakSeconds: breakMinutes * 60,
+//         }),
+//       );
+//     });
+
+//   const join = () =>
+//     run(async () => {
+//       const room = await joinRoom(code.trim());
+//       void navigate(`/room/${room.code}`);
+//     });
+
+//   const copy = async () => {
+//     if (!created) return;
+//     await navigator.clipboard.writeText(created.code);
+//     setCopied(true);
+//   };
+
+//   if (created)
+//     return (
+//       <FormWrapper>
+//         <FormHeader title="Room ready" subtitle="Share the code or start studying" />
+//         <p className="my-6 select-all text-center font-mono text-4xl tracking-widest text-gray-900 dark:text-white">
+//           {created.code}
+//         </p>
+//         <div className="flex flex-col gap-3">
+//           <SubmitButton onClick={() => void copy()}>
+//             {copied ? "Copied" : "Copy code"}
+//           </SubmitButton>
+//           <SubmitButton onClick={() => void navigate(`/room/${created.code}`)}>
+//             Start studying
+//           </SubmitButton>
+//         </div>
+//       </FormWrapper>
+//     );
+
+//   return (
+//     <FormWrapper>
+//       <FormHeader title="Study together" subtitle="Create a room or join one" />
+//       <div className="flex flex-col gap-4">
+//         <div className="grid grid-cols-2 gap-4">
+//           <TimeInputControl label="Study (min)" value={focusMinutes} onChange={setFocusMinutes} />
+//           <TimeInputControl label="Break (min)" value={breakMinutes} onChange={setBreakMinutes} />
+//         </div>
+//         <SubmitButton onClick={() => void create()}>Create room</SubmitButton>
+
+//         <div className="flex items-center">
+//           <div className="flex-1 border-t border-gray-300" />
+//           <span className="mx-3 text-sm text-gray-500">or</span>
+//           <div className="flex-1 border-t border-gray-300" />
+//         </div>
+
+//         <input
+//           type="text"
+//           value={code}
+//           onChange={(e) => setCode(e.target.value)}
+//           placeholder="Room code"
+//           className="w-full px-4 py-3 border-2 border-black rounded-full font-mono focus:outline-none focus:border-red-600 placeholder:font-custom dark:text-white"
+//         />
+//         <SubmitButton onClick={() => void join()}>Join room</SubmitButton>
+//         {error && <p className="text-sm text-red-600">{error}</p>}
+//       </div>
+//     </FormWrapper>
+//   );
+// }

@@ -50,10 +50,10 @@ export function getAvatar(ctx: Context, userId: number) {
 export async function publicProfile(ctx: Context, actor: Actor, id: number) {
   const user = await ctx.db.user.findUnique({
     where: { id },
-    select: { id: true, username: true, createdAt: true },
+    select: { id: true, username: true },
   });
   if (!user) throw new ApiError(404, "User not found");
-  const stats = await getUserStatistics(ctx.db, id, ctx.now());
+  const stats = await getUserStatistics(ctx.db, id);
   const me = actor.userId;
   const row =
     me === null || me === id

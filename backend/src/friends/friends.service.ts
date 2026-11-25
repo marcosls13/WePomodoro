@@ -16,32 +16,14 @@ export async function listFriends(ctx: Context, actor: Actor) {
     orderBy: { createdAt: "desc" },
     take: 500,
   });
-  // Friends see which shared (coded) session someone is in; solo timers are
-  // private. "Online" comes from the WebSocket layer, not from the database.
-  const friendIds = rows
-    .filter((r) => r.status === "ACCEPTED")
-    .map((r) => (r.requesterId === me ? r.addresseeId : r.requesterId));
-  const memberships = await ctx.db.sessionMember.findMany({
-    where: {
-      userId: { in: [...friendIds, me] },
-      session: { code: { not: null } },
-    },
-    include: { session: { select: { id: true, name: true } } },
-    orderBy: { joinedAt: "desc" },
-  });
-  const mine = new Set(
-    memberships.filter((m) => m.userId === me).map((m) => m.sessionId),
-  );
-  const presenceOf = (userId: number) => {
-    const s = memberships.find((m) => m.userId === userId)?.session;
-    return { session: s && { id: s.id, name: s.name, joined: mine.has(s.id) } };
-  };
+
+  const presenceOf = (userId: number) =>
+    ctx.realtime?.presence?.(userId) ?? { online: false, roomCode: null };
   const view = (row: (typeof rows)[number]) => {
     const user = row.requesterId === me ? row.addressee : row.requester;
     return {
       id: row.id,
       user,
-      createdAt: row.createdAt,
       ...(row.status === "ACCEPTED" ? { presence: presenceOf(user.id) } : {}),
     };
   };

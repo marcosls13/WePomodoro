@@ -4,7 +4,6 @@ import { providersFromEnv } from "./auth/oauth.providers.js";
 import { consoleMailer, type Mailer } from "./mail/mailer.js";
 import { createSmtpMailer, smtpConfigFromEnv } from "./mail/smtp.js";
 import { prisma } from "./prisma.js";
-import { sweepTimers } from "./timers/timers.service.js";
 
 const port = Number(process.env.PORT ?? 3000);
 if (!Number.isInteger(port) || port < 1 || port > 65535)
@@ -44,7 +43,6 @@ const ctx = {
 
 const app = createApp(ctx, {
   trustProxy,
-  devAuth: process.env.DEV_AUTH === "true",
   origins: (process.env.CORS_ORIGIN ?? "http://localhost:5173")
     .split(",")
     .map((origin) => origin.trim()),
@@ -57,22 +55,17 @@ const server = app.listen(port, () => {
   console.log(`WePomodoro API listening on port ${port}`);
 });
 
-let sweeping: Promise<void> | null = null;
-let ticks = 0;
+let cleaning: Promise<void> | null = null;
 const worker = setInterval(() => {
-  if (sweeping) return;
-  ticks++;
-  sweeping = sweepTimers(ctx)
-    .then(async () => {
-      if (ticks % 60 === 0) await cleanupExpiredSessions(ctx);
-    })
+  if (cleaning) return;
+  cleaning = cleanupExpiredSessions(ctx)
     .catch((error: unknown) => {
-      console.error("Timer finalization failed", error);
+      console.error("Expired session cleanup failed", error);
     })
     .finally(() => {
-      sweeping = null;
+      cleaning = null;
     });
-}, 1000);
+}, 60_000);
 
 worker.unref();
 
@@ -94,7 +87,7 @@ async function shutdown() {
   // Idle keep-alive connections would otherwise hold server.close() open.
   server.closeIdleConnections();
   await closed;
-  await sweeping;
+  await cleaning;
   await prisma.$disconnect();
   process.exit(0);
 }

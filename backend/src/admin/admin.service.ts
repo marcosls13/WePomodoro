@@ -3,6 +3,7 @@ import {
   transaction,
   type Actor,
   type Context,
+  type Identity,
 } from "../api/common.js";
 import { endIdentity } from "../api/lifecycle.js";
 import { hashPassword } from "../auth/auth.service.js";
@@ -33,8 +34,6 @@ const adminSelect = {
   email: true,
   emailVerifiedAt: true,
   role: true,
-  createdAt: true,
-  updatedAt: true,
   twoFactorEnabledAt: true,
 } as const;
 
@@ -74,7 +73,7 @@ export async function listUsers(
       : undefined,
     ...page,
     select: adminSelect,
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    orderBy: { id: "desc" },
   });
   return users.map((user) => view(user, full));
 }
@@ -162,10 +161,31 @@ export async function updateUser(
   return view(updated);
 }
 
+function eject(ctx: Context, who: Identity) {
+  ctx.realtime?.eject?.(who);
+}
+
 export async function deleteUser(ctx: Context, actor: Actor, id: number) {
   if (id === actor.userId)
     throw new ApiError(409, "Delete your own account from your profile");
-  await endIdentity(ctx, { userId: id, guestSessionId: null }, true);
+  const who = { userId: id, guestSessionId: null };
+  await endIdentity(ctx, who, true);
+  eject(ctx, who);
+}
+
+export function listGuests(ctx: Context) {
+  return ctx.db.guestSession.findMany({
+    where: { expiresAt: { gt: ctx.now() } },
+    select: { id: true, displayName: true },
+    orderBy: { displayName: "asc" },
+    take: 500,
+  });
+}
+
+export async function deleteGuest(ctx: Context, id: string) {
+  const { count } = await ctx.db.guestSession.deleteMany({ where: { id } });
+  if (!count) throw new ApiError(404, "Guest not found");
+  eject(ctx, { userId: null, guestSessionId: id });
 }
 
 export async function resetTwoFactor(ctx: Context, id: number) {

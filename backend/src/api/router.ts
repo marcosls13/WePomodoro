@@ -18,7 +18,6 @@ import {
   profileSelect,
   registered,
   text,
-  transaction,
   username,
   uuid,
   type Actor,
@@ -46,28 +45,12 @@ import {
   finishChallenge,
   twoFactorStatus,
 } from "../auth/twofactor.service.js";
-import { devActor } from "../dev.js";
 import {
   acceptFriend,
   listFriends,
   removeFriend,
   requestFriend,
 } from "../friends/friends.service.js";
-import {
-  createSession,
-  deleteSession,
-  getSession,
-  joinSession,
-  leaveSession,
-  listSessions,
-  transferOwner,
-  muteMember,
-  removeMember,
-  rotateCode,
-  updateSession,
-  type SessionSettings,
-} from "../rooms/rooms.service.js";
-import { sweepTimers, timerAction } from "../timers/timers.service.js";
 import {
   confirmPasswordReset,
   requestPasswordReset,
@@ -88,6 +71,8 @@ import {
   getUser,
   listUsers,
   createUser,
+  deleteGuest,
+  listGuests,
   requireStaff,
   resetTwoFactor,
   updateUser,
@@ -110,15 +95,6 @@ const defaultAvatar =
 
 function actor(res: Response): Actor {
   return res.locals.actor as Actor;
-}
-
-function settings(input: Record<string, unknown>): SessionSettings {
-  const result: SessionSettings = {};
-  if (input.name !== undefined) result.name = text(input.name, "name");
-  for (const key of ["focusSeconds", "breakSeconds"] as const)
-    if (input[key] !== undefined)
-      result[key] = integer(input[key], key, 1, 14400);
-  return result;
 }
 
 // Existing passwords are only compared, so don't apply the new-password rules.
@@ -175,7 +151,6 @@ function tooMany(message: string) {
 export function createRouter(
   ctx: Context,
   limits: RateLimits = defaultRateLimits,
-  devAuth = false,
 ) {
   const router = Router();
 
@@ -428,11 +403,7 @@ export function createRouter(
   });
 
   router.use(async (req, res, next) => {
-    const as = req.headers["x-dev-user"];
-    res.locals.actor =
-      devAuth && typeof as === "string"
-        ? await devActor(ctx, as)
-        : await authenticate(ctx, req);
+    res.locals.actor = await authenticate(ctx, req);
     next();
   });
 
@@ -533,7 +504,7 @@ export function createRouter(
       await ctx.db.user.findMany({
         ...pagination(req),
         select: { id: true, username: true },
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        orderBy: { id: "desc" },
       }),
     );
   });
@@ -586,11 +557,7 @@ export function createRouter(
   });
 
   router.get("/users/me/stats", async (req, res) => {
-    const id = registered(actor(res));
-    await sweepTimers(ctx);
-    res.json(
-      await transaction(ctx, (tx) => getUserStatistics(tx, id, ctx.now())),
-    );
+    res.json(await getUserStatistics(ctx.db, registered(actor(res))));
   });
 
   router.put(
@@ -700,113 +667,14 @@ export function createRouter(
     res.sendStatus(204);
   });
 
-  router.get("/sessions", async (req, res) => {
-    res.json(await listSessions(ctx, actor(res)));
+  router.get("/admin/guests", async (req, res) => {
+    res.json(await listGuests(ctx));
   });
 
-  router.post("/sessions", async (req, res) => {
-    const input = body(req);
-    res.status(201).json(
-      await createSession(ctx, actor(res), {
-        ...settings(input),
-        name: text(input.name, "name"),
-        solo: input.solo === true,
-      }),
-    );
-  });
-
-  router.post("/sessions/join", async (req, res) => {
-    res.json(
-      await joinSession(ctx, actor(res), text(body(req).code, "code", 64)),
-    );
-  });
-
-  router.get("/sessions/:sessionId", async (req, res) => {
-    res.json(await getSession(ctx, actor(res), uuid(req.params.sessionId)));
-  });
-
-  router.patch("/sessions/:sessionId", async (req, res) => {
-    const update = settings(body(req));
-    if (!Object.keys(update).length)
-      throw new ApiError(400, "Provide a session setting to update");
-    res.json(
-      await updateSession(ctx, actor(res), uuid(req.params.sessionId), update),
-    );
-  });
-
-  router.post("/sessions/:sessionId/leave", async (req, res) => {
-    await leaveSession(ctx, actor(res), uuid(req.params.sessionId));
+  router.delete("/admin/guests/:id", async (req, res) => {
+    await deleteGuest(ctx, uuid(req.params.id));
     res.sendStatus(204);
   });
-
-  router.delete("/sessions/:sessionId", async (req, res) => {
-    await deleteSession(ctx, actor(res), uuid(req.params.sessionId));
-    res.sendStatus(204);
-  });
-
-  // The owner replaces the room code, e.g. after kicking someone.
-  router.post("/sessions/:sessionId/code", async (req, res) => {
-    res.json(await rotateCode(ctx, actor(res), uuid(req.params.sessionId)));
-  });
-
-  router.post("/sessions/:sessionId/owner", async (req, res) => {
-    res.json(
-      await transferOwner(
-        ctx,
-        actor(res),
-        uuid(req.params.sessionId),
-        uuid(body(req).memberId),
-      ),
-    );
-  });
-
-  router.delete("/sessions/:sessionId/members/:memberId", async (req, res) => {
-    await removeMember(
-      ctx,
-      actor(res),
-      uuid(req.params.sessionId),
-      uuid(req.params.memberId),
-    );
-    res.sendStatus(204);
-  });
-
-  router.post(
-    "/sessions/:sessionId/members/:memberId/mute",
-    async (req, res) => {
-      res.json(
-        await muteMember(
-          ctx,
-          actor(res),
-          uuid(req.params.sessionId),
-          uuid(req.params.memberId),
-          integer(body(req).minutes, "minutes", 1, 10080),
-        ),
-      );
-    },
-  );
-
-  router.delete(
-    "/sessions/:sessionId/members/:memberId/mute",
-    async (req, res) => {
-      res.json(
-        await muteMember(
-          ctx,
-          actor(res),
-          uuid(req.params.sessionId),
-          uuid(req.params.memberId),
-          null,
-        ),
-      );
-    },
-  );
-
-  // The owner drives the one timer of the session.
-  for (const action of ["start", "pause", "resume", "cancel"] as const)
-    router.post(`/sessions/:sessionId/timer/${action}`, async (req, res) => {
-      res.json(
-        await timerAction(ctx, actor(res), uuid(req.params.sessionId), action),
-      );
-    });
 
   router.get("/friends", async (req, res) => {
     res.json(await listFriends(ctx, actor(res)));

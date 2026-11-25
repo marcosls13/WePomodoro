@@ -1,12 +1,11 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import FormWrapper from "./FormWrapper";
 import { FormHeader } from "./FormHeader";
 import { InputField } from "./InputField";
 import { SubmitButton } from "./SubmitButton";
 import { errMsg } from "../api";
-import { Form } from "react-router";
 
-interface SingleFieldFormsProps {
+interface SingleFieldFormProps {
   title: string;
   subtitle: string;
   label: string;
@@ -26,7 +25,7 @@ export default function SingleFieldForm({
   placeholder,
   onSubmit,
   extra,
-}: SingleFieldFormsProps) {
+}: SingleFieldFormProps) {
   const [value, setValue] = useState("");
   const [error, setError] = useState("");
 
@@ -41,11 +40,11 @@ export default function SingleFieldForm({
   }
 
   return (
-    <div>
+    <div className="flex-grow flex items-center justify-center p-6">
       <FormWrapper>
         <FormHeader title={title} subtitle={subtitle} />
         <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-5">
-          <InputField 
+          <InputField
             id="field"
             label={label}
             type={type}

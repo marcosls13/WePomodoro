@@ -12,13 +12,11 @@ export const ProtectedLayout = () => {
   }
 
   return (
-    <div className="flex min-h-screen font-custom">
-        <main className="flex flex-grow">
-          <Outlet />
-        </main>
-      {isRandomUser?
-      <Profilebar />:
-      <></>}
-    </div>
+    <>
+      <main className="flex min-h-screen font-custom dark:bg-slate-900">
+        <Outlet />
+      </main>
+      {isRandomUser ? <Profilebar /> : <></>}
+    </>
   );
 };

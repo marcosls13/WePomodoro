@@ -1,23 +1,28 @@
 import { useState, useEffect } from "react";
-// import TimeInputControl from "./TimeInputControl"
 
 function getFormattedTime(milliseconds: number) {
-    let total_seconds = Math.floor(milliseconds/1000);
-    let total_minutes = Math.floor(total_seconds/60);
-    let total_hours = Math.floor(total_minutes/60);
+  let total_seconds = Math.floor(milliseconds / 1000);
+  let total_minutes = Math.floor(total_seconds / 60);
+  let total_hours = Math.floor(total_minutes / 60);
 
-    let seconds = total_seconds % 60;
-    let minutes = total_minutes % 60;
-    let hours = total_hours % 24;
+  let seconds = total_seconds % 60;
+  let minutes = total_minutes % 60;
+  let hours = total_hours % 24;
 
-    const sStr = String(seconds).padStart(2, '0');
-    const mStr = String(minutes).padStart(2, '0');
-    const hStr = String(hours).padStart(2, '0');
-    
-    return `${hStr}h : ${mStr}m : ${sStr}s`;
-};
+  const sStr = String(seconds).padStart(2, "0");
+  const mStr = String(minutes).padStart(2, "0");
+  const hStr = String(hours).padStart(2, "0");
 
-export default function Timer({ duration, onTimeUp }: {duration: number; onTimeUp: () => void}) {
+  return `${hStr}h : ${mStr}m : ${sStr}s`;
+}
+
+export default function Timer({
+  duration,
+  onTimeUp,
+}: {
+  duration: number;
+  onTimeUp: () => void;
+}) {
   const [time, setTime] = useState(duration);
 
   useEffect(() => {
@@ -27,7 +32,7 @@ export default function Timer({ duration, onTimeUp }: {duration: number; onTimeU
     }
 
     const intervalId = setInterval(() => {
-      setTime((prevTime) => Math.max(prevTime - 1000, 0));
+      setTime((prevTime: number) => Math.max(prevTime - 1000, 0));
     }, 1000);
 
     return () => clearInterval(intervalId);
@@ -35,7 +40,9 @@ export default function Timer({ duration, onTimeUp }: {duration: number; onTimeU
 
   return (
     <>
-     <div>{getFormattedTime(time)}</div>
-</>
+      <p className="dark:text-white dark:bg-slate-900">
+        {getFormattedTime(time)}
+      </p>
+    </>
   );
 }

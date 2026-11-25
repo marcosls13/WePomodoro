@@ -1,12 +1,4 @@
-import {
-  identity,
-  registered,
-  transaction,
-  ApiError,
-  type Actor,
-  type Context,
-} from "./common.js";
-import { keepOwner } from "../timers/timers.service.js";
+import { registered, ApiError, type Actor, type Context } from "./common.js";
 
 export async function endIdentity(
   ctx: Context,
@@ -14,18 +6,7 @@ export async function endIdentity(
   deleteAccount = false,
 ) {
   if (deleteAccount) {
-    const userId = registered(actor);
-    // Their memberships go with the account. Sessions they owned pass to the
-    // next member, and a session left empty is deleted.
-    await transaction(ctx, async (tx) => {
-      const memberships = await tx.sessionMember.findMany({
-        where: { userId },
-        select: { sessionId: true },
-        orderBy: { sessionId: "asc" },
-      });
-      await tx.user.delete({ where: { id: userId } });
-      for (const { sessionId } of memberships) await keepOwner(tx, sessionId);
-    });
+    await ctx.db.user.delete({ where: { id: registered(actor) } });
     return;
   }
   if (actor.userId !== null) {
@@ -35,18 +16,8 @@ export async function endIdentity(
     });
     return;
   }
-  // Guest logout deletes its temporary identity and its memberships. Nothing
-  // of a guest is kept, so there is no progress to credit.
-  await transaction(ctx, async (tx) => {
-    const memberships = await tx.sessionMember.findMany({
-      where: identity(actor),
-      select: { sessionId: true },
-      orderBy: { sessionId: "asc" },
-    });
-    await tx.guestSession.deleteMany({
-      where: { id: actor.guestSessionId ?? "" },
-    });
-    for (const { sessionId } of memberships) await keepOwner(tx, sessionId);
+  await ctx.db.guestSession.deleteMany({
+    where: { id: actor.guestSessionId ?? "" },
   });
 }
 
@@ -54,15 +25,6 @@ export async function cleanupExpiredSessions(ctx: Context) {
   await ctx.db.authSession.deleteMany({
     where: { expiresAt: { lte: ctx.now() } },
   });
-  // A session with no owner has lost its last member or its guest owner expired:
-  // pass it on, or delete it when empty.
-  const orphans = await ctx.db.pomodoroSession.findMany({
-    where: { members: { none: { isOwner: true } } },
-    select: { id: true },
-    take: 100,
-  });
-  for (const { id } of orphans)
-    await transaction(ctx, (tx) => keepOwner(tx, id));
   await ctx.db.emailToken.deleteMany({
     where: { expiresAt: { lte: ctx.now() } },
   });
@@ -75,11 +37,7 @@ export async function cleanupExpiredSessions(ctx: Context) {
   await ctx.db.oAuthCode.deleteMany({
     where: { expiresAt: { lte: ctx.now() } },
   });
-  const guests = await ctx.db.guestSession.findMany({
+  await ctx.db.guestSession.deleteMany({
     where: { expiresAt: { lte: ctx.now() } },
-    take: 100,
-    orderBy: { expiresAt: "asc" },
   });
-  for (const guest of guests)
-    await endIdentity(ctx, { userId: null, guestSessionId: guest.id });
 }

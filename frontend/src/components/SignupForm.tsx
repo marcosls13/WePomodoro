@@ -11,17 +11,19 @@ export default function SignUpForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
-  
+
   async function handleSubmit(e: React.SubmitEvent<HTMLFormElement>) {
     e.preventDefault();
     setError("");
     try {
       const { pendingToken } = await post<{ pendingToken: string }>("/auth/signup", {
-        email, username, password,
+        email,
+        username,
+        password,
       });
-      void navigate("/signup/verify", {state: { pendingToken } });
-    } catch {
-      setError("Could not sign up (username or email might be taken)");
+      void navigate("/signup/verify", { state: { pendingToken } });
+    } catch (err) {
+      setError(errMsg(err));
     }
   }
 
@@ -33,7 +35,6 @@ export default function SignUpForm() {
           <InputField
             id="username"
             label="Username"
-            type="username"
             required
             value={username}
             onChange={(e) => setUsername(e.target.value)}
@@ -56,6 +57,7 @@ export default function SignUpForm() {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
           />
+          {error && <p className="text-sm text-red-600">{error}</p>}
           <SubmitButton>Sign Up</SubmitButton>
         </form>
       </div>

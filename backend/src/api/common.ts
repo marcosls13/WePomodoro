@@ -18,18 +18,25 @@ export interface Actor {
   authSessionId?: string;
 }
 
+export interface Identity {
+  userId: number | null;
+  guestSessionId: string | null;
+}
+
+export interface RealtimeHooks {
+  presence?: (userId: number) => { online: boolean; roomCode: string | null };
+  eject?: (who: Identity) => void;
+}
+
 export interface Context {
   db: PrismaClient;
   now: () => Date;
   mailer: Mailer;
   oauth: ReadonlyMap<string, OAuthProviderConfig>;
+  realtime?: RealtimeHooks;
 }
 
 export type Transaction = Prisma.TransactionClient;
-export function identity(actor: Actor) {
-  return { userId: actor.userId, guestSessionId: actor.guestSessionId };
-}
-
 export function registered(actor: Actor): number {
   if (actor.userId === null)
     throw new ApiError(403, "A registered account is required");
@@ -117,8 +124,6 @@ export async function transaction<T>(
         typeof error === "object" &&
         error !== null &&
         "code" in error &&
-        // P2034: Prisma's own conflict; raw FOR UPDATE queries surface Postgres's
-        // serialization failure (40001) as P2010 instead.
         (error.code === "P2034" ||
           (error.code === "P2010" &&
             error instanceof Error &&
@@ -136,8 +141,6 @@ export const profileSelect = {
   email: true,
   emailVerifiedAt: true,
   role: true,
-  createdAt: true,
-  updatedAt: true,
 } as const;
 
 export function email(value: unknown) {

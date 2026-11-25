@@ -7,11 +7,6 @@ datasource db {
   provider = "postgresql"
 }
 
-enum PomodoroPhase {
-  FOCUS
-  BREAK
-}
-
 enum EmailTokenPurpose {
   EMAIL_VERIFICATION
   // Six-digit code emailed to the user; exchanged for a PASSWORD_RESET token.
@@ -24,7 +19,7 @@ enum EmailTokenPurpose {
 
 enum Role {
   USER
-  // Owner-like powers in rooms they are a member of, plus a read-only user list.
+  // Read-only access to the admin user list.
   MODERATOR
   ADMIN
 }
@@ -32,13 +27,6 @@ enum Role {
 enum FriendshipStatus {
   PENDING
   ACCEPTED
-}
-
-enum TimerStatus {
-  // Between phases: waiting for the owner to start `phase`.
-  IDLE
-  RUNNING
-  PAUSED
 }
 
 model User {
@@ -54,8 +42,6 @@ model User {
   // Site-wide permission level. Granted with `npm run users:role`; only an admin
   // can then change others through /api/admin.
   role            Role      @default(USER)
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
 
   avatar             UserAvatar?
   authSessions       AuthSession[]
@@ -66,7 +52,6 @@ model User {
   loginChallenges    LoginChallenge[]
   friendRequests     Friendship[]     @relation("FriendshipRequester")
   friendInvites      Friendship[]     @relation("FriendshipAddressee")
-  memberships        SessionMember[]
   stat               UserStat?
 }
 
@@ -137,60 +122,11 @@ model GuestSession {
   id          String   @id @default(uuid()) @db.Uuid
   displayName String
   tokenHash   String   @unique
+  // Safety net: a guest is normally deleted when it leaves; this removes the
+  // ones whose tab crashed or whose connection was never closed cleanly.
   expiresAt   DateTime
-  createdAt   DateTime @default(now())
-
-  memberships SessionMember[]
 
   @@index([expiresAt])
-}
-
-// A study session is the server people join: its settings, its join code, its
-// chat and its one shared timer. The owner is the member with isOwner = true.
-model PomodoroSession {
-  id             String          @id @default(uuid()) @db.Uuid
-  name           String
-  // The shared code that lets anyone who has it join; the owner can replace it.
-  // Null for a solo timer: nobody can join it.
-  code           String?         @unique
-  focusSeconds   Int             @default(1500)
-  breakSeconds   Int             @default(300)
-  // The timer. `phase` is the running phase, or the next one while IDLE.
-  phase          PomodoroPhase   @default(FOCUS)
-  timerStatus    TimerStatus     @default(IDLE)
-  // Set exactly while RUNNING: the moment it last (re)started.
-  resumedAt      DateTime?
-  // Active time before resumedAt, excluding pauses.
-  elapsedSeconds Int             @default(0)
-  createdAt      DateTime        @default(now())
-  members        SessionMember[]
-
-  @@index([timerStatus])
-}
-
-// Someone (a user or a guest) who is in a session. Members are in the timer: a
-// member who leaves or is kicked is deleted, and rejoining needs the code.
-model SessionMember {
-  id             String          @id @default(uuid()) @db.Uuid
-  sessionId      String          @db.Uuid
-  // Exactly one identity; enforced by a SQL CHECK in the migration.
-  userId         Int?
-  guestSessionId String?         @db.Uuid
-  joinedAt       DateTime        @default(now())
-  // While in the future the member can read the chat but not post.
-  mutedUntil     DateTime?
-  // Exactly one per session; a partial unique index in the migration.
-  isOwner        Boolean         @default(false)
-  // Focus time is counted from here, then moved forward.
-  creditedAt     DateTime        @default(now())
-  session        PomodoroSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  user           User?           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  guestSession   GuestSession?   @relation(fields: [guestSessionId], references: [id], onDelete: Cascade)
-
-  @@unique([sessionId, userId])
-  @@unique([sessionId, guestSessionId])
-  @@index([userId])
-  @@index([guestSessionId])
 }
 
 // A friend request from requester to addressee; ACCEPTED makes it mutual. A
@@ -210,8 +146,8 @@ model Friendship {
 }
 
 // Lifetime totals of a registered user: time studied and minigame wins/losses
-// (played = wins + losses, all games together). Guests have none. Kept apart from
-// SessionMember so leaving or deleting a session doesn't erase them.
+// (all games together). Guests have none. Rooms are not stored, so this is the
+// only place study time lives.
 model UserStat {
   userId         Int  @id
   focusedSeconds Int  @default(0)

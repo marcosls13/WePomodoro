@@ -1,7 +1,12 @@
-// import { useState } from "react";
-
-export default function TimeInputControl({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
-  
+export default function TimeInputControl({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (v: number) => void;
+}) {
   const handleDecrement = () => {
     if (value > 1) onChange(value - 1);
   };
@@ -14,8 +19,6 @@ export default function TimeInputControl({ label, value, onChange }: { label: st
     <div className="flex flex-col gap-1">
       <label className="text-xs font-semibold text-gray-600">{label}</label>
       <div className="flex items-center border border-gray-200 rounded-full bg-gray-50 overflow-hidden shadow-sm">
-        
-        {/* Botón menos personalizado */}
         <button
           type="button"
           onClick={handleDecrement}
@@ -24,7 +27,6 @@ export default function TimeInputControl({ label, value, onChange }: { label: st
           -
         </button>
 
-        {/* Input numérico sin flechas nativas */}
         <input
           type="number"
           value={value}
@@ -32,7 +34,6 @@ export default function TimeInputControl({ label, value, onChange }: { label: st
           className="w-16 text-center bg-transparent focus:outline-none text-sm font-medium text-gray-800 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [-moz-appearance:textfield]"
         />
 
-        {/* Botón más personalizado */}
         <button
           type="button"
           onClick={handleIncrement}

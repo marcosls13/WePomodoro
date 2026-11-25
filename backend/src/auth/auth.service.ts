@@ -2,7 +2,6 @@ import { createHash, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
 import type { Request } from "express";
 import {
   ApiError,
-  identity,
   profileSelect,
   registered,
   transaction,
@@ -78,7 +77,6 @@ export async function login(ctx: Context, address: string, value: string) {
       data: {
         userId: user.id,
         tokenHash: tokenHash(bearer),
-        createdAt: now,
         expiresAt,
       },
     });
@@ -107,7 +105,6 @@ export async function createGuest(ctx: Context, displayName: string) {
     data: {
       displayName,
       tokenHash: tokenHash(bearer),
-      createdAt: now,
       expiresAt,
     },
     select: { id: true, displayName: true, expiresAt: true },
@@ -205,4 +202,3 @@ export async function updateProfile(
   });
 }
 // Only server-validated actor identities are allowed into the API services.
-export { identity };

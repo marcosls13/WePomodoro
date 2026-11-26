@@ -1,13 +1,13 @@
 import { useState, useEffect } from "react";
 
 function getFormattedTime(milliseconds: number) {
-  let total_seconds = Math.floor(milliseconds / 1000);
-  let total_minutes = Math.floor(total_seconds / 60);
-  let total_hours = Math.floor(total_minutes / 60);
+  const total_seconds = Math.floor(milliseconds / 1000);
+  const total_minutes = Math.floor(total_seconds / 60);
+  const total_hours = Math.floor(total_minutes / 60);
 
-  let seconds = total_seconds % 60;
-  let minutes = total_minutes % 60;
-  let hours = total_hours % 24;
+  const seconds = total_seconds % 60;
+  const minutes = total_minutes % 60;
+  const hours = total_hours % 24;
 
   const sStr = String(seconds).padStart(2, "0");
   const mStr = String(minutes).padStart(2, "0");
@@ -35,7 +35,7 @@ export default function Timer({
       setTime((prevTime: number) => Math.max(prevTime - 1000, 0));
     }, 1000);
 
-    return () => clearInterval(intervalId);
+    return () => { clearInterval(intervalId); };
   }, [time, onTimeUp]);
 
   return (

@@ -13,17 +13,13 @@ export function eject() {
 
 export async function api<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
   const token = useAuthStore.getState().token;
-  const res = await fetch(`/api${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...init.headers,
-    },
-  });
+  const headers = new Headers(init.headers);
+  if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const res = await fetch(`/api${path}`, { ...init, headers });
   if (!res.ok) {
     const data = (await res.json().catch(() => null)) as { error?: string } | null;
-    const message = data?.error ?? `HTTP ${res.status}`;
+    const message = data?.error ?? `HTTP ${String(res.status)}`;
     if (res.status === 401 && token && deadToken.test(message)) eject();
     throw new Error(message);
   }

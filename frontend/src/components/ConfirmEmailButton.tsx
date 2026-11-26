@@ -67,7 +67,7 @@ export default function ConfirmEmailButton({
             label="Code from your email"
             required
             value={code}
-            onChange={(e) => setCode(e.target.value)}
+            onChange={(e) => { setCode(e.target.value); }}
             placeholder="123456"
           />
           <SubmitButton>Verify</SubmitButton>

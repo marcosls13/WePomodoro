@@ -17,7 +17,7 @@ export default function NightSwitch() {
   return (
     <>
       <button
-        onClick={() => setDarkMode(!darkMode)}
+        onClick={() => { setDarkMode(!darkMode); }}
         className="px-4 py-2 rounded-full font-medium bg-slate-900 text-white dark:bg-slate-800 dark:text-white hover:opacity-90 transition cursor-pointer"
       >
         {darkMode ? "☀️ " : "🌙"}

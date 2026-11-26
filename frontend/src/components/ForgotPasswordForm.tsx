@@ -79,7 +79,7 @@ export default function ForgotPasswordForm({ onBack }: { onBack: () => void }) {
             type="email"
             required
             value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            onChange={(e) => { setEmail(e.target.value); }}
             placeholder="you@student.42madrid.com"
           />
         )}
@@ -89,7 +89,7 @@ export default function ForgotPasswordForm({ onBack }: { onBack: () => void }) {
             label="Code"
             required
             value={code}
-            onChange={(e) => setCode(e.target.value)}
+            onChange={(e) => { setCode(e.target.value); }}
             placeholder="123456"
           />
         )}
@@ -99,7 +99,7 @@ export default function ForgotPasswordForm({ onBack }: { onBack: () => void }) {
             label="Password"
             required
             value={password}
-            onChange={(e) => setPassword(e.target.value)}
+            onChange={(e) => { setPassword(e.target.value); }}
           />
         )}
         {error && <p className="text-sm text-red-600">{error}</p>}

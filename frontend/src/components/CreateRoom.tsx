@@ -84,7 +84,7 @@ export default function CreateRoom() {
         <input
           type="text"
           value={code}
-          onChange={(e) => setCode(e.target.value)}
+          onChange={(e) => { setCode(e.target.value); }}
           placeholder="Room code"
           className="w-full px-4 py-3 border-2 border-black rounded-full font-mono focus:outline-none focus:border-red-600 placeholder:font-custom dark:text-white"
         />

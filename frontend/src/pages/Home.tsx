@@ -35,7 +35,7 @@ export default function Home() {
         <div className="pt-4">
           <button
             type="button"
-            onClick={() => setPanelMode("signup")}
+            onClick={() => { setPanelMode("signup"); }}
             className="inline-flex items-center justify-center rounded-full bg-gray-900 px-8 py-3.5 text-base font-semibold text-white shadow-sm hover:bg-gray-700 hover:-translate-y-0.5 transition-all duration-200 dark:bg-slate-800"
           >
             Sync your focus
@@ -57,7 +57,7 @@ export default function Home() {
                 type="button"
                 role="tab"
                 aria-selected={active}
-                onClick={() => setPanelMode(option.id)}
+                onClick={() => { setPanelMode(option.id); }}
                 className={`relative rounded-full py-2 text-xs font-semibold transition-colors ${
                   active
                     ? "text-white"

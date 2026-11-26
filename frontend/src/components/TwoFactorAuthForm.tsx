@@ -6,7 +6,7 @@ import { FormHeader } from "./FormHeader";
 export default function TwoFactorAuthForm() {
   const [code, setCode] = useState("");
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = (e: React.SyntheticEvent) => {
     e.preventDefault();
     if (code.length < 6) return;
     console.log("Código 2FA enviado:", code);
@@ -28,7 +28,7 @@ export default function TwoFactorAuthForm() {
             type="text"
             maxLength={6}
             value={code}
-            onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
+            onChange={(e) => { setCode(e.target.value.replace(/\D/g, "")); }}
             placeholder="123456"
             className="px-4 py-3 border-2 border-black dark:border-slate-700 rounded-2xl font-mono text-center tracking-widest text-2xl focus:outline-none focus:border-red-600 w-full placeholder:font-custom dark:bg-slate-900 dark:text-white"
           />
@@ -38,7 +38,7 @@ export default function TwoFactorAuthForm() {
         </form>
 
         <button
-          onClick={() => console.log("Reenviar código")}
+          onClick={() => { console.log("Reenviar código"); }}
           className="mt-6 text-xs font-bold text-gray-400 hover:text-black dark:hover:text-white transition-colors cursor-pointer"
         >
           Didn't receive a code? Resend

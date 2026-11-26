@@ -14,8 +14,8 @@ export default function SecurityPanel() {
 
   useEffect(() => {
     api<{ enabled: boolean }>("/auth/2fa")
-      .then((r) => setEnabled(r.enabled))
-      .catch((err: unknown) => setMessage(errMsg(err)));
+      .then((r) => { setEnabled(r.enabled); })
+      .catch((err: unknown) => { setMessage(errMsg(err)); });
   }, []);
 
   if (enabled === null)
@@ -76,7 +76,7 @@ export default function SecurityPanel() {
         type="password"
         placeholder="Tu contraseña"
         value={password}
-        onChange={(e) => setPassword(e.target.value)}
+        onChange={(e) => { setPassword(e.target.value); }}
         className={input}
       />
 
@@ -85,7 +85,7 @@ export default function SecurityPanel() {
           type="text"
           placeholder="Código de 6 dígitos"
           value={code}
-          onChange={(e) => setCode(e.target.value)}
+          onChange={(e) => { setCode(e.target.value); }}
           className={input}
         />
       )}

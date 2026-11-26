@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import { api, post, errMsg } from "../api";
 
@@ -23,26 +23,35 @@ export default function Friends() {
   const [username, setUsername] = useState("");
   const [error, setError] = useState("");
 
-  const load = useCallback(async () => {
-    try {
-      setList(await api<FriendList>("/friends"));
-    } catch (err) {
-      setError(errMsg(err));
-    }
-  }, []);
+  // Bumping `reload` fetches the list again.
+  const [reload, setReload] = useState(0);
+
+  useEffect(() => {
+    const live = { on: true };
+    void (async () => {
+      try {
+        const next = await api<FriendList>("/friends");
+        if (live.on) setList(next);
+      } catch (err) {
+        if (live.on) setError(errMsg(err));
+      }
+    })();
+    return () => {
+      live.on = false;
+    };
+  }, [reload]);
 
   // Refreshes presence every 10 s; the WebSocket layer can push it later.
   useEffect(() => {
-    void load();
-    const timer = setInterval(() => void load(), 10000);
-    return () => clearInterval(timer);
-  }, [load]);
+    const timer = setInterval(() => { setReload((n) => n + 1); }, 10000);
+    return () => { clearInterval(timer); };
+  }, []);
 
   const run = async (fn: () => Promise<unknown>) => {
     setError("");
     try {
       await fn();
-      await load();
+      setReload((n) => n + 1);
     } catch (err) {
       setError(errMsg(err));
     }
@@ -87,7 +96,7 @@ export default function Friends() {
       >
         <input
           value={username}
-          onChange={(e) => setUsername(e.target.value)}
+          onChange={(e) => { setUsername(e.target.value); }}
           placeholder="Add by username"
           className="rounded-full border border-gray-300 bg-gray-50 px-4 py-2 text-sm dark:bg-slate-900 dark:border-slate-700"
         />

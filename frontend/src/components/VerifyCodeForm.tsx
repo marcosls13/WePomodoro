@@ -60,7 +60,7 @@ export default function VerifyCodeForm({ pendingToken, onCancel }: VerifyCodeFor
           label="Code"
           required
           value={code}
-          onChange={(e) => setCode(e.target.value)}
+          onChange={(e) => { setCode(e.target.value); }}
           placeholder="123456"
         />
         {error && <p className="text-sm text-red-600">{error}</p>}

@@ -58,7 +58,7 @@ export default function Chat() {
         <input
           type="text"
           value={inputText}
-          onChange={(e) => setInputText(e.target.value)}
+          onChange={(e) => { setInputText(e.target.value); }}
           placeholder="Escribe un mensaje..."
           className="flex-grow bg-gray-50 border border-gray-200 rounded-full px-4 py-2.5 text-sm focus:outline-none focus:border-red-500 transition-colors"
         />

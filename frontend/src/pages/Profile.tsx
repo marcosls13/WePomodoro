@@ -71,7 +71,7 @@ export default function Profile() {
         <div className="flex items-center gap-6">
           <div className="relative w-24 h-24 rounded-full bg-gray-100 dark:bg-slate-800 border-2 border-gray-200 dark:border-slate-700 overflow-hidden flex-shrink-0 shadow-inner">
             <img
-              src={`/api/users/${user.id}/avatar?v=${avatarVersion}`}
+              src={`/api/users/${String(user.id)}/avatar?v=${String(avatarVersion)}`}
               alt={`Avatar de ${user.username}`}
               className="w-full h-full object-cover"
             />
@@ -112,7 +112,7 @@ export default function Profile() {
               <input
                 type="text"
                 value={draftName}
-                onChange={(e) => setDraftName(e.target.value)}
+                onChange={(e) => { setDraftName(e.target.value); }}
                 className="px-3 py-1 border border-gray-300 rounded-full outline-none focus:border-red-600 dark:bg-slate-900 dark:text-white dark:border-slate-700"
                 autoFocus
               />
@@ -123,7 +123,7 @@ export default function Profile() {
                 Guardar
               </button>
               <button
-                onClick={() => setIsEditing(false)}
+                onClick={() => { setIsEditing(false); }}
                 className="px-4 py-1 bg-gray-200 text-gray-800 font-medium rounded-full hover:bg-gray-300 transition-colors cursor-pointer"
               >
                 Cancelar

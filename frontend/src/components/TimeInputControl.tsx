@@ -31,7 +31,7 @@ export default function TimeInputControl({
         <input
           type="number"
           value={value}
-          onChange={(e) => onChange(Number(e.target.value))}
+          onChange={(e) => { onChange(Number(e.target.value)); }}
           className="w-16 text-center bg-transparent focus:outline-none text-sm font-medium text-gray-800 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [-moz-appearance:textfield]"
         />
 

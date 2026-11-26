@@ -11,8 +11,8 @@ import { useAuthStore, type AuthUser } from "../authStore.ts";
 import { PasswordField } from "./PasswordField";
 import ForgotPasswordForm from "./ForgotPasswordForm";
 
-type LoginOk = { token: string; user: AuthUser };
-type Challenge = { twoFactorRequired: true; challengeToken: string };
+interface LoginOk { token: string; user: AuthUser }
+interface Challenge { twoFactorRequired: true; challengeToken: string }
 
 const oauth = (provider: "42" | "google" | "github") => {
   window.location.href = `/api/auth/oauth/${provider}`;
@@ -46,7 +46,7 @@ export default function SignInForm() {
     }
   }
 
-  if (forgot) return <ForgotPasswordForm onBack={() => setForgot(false)} />;
+  if (forgot) return <ForgotPasswordForm onBack={() => { setForgot(false); }} />;
 
   return (
     <FormWrapper>
@@ -61,7 +61,7 @@ export default function SignInForm() {
             label="Code from your email"
             required
             value={code}
-            onChange={(e) => setCode(e.target.value)}
+            onChange={(e) => { setCode(e.target.value); }}
             placeholder="123456"
           />
         ) : (
@@ -71,14 +71,14 @@ export default function SignInForm() {
               label="Username"
               required
               value={username}
-              onChange={(e) => setUsername(e.target.value)}
+              onChange={(e) => { setUsername(e.target.value); }}
             />
             <PasswordField
               id="password"
               label="Password"
               required
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={(e) => { setPassword(e.target.value); }}
             />
           </>
         )}
@@ -87,7 +87,7 @@ export default function SignInForm() {
       </form>
 
       <div className="flex justify-end px-2 mt-3 text-sm text-gray-500">
-        <button type="button" onClick={() => setForgot(true)} className="hover:text-black dark:hover:text-white cursor-pointer">
+        <button type="button" onClick={() => { setForgot(true); }} className="hover:text-black dark:hover:text-white cursor-pointer">
           Forgot password?
         </button>
       </div>
@@ -99,9 +99,9 @@ export default function SignInForm() {
       </div>
       <div className="flex flex-col">
         <div className="flex justify-center align-center gap-4 mb-2">
-          <OAuthSubmitButton type="button" onClick={() => oauth("42")}><FortyTwoIcon /></OAuthSubmitButton>
-          <OAuthSubmitButton type="button" onClick={() => oauth("google")}><GoogleIcon /></OAuthSubmitButton>
-          <OAuthSubmitButton type="button" onClick={() => oauth("github")}><GitHubIcon /></OAuthSubmitButton>
+          <OAuthSubmitButton type="button" onClick={() => { oauth("42"); }}><FortyTwoIcon /></OAuthSubmitButton>
+          <OAuthSubmitButton type="button" onClick={() => { oauth("google"); }}><GoogleIcon /></OAuthSubmitButton>
+          <OAuthSubmitButton type="button" onClick={() => { oauth("github"); }}><GitHubIcon /></OAuthSubmitButton>
         </div>
       </div>
     </FormWrapper>

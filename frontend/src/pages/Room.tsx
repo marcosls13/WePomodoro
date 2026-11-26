@@ -72,8 +72,8 @@ export default function Room({ initialConfig }: {initialConfig?: RoomConfig}) {
         <Timer
           key={
             isRestTime
-              ? `rest-${roomConfig.restDuration}`
-              : `work-${roomConfig.workDuration}`
+              ? `rest-${String(roomConfig.restDuration)}`
+              : `work-${String(roomConfig.workDuration)}`
           }
           duration={
             isRestTime ? roomConfig.restDuration : roomConfig.workDuration

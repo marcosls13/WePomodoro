@@ -11,7 +11,7 @@ export default function ActivityBoard() {
   const [raw, setRaw] = useState<Stats | null>(null);
 
   useEffect(() => {
-    api<Stats>("/users/me/stats").then(setRaw, () => setRaw(null));
+    api<Stats>("/users/me/stats").then(setRaw, () => { setRaw(null); });
   }, []);
 
   const stats = {

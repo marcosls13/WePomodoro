@@ -50,7 +50,7 @@ export default function SingleFieldForm({
             type={type}
             required
             value={value}
-            onChange={(e) => setValue(e.target.value)}
+            onChange={(e) => { setValue(e.target.value); }}
             placeholder={placeholder}
           />
           {error && <p className="text-sm text-red-600">{error}</p>}

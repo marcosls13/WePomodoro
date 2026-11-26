@@ -36,7 +36,7 @@ export default function GamesMenu({
       {games.map((game) => (
         <motion.div key={game.id} variants={itemVariants}>
           <button
-            onClick={() => onSelectGame(game.id)}
+            onClick={() => { onSelectGame(game.id); }}
             className="group flex flex-col items-center justify-center gap-3 p-6 w-36 h-36 bg-gray-50 border border-gray-200 hover:border-red-200 rounded-2xl shadow-sm transition-all duration-200 cursor-pointer dark:bg-slate-700 dark:border-slate-900"
           >
             <div className="p-3 bg-red-600 text-red-600 rounded-xl group-hover:scale-110 transition-transform">

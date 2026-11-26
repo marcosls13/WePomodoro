@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { api, errMsg } from "../api";
 import { useAuthStore } from "../authStore";
 
@@ -20,25 +20,36 @@ export default function AdminPanel() {
   const [guests, setGuests] = useState<AdminGuest[]>([]);
   const [error, setError] = useState("");
 
-  const load = useCallback(async () => {
-    try {
-      setUsers(await api<AdminUser[]>("/admin/users?take=100"));
-      setGuests(await api<AdminGuest[]>("/admin/guests"));
-    } catch (err) {
-      setError(errMsg(err));
-    }
-  }, []);
+  // Bumping `reload` fetches the lists again.
+  const [reload, setReload] = useState(0);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    const live = { on: true };
+    void (async () => {
+      try {
+        const [u, g] = await Promise.all([
+          api<AdminUser[]>("/admin/users?take=100"),
+          api<AdminGuest[]>("/admin/guests"),
+        ]);
+        if (live.on) {
+          setUsers(u);
+          setGuests(g);
+        }
+      } catch (err) {
+        if (live.on) setError(errMsg(err));
+      }
+    })();
+    return () => {
+      live.on = false;
+    };
+  }, [reload]);
 
   const remove = async (path: string, name: string) => {
     if (!window.confirm(`Delete ${name}? They are removed from their room right away.`)) return;
     setError("");
     try {
       await api(path, { method: "DELETE" });
-      await load();
+      setReload((n) => n + 1);
     } catch (err) {
       setError(errMsg(err));
     }
@@ -50,7 +61,7 @@ export default function AdminPanel() {
         <h2 className="text-lg font-bold text-gray-900 dark:text-white">Administration</h2>
         <button
           className="text-sm text-gray-600 hover:text-black dark:text-gray-300 dark:hover:text-white cursor-pointer"
-          onClick={() => void load()}
+          onClick={() => { setReload((n) => n + 1); }}
         >
           Refresh
         </button>
@@ -100,7 +111,7 @@ export default function AdminPanel() {
                   {u.id !== me?.id && (
                     <button
                       className="text-red-600 cursor-pointer"
-                      onClick={() => void remove(`/admin/users/${u.id}`, u.username)}
+                      onClick={() => void remove(`/admin/users/${String(u.id)}`, u.username)}
                     >
                       Delete
                     </button>

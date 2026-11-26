@@ -56,7 +56,7 @@ export default function Profilebar() {
       <div className="fixed top-4 right-4 z-50 flex items-center justify-center gap-4">
         <NightSwitch />
         <button
-          onClick={() => setIsOpen((prev) => !prev)}
+          onClick={() => { setIsOpen((prev) => !prev); }}
           className="bg-white p-3 rounded-full shadow-md transition-colors cursor-pointer dark:bg-slate-900"
           aria-label="Toggle Menu"
         >

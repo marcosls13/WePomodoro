@@ -1,7 +1,7 @@
 import { motion } from "motion/react";
 
 export default function GameView({
-  gameType,
+  gameType
 }: {
   gameType: string;
 }) {

@@ -89,14 +89,7 @@ async function fixtures(tx: Prisma.TransactionClient) {
       expiresAt: new Date(Date.now() + 3600000),
     },
   });
-  const room = await tx.pomodoroSession.create({
-    data: {
-      name: "Study together",
-      code: key,
-      members: { create: { userId: user.id, isOwner: true } },
-    },
-  });
-  return { user, friend, guest, room };
+  return { user, friend, guest };
 }
 const knownError = (code: string) => (error: unknown) =>
   typeof error === "object" &&
@@ -112,44 +105,6 @@ function constraintError(name: string) {
     return error.message.includes(name) || details.includes(name);
   };
 }
-
-void test("registered users and guests join a session found by its code", async () => {
-  await isolated(async (tx) => {
-    const { friend, guest, room } = await fixtures(tx);
-    const found = await tx.pomodoroSession.findUniqueOrThrow({
-      where: { code: room.code ?? "" },
-    });
-    await tx.sessionMember.createMany({
-      data: [
-        { sessionId: found.id, userId: friend.id },
-        { sessionId: found.id, guestSessionId: guest.id },
-      ],
-    });
-    assert.equal(
-      await tx.sessionMember.count({ where: { sessionId: room.id } }),
-      3,
-    );
-    assert.equal(found.focusSeconds, 1500);
-    assert.equal(found.breakSeconds, 300);
-    assert.equal(found.timerStatus, "IDLE");
-  });
-});
-
-void test("leaving a session deletes the membership so it can be recreated", async () => {
-  await isolated(async (tx) => {
-    const { user, room } = await fixtures(tx);
-    await tx.sessionMember.delete({
-      where: { sessionId_userId: { sessionId: room.id, userId: user.id } },
-    });
-    await tx.sessionMember.create({
-      data: { sessionId: room.id, userId: user.id },
-    });
-    assert.equal(
-      await tx.sessionMember.count({ where: { sessionId: room.id } }),
-      1,
-    );
-  });
-});
 
 void test("a friendship exists once per pair, in either direction", async () => {
   await isolated(async (tx) => {
@@ -168,57 +123,6 @@ void test("a friendship exists once per pair, in either direction", async () => 
   });
 });
 
-void test("registered users and guests can each study alone, in a session nobody can join", async () => {
-  await isolated(async (tx) => {
-    const { user, guest } = await fixtures(tx);
-    const solo = await tx.pomodoroSession.create({
-      data: {
-        name: "Solo",
-        members: { create: { userId: user.id, isOwner: true } },
-      },
-      include: { members: true },
-    });
-    const guestSolo = await tx.pomodoroSession.create({
-      data: {
-        name: "Guest solo",
-        members: { create: { guestSessionId: guest.id, isOwner: true } },
-      },
-      include: { members: true },
-    });
-    assert.equal(solo.code, null);
-    assert.equal(guestSolo.code, null);
-    assert.equal(solo.members[0]?.userId, user.id);
-    assert.equal(guestSolo.members[0]?.guestSessionId, guest.id);
-  });
-});
-
-void test("a shared timer can be paused and resumed, and changing settings keeps the phase snapshot", async () => {
-  await isolated(async (tx) => {
-    const { room } = await fixtures(tx);
-    const now = new Date();
-    await tx.pomodoroSession.update({
-      where: { id: room.id },
-      data: { timerStatus: "RUNNING", resumedAt: now },
-    });
-    await tx.pomodoroSession.update({
-      where: { id: room.id },
-      data: { timerStatus: "PAUSED", resumedAt: null, elapsedSeconds: 600 },
-    });
-    await tx.pomodoroSession.update({
-      where: { id: room.id },
-      data: { timerStatus: "RUNNING", resumedAt: now },
-    });
-    await tx.pomodoroSession.update({
-      where: { id: room.id },
-      data: { focusSeconds: 1800 },
-    });
-    const session = await tx.pomodoroSession.findUniqueOrThrow({
-      where: { id: room.id },
-    });
-    assert.equal(session.elapsedSeconds, 600);
-  });
-});
-
 void test("statistics isolate users and add wins and losses across games", async () => {
   await isolated(async (tx) => {
     const { user, friend } = await fixtures(tx);
@@ -232,7 +136,6 @@ void test("statistics isolate users and add wins and losses across games", async
       focusedSeconds: 1800,
       wins: 2,
       losses: 1,
-      played: 3,
     });
     assert.equal(await getUserStatistics(tx, -1), null);
   });
@@ -246,45 +149,7 @@ void test("new profiles have zero statistics and legacy profiles may have no pas
       focusedSeconds: 0,
       wins: 0,
       losses: 0,
-      played: 0,
     });
-  });
-});
-
-void test("deleting a guest removes its membership without affecting registered users", async () => {
-  await isolated(async (tx) => {
-    const { user, guest, room } = await fixtures(tx);
-    await tx.sessionMember.create({
-      data: { sessionId: room.id, guestSessionId: guest.id },
-    });
-    await tx.userStat.create({
-      data: { userId: user.id, focusedSeconds: 50 },
-    });
-    await tx.guestSession.delete({ where: { id: guest.id } });
-    assert.equal(
-      await tx.sessionMember.count({ where: { guestSessionId: guest.id } }),
-      0,
-    );
-    assert.equal(
-      await tx.sessionMember.count({ where: { sessionId: room.id } }),
-      1,
-    );
-    assert.equal((await getUserStatistics(tx, user.id))?.focusedSeconds, 50);
-  });
-});
-
-void test("deleting a session keeps its members' lifetime statistics", async () => {
-  await isolated(async (tx) => {
-    const { user, room } = await fixtures(tx);
-    await tx.userStat.create({
-      data: { userId: user.id, focusedSeconds: 50 },
-    });
-    await tx.pomodoroSession.delete({ where: { id: room.id } });
-    assert.equal(
-      await tx.sessionMember.count({ where: { sessionId: room.id } }),
-      0,
-    );
-    assert.equal((await getUserStatistics(tx, user.id))?.focusedSeconds, 50);
   });
 });
 
@@ -357,44 +222,49 @@ void test("deleting a user cascades authentication and statistics", async () => 
   });
 });
 
+void test("a guest is one row that can be deleted, and registered users are untouched", async () => {
+  await isolated(async (tx) => {
+    const { user, guest } = await fixtures(tx);
+    await tx.userStat.create({
+      data: { userId: user.id, focusedSeconds: 50 },
+    });
+    await tx.guestSession.delete({ where: { id: guest.id } });
+    assert.equal(await tx.guestSession.count({ where: { id: guest.id } }), 0);
+    assert.equal((await getUserStatistics(tx, user.id))?.focusedSeconds, 50);
+  });
+});
+
+void test("rooms are not stored: there are no room tables", async () => {
+  await isolated(async (tx) => {
+    const tables = await tx.$queryRaw<{ table_name: string }[]>`
+      SELECT table_name FROM information_schema.tables
+      WHERE table_schema = current_schema()`;
+    const names = tables.map((t) => t.table_name);
+    for (const gone of ["PomodoroSession", "SessionMember", "StudyRoom"])
+      assert.equal(names.includes(gone), false, `${gone} should not exist`);
+    assert.ok(names.includes("UserStat"));
+    assert.ok(names.includes("GuestSession"));
+  });
+});
+
+void test("the role is only USER or ADMIN", async () => {
+  await isolated(async (tx) => {
+    const roles = await tx.$queryRaw<{ role: string }[]>`
+      SELECT unnest(enum_range(NULL::"Role"))::text AS role`;
+    assert.deepEqual(
+      roles.map((r) => r.role),
+      ["USER", "ADMIN"],
+    );
+    const { user } = await fixtures(tx);
+    assert.equal(user.role, "USER");
+  });
+});
+
 const invalidCases: {
   name: string;
   run: (tx: Prisma.TransactionClient) => Promise<unknown>;
   error: (error: unknown) => boolean;
 }[] = [
-  {
-    name: "duplicate session codes",
-    error: knownError("P2002"),
-    run: async (tx) => {
-      const { room } = await fixtures(tx);
-      return tx.pomodoroSession.create({
-        data: { name: "Copy", code: room.code },
-      });
-    },
-  },
-  {
-    name: "duplicate registered memberships",
-    error: knownError("P2002"),
-    run: async (tx) => {
-      const { room, user } = await fixtures(tx);
-      return tx.sessionMember.create({
-        data: { sessionId: room.id, userId: user.id },
-      });
-    },
-  },
-  {
-    name: "duplicate guest memberships",
-    error: knownError("P2002"),
-    run: async (tx) => {
-      const { room, guest } = await fixtures(tx);
-      await tx.sessionMember.create({
-        data: { sessionId: room.id, guestSessionId: guest.id },
-      });
-      return tx.sessionMember.create({
-        data: { sessionId: room.id, guestSessionId: guest.id },
-      });
-    },
-  },
   {
     name: "a friendship with yourself",
     error: constraintError("Friendship_distinct_check"),
@@ -404,88 +274,6 @@ const invalidCases: {
         data: { requesterId: user.id, addresseeId: user.id },
       });
     },
-  },
-  {
-    name: "membership without an identity",
-    error: constraintError("SessionMember_identity_check"),
-    run: async (tx) => {
-      const { room } = await fixtures(tx);
-      return tx.sessionMember.create({ data: { sessionId: room.id } });
-    },
-  },
-  {
-    name: "membership with both identities",
-    error: constraintError("SessionMember_identity_check"),
-    run: async (tx) => {
-      const { room, user, guest } = await fixtures(tx);
-      return tx.sessionMember.create({
-        data: {
-          sessionId: room.id,
-          userId: user.id,
-          guestSessionId: guest.id,
-        },
-      });
-    },
-  },
-  {
-    name: "a second owner in a session",
-    error: constraintError("SessionMember_one_owner_per_session"),
-    run: async (tx) => {
-      const { room, friend } = await fixtures(tx);
-      return tx.sessionMember.create({
-        data: { sessionId: room.id, userId: friend.id, isOwner: true },
-      });
-    },
-  },
-  {
-    name: "crediting a member before they joined",
-    error: constraintError("SessionMember_progress_check"),
-    run: async (tx) => {
-      const { room, friend } = await fixtures(tx);
-      return tx.sessionMember.create({
-        data: {
-          sessionId: room.id,
-          userId: friend.id,
-          joinedAt: new Date(),
-          creditedAt: new Date(Date.now() - 60000),
-        },
-      });
-    },
-  },
-  {
-    name: "invalid session durations",
-    error: constraintError("PomodoroSession_settings_check"),
-    run: async (tx) => {
-      const { room } = await fixtures(tx);
-      return tx.pomodoroSession.update({
-        where: { id: room.id },
-        data: { focusSeconds: 0 },
-      });
-    },
-  },
-  {
-    name: "a running timer without a start time",
-    error: constraintError("PomodoroSession_timer_check"),
-    run: (tx) =>
-      tx.pomodoroSession.create({
-        data: { name: "Bad", timerStatus: "RUNNING" },
-      }),
-  },
-  {
-    name: "a paused timer that still has a start time",
-    error: constraintError("PomodoroSession_timer_check"),
-    run: (tx) =>
-      tx.pomodoroSession.create({
-        data: { name: "Bad", timerStatus: "PAUSED", resumedAt: new Date() },
-      }),
-  },
-  {
-    name: "negative elapsed time",
-    error: constraintError("PomodoroSession_timer_check"),
-    run: (tx) =>
-      tx.pomodoroSession.create({
-        data: { name: "Bad", elapsedSeconds: -1 },
-      }),
   },
   {
     name: "negative statistics",

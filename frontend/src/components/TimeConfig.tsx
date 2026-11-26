@@ -1,9 +1,9 @@
 import { useState, type SubmitEvent } from "react";
 
 export default function TimeConfig({
-  onStartRoom,
+  onStartRoom
 }: {
-  onStartRoom: (c: { workDuration: number; restDuration: number }) => void;
+  onStartRoom: (c: {workDuration: number; restDuration: number }) => void
 }) {
   const [workMinutes, setWorkMinutes] = useState(25);
   const [restMinutes, setRestMinutes] = useState(5);

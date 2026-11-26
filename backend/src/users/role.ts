@@ -4,13 +4,8 @@ const username = process.argv.at(2)?.toLowerCase();
 const role = process.argv.at(3)?.toUpperCase();
 
 async function setRole() {
-  if (
-    !username ||
-    (role !== "ADMIN" && role !== "MODERATOR" && role !== "USER")
-  )
-    throw new Error(
-      "Usage: npm run users:role -- <username> admin|moderator|user",
-    );
+  if (!username || (role !== "ADMIN" && role !== "USER"))
+    throw new Error("Usage: npm run users:role -- <username> admin|user");
   await prisma.user.update({ where: { username }, data: { role } });
   console.log(`${username} is now ${role}`);
 }

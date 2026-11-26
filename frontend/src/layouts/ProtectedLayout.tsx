@@ -20,3 +20,9 @@ export const ProtectedLayout = () => {
     </>
   );
 };
+
+// Guests have no profile, stats or friends: send them back to the room page.
+export const RegisteredRoute = () => {
+  const user = useAuthStore((s) => s.user);
+  return user ? <Outlet /> : <Navigate to="/create" replace />;
+};

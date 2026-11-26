@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { NavLink, useNavigate } from "react-router";
 import { motion, AnimatePresence, type Variants } from "motion/react";
-import { Calculator, Code, Add, Profile, Burger } from "./icons/Icons";
+import { Add, Profile, Friends, Burger } from "./icons/Icons";
 import NightSwitch from "./NightSwitch";
 import { useAuthStore } from "../authStore";
 import { post } from "../api";
@@ -75,7 +75,7 @@ export default function Profilebar() {
             <motion.div variants={itemVariants}>
               <NavLink to="/create" aria-label="Rooms">
                 <div className="bg-red-600 p-3 rounded-full">
-                  <Calculator />
+                  <Add />
                 </div>
               </NavLink>
             </motion.div>
@@ -84,17 +84,7 @@ export default function Profilebar() {
               <motion.div variants={itemVariants}>
                 <NavLink to="/friends" aria-label="Friends">
                   <div className="bg-red-600 rounded-full p-3">
-                    <Add />
-                  </div>
-                </NavLink>
-              </motion.div>
-            )}
-
-            {user?.role === "ADMIN" && (
-              <motion.div variants={itemVariants}>
-                <NavLink to="/admin" aria-label="Administration">
-                  <div className="bg-red-600 rounded-full p-3 flex items-center justify-center">
-                    <Code />
+                    <Friends />
                   </div>
                 </NavLink>
               </motion.div>

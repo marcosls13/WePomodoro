@@ -15,9 +15,9 @@ const itemVariants: Variants = {
 };
 
 export default function GamesMenu({
-  onSelectGame,
+  onSelectGame
 }: {
-  onSelectGame: (id: string) => void;
+  onSelectGame: (id: string) => void
 }) {
   const games = [
     { id: "cookie", name: "Cookie Clicker", icon: <Cookie /> },

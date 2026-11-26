@@ -1,10 +1,10 @@
 # WePomodoro backend
 
 Express 5 + Prisma 7 + PostgreSQL. This single document covers setup, the HTTP
-API, the data model, timer accounting, and testing. A product “server” is a
-`PomodoroSession` in the database: a named space with members and one shared
-timer. Chat, minigames and online status are not stored in the database: they
-run over WebSocket, built separately.
+API, the data model, study-time accounting, and testing. The database holds
+accounts, guests, friendships and lifetime statistics. **Rooms are not stored**:
+a room (its code, timer, members, chat and minigames) lives only in memory in the
+WebSocket layer, built separately, and disappears when the last person leaves.
 
 Contents:
 
@@ -12,8 +12,8 @@ Contents:
 2. [Authentication](#2-authentication)
 3. [API reference](#3-api-reference)
 4. [Data model](#4-data-model)
-5. [How timers and statistics work](#5-how-timers-and-statistics-work)
-6. [Chat, minigames and WebSocket](#6-chat-minigames-and-websocket)
+5. [Study time and statistics](#5-study-time-and-statistics)
+6. [Rooms, chat, minigames and the WebSocket layer](#6-rooms-chat-minigames-and-the-websocket-layer)
 7. [Deletion and lifecycle](#7-deletion-and-lifecycle)
 8. [Migrations](#8-migrations)
 9. [Testing](#9-testing)
@@ -50,21 +50,6 @@ Environment variables:
 | `FRONTEND_URL`                                                                   | `http://localhost:5173` | Where the browser is sent after a provider sign-in (one origin)      |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` (same for `GITHUB_` and `FORTY_TWO_`) | empty                   | Both set enables that provider; empty disables it                    |
 
-In development (`NODE_ENV` not `production`) the API also serves a test console at
-`http://localhost:3000/dev`: presets for the main endpoints, with the token, session
-ID and session code filled in from earlier responses. It is not mounted
-in production. The OAuth redirect flow itself can't run there: sign in with a
-provider in a browser, paste the `code` from the redirect URL
-(`/auth/oauth?code=…`) into the `oauthCode` variable, and send "Swap the
-one-time code for a session" to get a token.
-
-To skip tokens in the console, set `DEV_AUTH=true` in `backend/.env` and restart. A
-"no token, act as" checkbox then appears in the console header with a list of
-users and guests; requests carry `X-Dev-User: <username>` (or `guest:<id>`) instead
-of a Bearer token, and untick it to use a real token again. The header is ignored
-unless `DEV_AUTH=true` and `NODE_ENV` is not `production`; never enable it on a
-shared server, since it lets any caller act as anyone.
-
 Requests with no `Origin` header (curl, native clients) are accepted. A browser
 `Origin` that isn't listed gets 403. CORS is not authentication.
 
@@ -72,7 +57,7 @@ With Docker Compose the backend runs as the unprivileged `node` user (uid 1000),
 so files generated into the bind-mounted source tree (such as
 `src/generated/prisma`) belong to your user, not root.
 
-Shutdown (`SIGINT`/`SIGTERM`) stops the timer worker, closes idle keep-alive
+Shutdown (`SIGINT`/`SIGTERM`) stops the cleanup worker, closes idle keep-alive
 connections, waits for an in-flight sweep, disconnects Prisma, and exits. If that
 takes longer than 10 seconds the process exits with code 1.
 
@@ -83,8 +68,9 @@ takes longer than 10 seconds the process exits with code 1.
 All endpoints live under `/api`; there are no root-path aliases. The only
 non-`/api` route is `GET /`, which returns `{ service, health }`.
 
-Signup/login return a random `token`, its expiry, and a safe user profile. Guests
-receive a token and a temporary guest profile. Send the token on later requests:
+Login, and the last step of signup (`POST /api/auth/signup/verify`), return a
+random `token`, its expiry, and a safe user profile. Guests receive a token and a
+temporary guest profile. Send the token on later requests:
 
 ```http
 Authorization: Bearer <token>
@@ -104,18 +90,18 @@ Authorization: Bearer <token>
   lets clients spoof their IP with `X-Forwarded-For`.
 - Existing profiles with a null `passwordHash` cannot password-login. Don't
   recreate accounts or let someone claim a passwordless profile by supplying its
-  email; they need an explicit provisioning/recovery flow (email delivery and
-  verification are not implemented). New signups require a password.
+  email; they need an explicit provisioning/recovery flow. New signups require a
+  password.
 - Accounts created through OAuth also have a null `passwordHash`: they can't
   password-login, and `PATCH /users/me` and the two-factor toggle (which ask for
   the current password) don't work for them until they add a password with the
   forgot-password flow.
-- Registered logout revokes the current token and leaves timers running. Guest
-  logout removes the temporary identity and its memberships (a guest keeps no
-  stats); sessions it owned pass to another member, and a session left empty is
-  deleted.
-- A worker finalizes elapsed timers about once per second and removes expired
-  auth/guest identities every minute.
+- Registered logout revokes the current token. Guest logout **deletes** the guest
+  (a guest keeps nothing: no stats, no friends). A guest whose tab closed without
+  a clean logout is deleted by the realtime layer when its socket disconnects, or
+  at the latest when its 24-hour expiry is swept.
+- A worker removes expired auth sessions, guests, email tokens, login challenges,
+  OAuth codes and pending signups every minute.
 
 Input rules:
 
@@ -139,16 +125,19 @@ are JSON, except 204 which has no body. UUID placeholders need real IDs; user ID
 are integers.
 
 Access labels: **Public** = no token; **Authenticated** = registered user or
-guest; **Registered** = registered user; **Member** = session member;
-**Owner** = the member flagged `isOwner`; **Owner/mod** = owner, or a moderator/admin who is a member (see 3.8).
+guest; **Registered** = registered user; **Admin** = a registered user with the `ADMIN` role
+(see 3.7).
 
 ### 3.1 Service and authentication
 
 | Method | Endpoint                             | Access        | JSON body                             | Response                                                                                                                |
 | ------ | ------------------------------------ | ------------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | GET    | `/api/health`                        | Public        | None                                  | 200 `{ status: "ok" }`; 503 if the database is unreachable or a committed migration isn't applied                       |
-| POST   | `/api/auth/signup`                   | Public        | `{ "email", "username", "password" }` | 201 `{ token, expiresAt, user }`                                                                                        |
-| POST   | `/api/users`                         | Public        | Same signup body                      | 201: alias of signup with the same response                                                                             |
+| POST   | `/api/auth/signup`                   | Public        | `{ "email", "username", "password" }` | 202 `{ pendingToken, expiresAt }`: nothing is created yet; a 6-digit code is emailed                                    |
+| POST   | `/api/users`                         | Public        | Same signup body                      | 202: alias of signup with the same response                                                                             |
+| POST   | `/api/auth/signup/verify`            | Public        | `{ "pendingToken", "code" }`          | 201 `{ token, expiresAt, user }`: creates the account (verified) and signs in; 400 for a wrong or expired code          |
+| POST   | `/api/auth/signup/resend`            | Public        | `{ "pendingToken" }`                  | 202: emails a new code (3 per 15 minutes)                                                                               |
+| POST   | `/api/auth/signup/cancel`            | Public        | `{ "pendingToken" }`                  | 204: discards the pending signup                                                                                        |
 | POST   | `/api/auth/login`                    | Public        | `{ "username", "password" }`          | 200 `{ token, expiresAt, user }`; with two-factor on: `{ twoFactorRequired, challengeToken, expiresAt }` and no session |
 | POST   | `/api/auth/login/2fa`                | Public        | `{ "challengeToken", "code" }`        | 200 `{ token, expiresAt, user }`; 401 on a wrong code                                                                   |
 | POST   | `/api/auth/login/2fa/resend`         | Public        | `{ "challengeToken" }`                | 204: emails a new code (3 per 15 minutes per sign-in); 401 if the attempt expired                                       |
@@ -162,9 +151,8 @@ guest; **Registered** = registered user; **Member** = session member;
 | POST   | `/api/auth/password-reset/confirm`   | Public        | `{ "resetToken", "password" }`        | 204; sets the password and signs out every session                                                                      |
 | POST   | `/api/auth/verify-email`             | Registered    | `{ "code" }`                          | 204: confirms the address; sets `emailVerifiedAt`                                                                       |
 | POST   | `/api/auth/verify-email/resend`      | Registered    | None                                  | 202: emails a new code (3 per 15 minutes); 409 if already verified                                                      |
-| POST   | `/api/auth/verify-email/cancel`      | Registered    | None                                  | 204: deletes a pending signup; 409 if verified                                                                          |
 | GET    | `/api/auth/me`                       | Authenticated | None                                  | 200 `{ type: "user" or "guest", profile }`                                                                              |
-| POST   | `/api/auth/logout`                   | Authenticated | None                                  | 204: revoke login or delete temporary guest identity                                                                    |
+| POST   | `/api/auth/logout`                   | Authenticated | None                                  | 204: revoke the login, or delete the guest                                                                              |
 
 ### Two-factor authentication (email code)
 
@@ -224,7 +212,8 @@ Signup and login are the same flow, because the backend decides between them.
    the profile (`fetch`, 5 second timeout), finds or creates the user and issues
    a **one-time code** (60 seconds, stored hashed in `OAuthCode`). The callback
    is a page navigation, so it always redirects to the frontend:
-   `FRONTEND_URL/auth/oauth?code=…` on success or `?error=…` on failure
+   `FRONTEND_URL/auth/oauth?code=…` on success, `?pending=<pendingToken>` when the
+   email still has to be proven (see below), or `?error=…` on failure
    (`state`, `denied`, `no_email`, `email_taken`, `failed`).
 3. The frontend sends the code to `POST /api/auth/oauth/exchange` and receives
    `{ token, expiresAt, user }`, like a successful password login. A code works
@@ -241,9 +230,10 @@ Which user the sign-in resolves to:
   existing account a new one is created, already verified.
 - If the provider **doesn't vouch** for the email (42, or GitHub without a
   verified email): the email is never linked to an existing account
-  (`error=email_taken`). A new account is created **unverified**, like a password
-  signup: the six-digit code is emailed, and the token is
-  limited to the verification routes until the code is entered.
+  (`error=email_taken`). No account is created yet: a pending signup is stored,
+  the six-digit code is emailed and the callback redirects with `?pending=…`. The
+  frontend asks for the code and calls `POST /api/auth/signup/verify`, exactly
+  like a password signup.
 - A new username comes from the provider's login (lowercased, other characters
   replaced by `_`); on a clash a random four-character suffix is added.
 
@@ -268,20 +258,25 @@ logged.
 
 ### Email verification
 
-Signup creates the account, returns the session token as before, and emails a
-six-digit code (valid 10 minutes, newest only, 5 wrong guesses kill it). The
-frontend then asks for it and calls `POST /api/auth/verify-email`. Verification
-is **enforced**: until `emailVerifiedAt` is set, a registered account's token only
-works on `GET /auth/me`, `POST /auth/logout`, `POST /auth/verify-email`,
-`POST /auth/verify-email/resend`, `POST /auth/verify-email/cancel`, and `GET`/`PATCH`/`DELETE /users/me` (so a
-mistyped address can be fixed or the account deleted). `POST /auth/verify-email/cancel` deletes a pending signup without a password; verified accounts get 409. Everything else answers
+Signup does **not** create the account. `POST /api/auth/signup` stores a
+`PendingSignup` and emails a six-digit code (valid 10 minutes, newest only, 5
+wrong guesses kill it, 3 resends per 15 minutes). `POST /api/auth/signup/verify`
+with the `pendingToken` and the code creates the `User` (already verified) and
+its session in one step, so nobody can hold an address or username they don't
+own. A pending signup that is never completed is removed by the minute-by-minute
+cleanup when its code expires. Password signup replaces a pending signup on the
+same email, so the address's real owner is not locked out; existing accounts are
+never replaced. The sign-in and reset emails also say to reset the password (Sign In, then
+Forgot password) at `FRONTEND_URL` if the reader didn't ask.
+
+An account can still become **unverified** later: changing the email through
+`PATCH /api/users/me` clears `emailVerifiedAt`, emails a code to the new address
+and calls for `POST /api/auth/verify-email`. Verification is **enforced**: until
+`emailVerifiedAt` is set, a registered account's token only works on
+`GET /auth/me`, `POST /auth/logout`, `POST /auth/verify-email`,
+`POST /auth/verify-email/resend`, and `GET`/`PATCH`/`DELETE /users/me` (so a
+mistyped address can be fixed or the account deleted). Everything else answers
 403 `Verify your email address first`. Guests have no email and are not affected.
-Changing the email through `PATCH /api/users/me` clears `emailVerifiedAt`, emails
-a code to the new address and puts the account back in this state. Password signup replaces a pending signup on the same email, so the address's
-real owner is not locked out; existing accounts are never replaced. The sign-in and reset emails also say to
-reset the password at `FRONTEND_URL/auth/reset-password` if the reader didn't ask. A signup that isn't verified stays a `PendingSignup` row, not a user, and is removed by the
-minute-by-minute cleanup when its code expires, so nobody can hold an address or
-username they don't own.
 `/auth/me` and the profile endpoints include `emailVerifiedAt`.
 
 ### Password recovery flow
@@ -314,15 +309,15 @@ would collide with another account).
 
 ### 3.2 Users and statistics
 
-| Method | Endpoint              | Access        | Body / query                                    | Response                                       |
-| ------ | --------------------- | ------------- | ----------------------------------------------- | ---------------------------------------------- |
-| GET    | `/api/users`          | Authenticated | Optional `skip`, `take`                         | 200 array of `{ id, username }`; no emails     |
-| GET    | `/api/users/me`       | Registered    | None                                            | 200 own profile                                |
-| PATCH  | `/api/users/me`       | Registered    | At least one of `username`, `email`, `password` | 200 updated profile                            |
-| DELETE | `/api/users/me`       | Registered    | `{ "password" }`                                | 204: delete account and its memberships        |
-| GET    | `/api/users/me/stats` | Registered    | None                                            | 200 `{ focusedSeconds, wins, losses, played }` |
+| Method | Endpoint              | Access        | Body / query                                    | Response                                     |
+| ------ | --------------------- | ------------- | ----------------------------------------------- | -------------------------------------------- |
+| GET    | `/api/users`          | Authenticated | Optional `skip`, `take`                         | 200 array of `{ id, username }`; no emails   |
+| GET    | `/api/users/me`       | Registered    | None                                            | 200 own profile                              |
+| PATCH  | `/api/users/me`       | Registered    | At least one of `username`, `email`, `password` | 200 updated profile                          |
+| DELETE | `/api/users/me`       | Registered    | `{ "password" }`                                | 204: delete the account and everything of it |
+| GET    | `/api/users/me/stats` | Registered    | None                                            | 200 `{ focusedSeconds, wins, losses }`       |
 
-Profiles contain `id`, `username`, `email`, `emailVerifiedAt`, `role`, `createdAt` and `updatedAt`. Password
+Profiles contain `id`, `username`, `email`, `emailVerifiedAt` and `role`. Password
 hashes, token hashes and other users' emails are never returned. Personal
 endpoints always derive the user ID from the token, never from the body or query.
 
@@ -338,19 +333,19 @@ current token valid.
 }
 ```
 
-Deleting an account requires its password and removes authentication,
-memberships, friendships and personal stats. Sessions the user owned pass to the
-longest-standing remaining member (registered users first); a session left with
-no members is deleted.
+Deleting an account requires its password and removes everything that belongs to
+it through foreign keys: logins, avatar, OAuth links, friendships and statistics.
+Whoever is in a room at that moment is not stored anywhere on the database side;
+the realtime layer is told through `ctx.realtime.eject` (see section 6).
 
-Statistics response (`played` is `wins + losses`, all games together):
+Statistics response (the only three numbers kept; `wins` and `losses` are all
+minigames together):
 
 ```json
-{ "focusedSeconds": 1800, "wins": 3, "losses": 2, "played": 5 }
+{ "focusedSeconds": 1800, "wins": 3, "losses": 2 }
 ```
 
-`focusedSeconds` includes focus time in a timer that is running right now.
-Guests have no stats.
+A new account returns zeros. Guests have no stats.
 
 ### 3.2a Avatars and public profiles
 
@@ -370,11 +365,11 @@ live in the `UserAvatar` table, so no file volume is needed. Use
 `Cross-Origin-Resource-Policy: cross-origin` so the frontend origin can show it.
 It is cached for 60 s, so add `?v=<timestamp>` after an upload to see it at once.
 
-**Public profile.** `{ id, username, createdAt, focusedSeconds, wins, losses,
+**Public profile.** `{ id, username, focusedSeconds, wins, losses,
 friendship }` — never the email. `friendship` is `null`,
 or `{ id, status, direction }` (`direction` is `outgoing` if you asked,
 `incoming` if they did) so the page can offer add, accept or remove; it is null
-for yourself and for guests. Friends' sessions stay on `GET /api/friends`.
+for yourself and for guests.
 
 ### 3.2b Friends
 
@@ -388,109 +383,32 @@ automatically if they had already asked you.
 | POST   | `/api/friends/:id/accept` | None             | 204; only the addressee                   |
 | DELETE | `/api/friends/:id`        | None             | 204: decline, cancel or unfriend          |
 
-`GET /api/friends` adds `presence: { session }` to each friend, where `session`
-is `{ id, name, joined } | undefined`: the friend's most recent open shared
-session (solo timers have no code and are never shown); `joined` says whether
-you are already a member. "Online" is not stored: the WebSocket layer, built
-separately, tells clients who is connected.
+Each entry of `GET /api/friends` is `{ id, user: { id, username } }`; accepted
+friends also carry `presence: { online, roomCode }`. Presence is **not stored**:
+it comes from the WebSocket layer through `ctx.realtime.presence(userId)`. Until
+that hook is plugged in everybody is `{ online: false, roomCode: null }`. A friend
+with a `roomCode` can be joined from the friends page: the frontend sends you to
+`/room/<roomCode>`. Friend direct messages are not built.
 
-If a friend is in a session you haven't joined, ask them for its code and join
-with `POST /api/sessions/join`. Friend direct messages are not built.
+### 3.3 Rooms are not in the API
 
-### 3.3 Sessions
+There are no room, session or timer endpoints. A room is created, joined and
+destroyed over WebSocket and kept in memory only: a 8-character case-sensitive
+code, the study and break durations, the shared timer and the people in it. It
+has **no owner** (everybody has the same rights) and disappears when the last
+person leaves. Guests and registered users can both create and join rooms.
 
-A session is a space with members and **one shared timer**. Anyone, guests
-included, can create or join one; guests keep no stats. Details (including the
-code) and member lists are visible only to members. The listing contains only
-the caller's open sessions.
+What the HTTP API provides for rooms is the identity (the same Bearer token
+authenticates the socket) and two server-side functions the realtime layer calls;
+see sections 5 and 6.
 
-| Method | Endpoint                                          | Access        | JSON body                                        | Response                                                     |
-| ------ | ------------------------------------------------- | ------------- | ------------------------------------------------ | ------------------------------------------------------------ |
-| POST   | `/api/sessions`                                   | Authenticated | `{ "name" }`, optional settings, optional `solo` | 201 session with members and timer; the creator is the owner |
-| GET    | `/api/sessions`                                   | Authenticated | None                                             | 200 caller's open sessions, up to 100                        |
-| POST   | `/api/sessions/join`                              | Authenticated | `{ "code" }`                                     | 200 joined session; no-op if already a member                |
-| GET    | `/api/sessions/:sessionId`                        | Member        | None                                             | 200 session, safe member names, timer                        |
-| PATCH  | `/api/sessions/:sessionId`                        | Owner         | At least one setting                             | 200 updated session; 409 unless the timer is idle            |
-| POST   | `/api/sessions/:sessionId/leave`                  | Member        | None                                             | 204: leave; the code is needed to return                     |
-| DELETE | `/api/sessions/:sessionId`                        | Owner         | None                                             | 204 session deleted for good; members keep their stats       |
-| POST   | `/api/sessions/:sessionId/code`                   | Owner         | None                                             | 200 `{ code }`: replaces the session code                    |
-| POST   | `/api/sessions/:sessionId/owner`                  | Owner         | `{ "memberId" }`                                 | 200 session with transferred ownership                       |
-| DELETE | `/api/sessions/:sessionId/members/:memberId`      | Owner/mod     | None                                             | 204: kick; they can rejoin with the code                     |
-| POST   | `/api/sessions/:sessionId/members/:memberId/mute` | Owner/mod     | `{ "minutes": 1–10080 }`                         | 200 `{ mutedUntil }`; for the chat layer to enforce          |
-| DELETE | `/api/sessions/:sessionId/members/:memberId/mute` | Owner/mod     | None                                             | 200 `{ mutedUntil: null }`                                   |
-
-Session settings (creation and update):
-
-| Field          | Default              | Allowed value                  |
-| -------------- | -------------------- | ------------------------------ |
-| `name`         | Required on creation | 1–80 characters after trimming |
-| `focusSeconds` | 1500                 | Integer, 1–14400               |
-| `breakSeconds` | 300                  | Integer, 1–14400               |
-
-- **Solo timers** are sessions created with `"solo": true`: they have no code
-  (`code` is null), so nobody can join them, and friends never see them.
-- Membership means "is in this session's timer". Only leaving, being kicked or
-  an expired guest identity deletes the row, and then the code is needed again.
-  Joining again as an existing member is a no-op. Joining while the timer is
-  running also joins the live interval, unless the caller is in another live timer.
-- The owner is the member with `isOwner` (a guest can be one). The owner may
-  leave: the longest-standing remaining member takes over (registered users
-  first), and a session with no members is deleted. The same rule runs when an
-  owner's account is deleted or their guest logs out or expires.
-  `POST …/owner` hands ownership to any member.
-- Deleting a session cancels the live timer first, crediting the focus time
-  earned so far, and then removes the session with its memberships.
-- Every shared session has one code (`PomodoroSession.code`, 8 random
-  characters, shown only to members). Kicking is not permanent: the kicked person
-  can rejoin with the current code, so the owner replaces it with
-  `POST /sessions/:sessionId/code`, which invalidates the old one at once.
-- Only the focus and break lengths can be edited, and only between phases: a
-  `PATCH` while the timer is running or paused returns 409 ("Settings can only
-  change between phases"). The new length applies to the next phase at once.
-- Chat and minigames are only offered during a `BREAK`. That is enforced by the
-  WebSocket layer, which can read `phase` and `timerStatus`; a minigame cut off
-  by the end of the break is never recorded (`recordMatch` is only called for a
-  finished game).
-- **WebSocket:** when a client disconnects or leaves the page, the WebSocket layer
-  should call `leaveSession` (the same function as `POST …/leave`): it credits the
-  focus time earned so far and removes the membership.
-
-### 3.4 Pomodoro timer
-
-Each session has one shared timer, driven by the owner:
-
-| Method | Endpoint                                | Access | JSON body | Response                                    |
-| ------ | --------------------------------------- | ------ | --------- | ------------------------------------------- |
-| POST   | `/api/sessions/:sessionId/timer/start`  | Owner  | None      | 200 timer running the current phase         |
-| POST   | `/api/sessions/:sessionId/timer/pause`  | Owner  | None      | 200 paused timer; focus time credited       |
-| POST   | `/api/sessions/:sessionId/timer/resume` | Owner  | None      | 200 resumed timer                           |
-| POST   | `/api/sessions/:sessionId/timer/cancel` | Owner  | None      | 200 timer back to idle; focus time credited |
-
-The response has the session's timer fields (`phase`, `timerStatus`,
-`plannedSeconds`, `elapsedSeconds`, `resumedAt`, …) plus `remainingSeconds` and
-`serverTime`. `phase` is `FOCUS` or `BREAK`; `plannedSeconds` is the length of the current
-phase, derived from `phase` and the settings; `timerStatus` is
-`IDLE`, `RUNNING` or `PAUSED`. `GET /api/sessions/:sessionId` returns the same
-fields, so there are no separate timer reads.
-
-- The session picks its next phase itself: focus and break alternate. When a phase runs out the
-  server credits everyone, goes back to `IDLE` and sets up the next phase;
-  nothing auto-starts. Cancelling ends the current phase early and keeps the
-  phase (it is not counted as a finished round).
-- One person can be in at most one live (running or paused) timer. A start that
-  would put a member in two returns 409, as do pausing a timer that isn't running,
-  resuming one that isn't paused, or starting one that is already live.
-- Timer actions are also what a WebSocket layer would push to members; the
-  database holds timestamps only, so clients can interpolate the countdown from
-  `serverTime`.
-
-### 3.5 Chat and minigames
+### 3.4 Chat and minigames
 
 There are no chat or minigame endpoints. Chat messages and live game state live
 in memory in the WebSocket server (built by a teammate), so nothing is kept when
-someone leaves or reconnects. See [section 6](#6-chat-minigames-and-websocket).
+someone leaves or reconnects. See [section 6](#6-rooms-chat-minigames-and-the-websocket-layer).
 
-### 3.6 Pagination and errors
+### 3.5 Pagination and errors
 
 `/api/users` accepts `?skip=0&take=20`. `skip` is an integer 0–1000000, `take` an integer
 1–100. Invalid, negative, fractional or repeated values return 400. Responses are
@@ -503,60 +421,61 @@ Errors are JSON, for example `{ "error": "A valid Bearer token is required" }`.
 | 400    | Invalid JSON, body, pagination, UUID or action input                                    |
 | 401    | Missing/invalid/expired token, failed login, or incorrect password                      |
 | 403    | Insufficient permissions, guest using a registered endpoint, or rejected browser origin |
-| 404    | Missing record, code or endpoint; sessions you are not in return 403 or 404             |
-| 409    | Duplicate value, timer conflict, invalid transition or concurrent change                |
+| 404    | Missing record or endpoint                                                              |
+| 409    | Duplicate value or concurrent change                                                    |
 | 413    | JSON body exceeds 16 KB                                                                 |
 | 429    | Authentication attempt limit exceeded                                                   |
 | 500    | Unexpected server error; internal details are not returned                              |
 
-### 3.7 Examples
+### 3.6 Examples
 
 ```bash
 curl -X POST http://localhost:3000/api/auth/signup \
   -H 'Content-Type: application/json' \
   -d '{"email":"learner@example.com","username":"learner","password":"a-long-local-password"}'
-
-curl -X POST http://localhost:3000/api/sessions \
-  -H 'Authorization: Bearer YOUR_TOKEN' \
+# then, with the emailed code:
+curl -X POST http://localhost:3000/api/auth/signup/verify \
   -H 'Content-Type: application/json' \
-  -d '{"name":"Study group"}'
+  -d '{"pendingToken":"PENDING_TOKEN","code":"123456"}'
+
+curl -X POST http://localhost:3000/api/auth/guest \
+  -H 'Content-Type: application/json' \
+  -d '{"displayName":"Anon"}'
 ```
 
-The session details contain its `code`. Friends authenticate (or enter as
-guests), then call `/api/sessions/join` with it. The owner calls
-`/api/sessions/SESSION_UUID/timer/start` to start the shared timer. For a private
-timer, create the session with `{"name":"Solo","solo":true}`.
+Both flows return a token; use it as `Authorization: Bearer <token>` (and to
+authenticate the WebSocket).
 
-### 3.8 Administration and roles
+### 3.7 Administration and roles
 
 Site-wide roles (`User.role`, shown in `/auth/me`):
 
-| Role        | Can do                                                                                                                                                                                                                                |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `USER`      | Everything normal; moderates only sessions they own.                                                                                                                                                                                  |
-| `MODERATOR` | In sessions they are a **member** of: what an owner can for people (mute, kick), except against the owner or other staff. Plus a read-only list of users **without** emails or 2FA state. Not session settings, ownership or closing. |
-| `ADMIN`     | Everything a moderator can, plus full user management below. Like anyone, they act in a session only as a member; they can't read private sessions they haven't joined.                                                               |
+| Role    | Can do                                                                                                                        |
+| ------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `USER`  | Everything normal.                                                                                                            |
+| `ADMIN` | User management and deleting guests and accounts below. The frontend shows it as a card in the profile page, only for admins. |
 
 Nobody is admin by default. Make the first one on the server, then promote others
 through the API:
 
 ```bash
-npm run users:role -- alice admin    # or: moderator | user
+npm run users:role -- alice admin    # or: user
 ```
 
-Moderators join sessions the normal way (the code), so private sessions stay private.
+All `/api/admin/*` routes need a verified admin account (403 otherwise). A
+deleted person gets 401 on their next request, which is what sends the frontend
+to the "ejected" notification; the live removal from the room is `ctx.realtime.eject`.
 
-All `/api/admin/*` routes need a verified staff account; `GET`s are open to
-moderators (reduced view), everything else is admin-only (403 otherwise).
-
-| Method | Endpoint                   | Body / query                                            | Response                                                                       |
-| ------ | -------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| GET    | `/api/admin/users`         | `skip`, `take`, optional `q` (name or email)            | 200 users: admins get `email`, `emailVerifiedAt`, `twoFactorEnabled` too       |
-| GET    | `/api/admin/users/:id`     | None                                                    | 200 one user (same views); 404                                                 |
-| POST   | `/api/admin/users`         | `{ username, email, password, role? }`                  | 201 user; the email counts as verified; 409 if taken                           |
-| PATCH  | `/api/admin/users/:id`     | At least one of `username`, `email`, `password`, `role` | 200 updated user                                                               |
-| DELETE | `/api/admin/users/:id`     | None                                                    | 204: deletes the account; its sessions pass to other members; 409 for yourself |
-| DELETE | `/api/admin/users/:id/2fa` | None                                                    | 204: switches two-factor off (lost email access); 404 if not on                |
+| Method | Endpoint                   | Body / query                                            | Response                                                                                                  |
+| ------ | -------------------------- | ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/admin/users`         | `skip`, `take`, optional `q` (name or email)            | 200 users: admins get `email`, `emailVerifiedAt`, `twoFactorEnabled` too                                  |
+| GET    | `/api/admin/users/:id`     | None                                                    | 200 one user (same views); 404                                                                            |
+| POST   | `/api/admin/users`         | `{ username, email, password, role? }`                  | 201 user; the email counts as verified; 409 if taken                                                      |
+| PATCH  | `/api/admin/users/:id`     | At least one of `username`, `email`, `password`, `role` | 200 updated user                                                                                          |
+| DELETE | `/api/admin/users/:id`     | None                                                    | 204: deletes the account (its logins die at once) and ejects the person from their room; 409 for yourself |
+| DELETE | `/api/admin/users/:id/2fa` | None                                                    | 204: switches two-factor off (lost email access); 404 if not on                                           |
+| GET    | `/api/admin/guests`        | None                                                    | 200 `[{ id, displayName }]`: the guests that exist now (up to 500)                                        |
+| DELETE | `/api/admin/guests/:id`    | None                                                    | 204: deletes the guest (its token dies at once) and ejects it from its room; 404                          |
 
 Passwords can be **set** but never read: only a one-way scrypt hash is stored.
 Setting one (on create or `PATCH`) signs that user out of every session and
@@ -568,43 +487,40 @@ demoting the last administrator returns 409.
 
 ## 4. Data model
 
-Thirteen PostgreSQL tables. `LoginChallenge` backs two-factor login;
+Eleven PostgreSQL tables. `LoginChallenge` backs two-factor login;
 `OAuthAccount` and `OAuthCode` back OAuth sign-in; `PendingSignup` holds a signup
-until its emailed code is entered. Chat, presence and minigames have no tables.
+until its emailed code is entered. **Rooms, timers, memberships, chat, presence
+and minigames have no tables**: they live in the WebSocket layer. The only thing
+a room leaves behind is study time, added to `UserStat`.
 
-| Table             | Purpose                                                                | Main relationships                                                          |
-| ----------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `User`            | Registered profile and optional password hash                          | Has login sessions, memberships, friendships and one `UserStat`             |
-| `AuthSession`     | A registered user's login, identified by a hashed token with an expiry | Belongs to one user                                                         |
-| `UserAvatar`      | Profile picture bytes (PNG/JPEG/WebP, max 512 KB)                      | One per user; deleted with the account                                      |
-| `GuestSession`    | Temporary guest identity, display name, hashed token and expiry        | Can own, create and join sessions; keeps no stats                           |
-| `PomodoroSession` | A study session: settings, join code and the one shared timer          | Has members; solo timers are sessions with a null `code`                    |
-| `SessionMember`   | Who is in a session (and so in its timer), owner flag, focus progress  | One session and exactly one user OR guest                                   |
-| `UserStat`        | Lifetime study seconds, minigame wins and losses of a registered user  | One per user; deleted with the account                                      |
-| `EmailToken`      | One-time email codes: verification, password reset, 2FA on/off         | Belongs to one user                                                         |
-| `LoginChallenge`  | Short-lived step between password and session; holds the code's hash   | Belongs to one user                                                         |
-| `OAuthAccount`    | A Google, GitHub or 42 identity linked to a user                       | Belongs to one user; unique per provider identity and per user and provider |
-| `OAuthCode`       | One-time code (about a minute) swapped for a session after OAuth       | Belongs to one user                                                         |
-| `Friendship`      | A friend request between two registered users, pending or accepted     | Two users                                                                   |
-| `PendingSignup`   | A signup waiting for its emailed code; becomes a `User` when proven    | None                                                                        |
+| Table            | Purpose                                                                | Main relationships                                                          |
+| ---------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `User`           | Registered profile and optional password hash                          | Has logins, friendships and one `UserStat`                                  |
+| `AuthSession`    | A registered user's login, identified by a hashed token with an expiry | Belongs to one user                                                         |
+| `UserAvatar`     | Profile picture bytes (PNG/JPEG/WebP, max 512 KB)                      | One per user; deleted with the account                                      |
+| `GuestSession`   | Temporary guest identity: display name, hashed token and expiry        | None; keeps no stats                                                        |
+| `UserStat`       | Lifetime study seconds, minigame wins and losses of a registered user  | One per user; deleted with the account                                      |
+| `EmailToken`     | One-time email codes: verification, password reset, 2FA on/off         | Belongs to one user                                                         |
+| `LoginChallenge` | Short-lived step between password and session; holds the code's hash   | Belongs to one user                                                         |
+| `OAuthAccount`   | A Google, GitHub or 42 identity linked to a user                       | Belongs to one user; unique per provider identity and per user and provider |
+| `OAuthCode`      | One-time code (about a minute) swapped for a session after OAuth       | Belongs to one user                                                         |
+| `Friendship`     | A friend request between two registered users, pending or accepted     | Two users                                                                   |
+| `PendingSignup`  | A signup waiting for its emailed code; becomes a `User` when proven    | None                                                                        |
 
 ```mermaid
 erDiagram
   User ||--o{ AuthSession : authenticates
+  User ||--o| UserAvatar : shows
   User ||--o{ OAuthAccount : signs_in_with
   User ||--o| UserStat : totals
   User ||--o{ Friendship : requests
-  PomodoroSession ||--o{ SessionMember : includes
-  User o|--o{ SessionMember : joins
-  GuestSession o|--o{ SessionMember : joins
+  User ||--o{ EmailToken : receives
+  User ||--o{ LoginChallenge : answers
+  User ||--o{ OAuthCode : exchanges
 ```
 
-A membership references exactly one identity, a registered user **or** a guest.
-The two optional links are an exclusive choice; PostgreSQL CHECK constraints
-enforce it, and unique pairs stop duplicate rows for the same person. A session
-member is "in this session's timer": there is no separate attendance table.
-Per-phase history is not kept; lifetime totals live in `UserStat`, so leaving or
-deleting a session never erases study time.
+`GuestSession` and `PendingSignup` stand alone: a guest is not linked to anything
+and is deleted when it leaves.
 
 ### Reading the schema
 
@@ -616,33 +532,23 @@ deleting a session never erases study time.
   UUID IDs because the migrations don't create a database default.
 - `@updatedAt` is maintained by Prisma, not a trigger; direct SQL updates must set
   it themselves.
-- Fields such as `user`, `members` and `session` are **Prisma relation
+- Fields such as `user`, `requester` and `addressee` are **Prisma relation
   fields**, not columns. The foreign-key column is, for example, `userId`.
 
 ### Design choices
 
-- The integer `User.id`, email, username and timestamps were preserved. New
-  session and member records use UUIDs.
+- The integer `User.id`, email and username were preserved. The `createdAt` and
+  `updatedAt` columns of `User` and the `createdAt` of `GuestSession` were
+  dropped because nothing reads them; the other tables keep their `createdAt`
+  where an expiry or a cleanup depends on it.
 - Guests are separate from users, so no fake email or nullable email is needed.
-  A guest can create and join sessions, but nothing of a guest is kept: its
-  memberships go with the identity and it has no `UserStat`.
-- The owner is a flag on the member (`SessionMember.isOwner`), so a guest can own
-  a session. A partial unique index allows at most one owner per session. When the
-  owner leaves, is deleted or expires, the longest-standing member (registered
-  users first) takes over, and a session with no members is deleted.
-- A session has one shared join code, random and case-sensitive
-  (`PomodoroSession.code`, unique). Anyone who has it can join, guests included;
-  the owner replaces it with `POST /sessions/:sessionId/code`. A solo timer has a
-  null code, so nobody can join it.
-- Leaving or being kicked deletes the `SessionMember` row, after crediting the
-  focus time earned so far to the member's `UserStat`.
-- The length of the current phase is derived from `phase` and the settings
-  (`focusSeconds` or `breakSeconds`), which can only change while the timer is
-  idle, so a running phase is never rewritten.
-- There is no database write every second. Clients derive the countdown from
-  server timestamps.
-- Study time is added to `UserStat.focusedSeconds` when it is earned (on pause,
-  phase end, leave, kick, delete and cancel), so reading stats needs no
+  A guest can create and join rooms, but nothing of a guest is kept: it has no
+  `UserStat`, no friends, and its row is deleted when it leaves.
+- Rooms are never stored. The code, the durations, the timer and the member list
+  exist only in the realtime layer, so there is nothing to clean up in the
+  database when a room ends.
+- Study time is added to `UserStat.focusedSeconds` by the realtime layer when a
+  registered person leaves a room or closes the tab, so reading stats needs no
   history.
 - Leaderboards are intentionally deferred. Friend direct messages are not built.
 
@@ -650,19 +556,17 @@ deleting a session never erases study time.
 
 A permanent registered account. Guests have no `User` row.
 
-| Field                | Type        | Default / rule             | Meaning                                                                               |
-| -------------------- | ----------- | -------------------------- | ------------------------------------------------------------------------------------- |
-| `id`                 | `Int`       | Primary key; autoincrement | Stable registered-user identity                                                       |
-| `email`              | `String`    | Unique; required           | Contact address; API trims/lowercases new values                                      |
-| `username`           | `String`    | Unique; required           | Public name; API lowercases new values                                                |
-| `passwordHash`       | `String?`   | Null if omitted            | Salted scrypt hash; never a plain password; null for OAuth-only accounts              |
-| `emailVerifiedAt`    | `DateTime?` | Null until verified        | When the owner proved control of `email`; clear on change                             |
-| `twoFactorEnabledAt` | `DateTime?` | Null = off                 | When emailed-code two-factor was turned on; sign-in asks for a code while it is set   |
-| `role`               | `Role`      | `USER`                     | `USER`, `MODERATOR` or `ADMIN`; set with `npm run users:role`, then via the admin API |
-| `createdAt`          | `DateTime`  | `now()`                    | Account creation time                                                                 |
-| `updatedAt`          | `DateTime`  | `@updatedAt`               | Last account modification                                                             |
+| Field                | Type        | Default / rule             | Meaning                                                                             |
+| -------------------- | ----------- | -------------------------- | ----------------------------------------------------------------------------------- |
+| `id`                 | `Int`       | Primary key; autoincrement | Stable registered-user identity                                                     |
+| `email`              | `String`    | Unique; required           | Contact address; API trims/lowercases new values                                    |
+| `username`           | `String`    | Unique; required           | Public name; API lowercases new values                                              |
+| `passwordHash`       | `String?`   | Null if omitted            | Salted scrypt hash; never a plain password; null for OAuth-only accounts            |
+| `emailVerifiedAt`    | `DateTime?` | Null until verified        | When the owner proved control of `email`; clear on change                           |
+| `twoFactorEnabledAt` | `DateTime?` | Null = off                 | When emailed-code two-factor was turned on; sign-in asks for a code while it is set |
+| `role`               | `Role`      | `USER`                     | `USER` or `ADMIN`; set with `npm run users:role`, then via the admin API            |
 
-Relations: `authSessions`, `oAuthAccounts`, `oAuthCodes`, `memberships`, `stat`. A null hash preserves pre-existing
+Relations: `authSessions`, `emailTokens`, `loginChallenges`, `oAuthAccounts`, `oAuthCodes`, `avatar`, `stat` and the two friendship sides. A null hash preserves pre-existing
 profiles and OAuth-only accounts and never grants password login. Database uniqueness is case-sensitive; API normalization applies to new
 writes and does not rewrite older records.
 
@@ -693,77 +597,32 @@ A temporary identity for visitors without an account.
 | Field         | Type          | Default / rule                    | Meaning                        |
 | ------------- | ------------- | --------------------------------- | ------------------------------ |
 | `id`          | UUID `String` | Primary key; `uuid()`             | Guest identity                 |
-| `displayName` | `String`      | Required; SQL rejects blank names | Name shown to session members  |
+| `displayName` | `String`      | Required; SQL rejects blank names | Name shown to other people     |
 | `tokenHash`   | `String`      | Unique; required                  | Hash of the guest bearer token |
-| `expiresAt`   | `DateTime`    | Required; after `createdAt`       | Guest validity deadline        |
-| `createdAt`   | `DateTime`    | `now()`                           | Guest entry time               |
+| `expiresAt`   | `DateTime`    | Required                          | Safety-net deadline (24 hours) |
 
-Relation: `memberships`. Guests can create and join sessions (including solo
-timers) and own them, but keep no stats and no minigame results. Their
-memberships are removed with the identity; there is no guest-to-account transfer.
+A guest is deleted as soon as it leaves: on logout, or when the realtime layer
+sees its socket close (after a short grace period so a page reload does not log
+it out). `expiresAt` only catches the ones that were never closed cleanly; the
+cleanup that runs every minute removes them. A guest can create and join rooms
+but keeps no stats, no friends and no minigame results; there is no
+guest-to-account transfer. Index: `expiresAt`.
 
-### 4.4 PomodoroSession
-
-A session is the "server" and carries its one shared timer.
-
-| Field            | Type            | Default / rule                    | Meaning                                          |
-| ---------------- | --------------- | --------------------------------- | ------------------------------------------------ |
-| `id`             | UUID `String`   | Primary key; `uuid()`             | Session identity                                 |
-| `name`           | `String`        | Required; SQL rejects blank names | Human-readable name                              |
-| `code`           | `String?`       | Unique, random, 8 characters      | Shared join code; null for a solo timer          |
-| `focusSeconds`   | `Int`           | 1500; positive                    | Length of focus phases                           |
-| `breakSeconds`   | `Int`           | 300; positive                     | Length of breaks                                 |
-| `phase`          | `PomodoroPhase` | `FOCUS`                           | Running phase, or the next one while idle        |
-| `timerStatus`    | `TimerStatus`   | `IDLE`                            | `IDLE`, `RUNNING` or `PAUSED`                    |
-| `resumedAt`      | `DateTime?`     | Set exactly while `RUNNING`       | When the timer last (re)started                  |
-| `elapsedSeconds` | `Int`           | 0; nonnegative                    | Active time before `resumedAt`, excluding pauses |
-| `createdAt`      | `DateTime`      | `now()`                           | Creation time                                    |
-
-Relation: `members`. Index: `timerStatus` (for the worker). SQL CHECKs:
-`PomodoroSession_timer_check` (`elapsedSeconds ≥ 0`, `RUNNING` if and only if
-`resumedAt` is set) and `PomodoroSession_settings_check` (non-blank name,
-positive durations). The API limits durations to 1–14400 s.
-
-| `timerStatus` | `resumedAt` | Behavior                                              |
-| ------------- | ----------- | ----------------------------------------------------- |
-| `IDLE`        | Null        | Between phases; `phase` is the next one to start      |
-| `RUNNING`     | Required    | Server computes current elapsed time from `resumedAt` |
-| `PAUSED`      | Null        | Stored `elapsedSeconds` stays frozen                  |
-
-SQL validates the resulting row, not the transition history, so the services
-enforce allowed transitions.
-
-### 4.5 SessionMember
-
-| Field            | Type           | Default / rule                           | Meaning                                              |
-| ---------------- | -------------- | ---------------------------------------- | ---------------------------------------------------- |
-| `id`             | UUID `String`  | Primary key; `uuid()`                    | Membership ID, used for kick, mute and ownership     |
-| `sessionId`      | UUID `String`  | Required foreign key → `PomodoroSession` | Session joined (cascade)                             |
-| `userId`         | `Int?`         | Foreign key → `User.id`                  | Registered member, if applicable                     |
-| `guestSessionId` | UUID `String?` | Foreign key → `GuestSession.id`          | Guest member, if applicable                          |
-| `joinedAt`       | `DateTime`     | `now()`                                  | Membership creation time                             |
-| `mutedUntil`     | `DateTime?`    | Null                                     | While in the future the member may read but not post |
-| `isOwner`        | `Boolean`      | `false`                                  | At most one per session (partial unique index)       |
-| `creditedAt`     | `DateTime`     | `now()`; not before `joinedAt`           | Focus time is counted from here, then moved forward  |
-
-Unique pairs `(sessionId, userId)` and `(sessionId, guestSessionId)`; indexes on
-`userId` and `guestSessionId`. PostgreSQL permits nulls in those pairs, so
-`SessionMember_identity_check` (exactly one identity) closes the both-empty
-loophole. A member list also filters expired guests.
-
-### 4.6 UserStat
+### 4.4 UserStat
 
 `userId` (primary key, cascade), `focusedSeconds`, `wins`, `losses` (all default
 0, CHECKed nonnegative). Only registered users have a row; it is created on first
-credit or result. "Games played" is `wins + losses`, all games together; there is
-no per-game or per-phase history.
+credit or result. Wins and losses are all minigames together; there is no
+per-game or per-room history. This is the **only** place study time lives.
 
-### 4.7 Account recovery, two-factor and OAuth tables
+### 4.5 Account recovery, two-factor, OAuth and signup tables
 
 `EmailToken` backs email verification, password reset and the codes for turning
 two-factor on or off; `LoginChallenge` backs two-factor sign-in; `OAuthAccount`
-and `OAuthCode` back OAuth sign-in. Every table cascades on user deletion, and
-tokens are stored as hashes, as with `AuthSession`.
+and `OAuthCode` back OAuth sign-in; `PendingSignup` holds a signup (or an OAuth
+sign-in whose email isn't vouched for) until its emailed code is entered. Every
+table except `PendingSignup` cascades on user deletion, and tokens are stored as
+hashes, as with `AuthSession`.
 
 - **`EmailToken`**: `purpose` is `EMAIL_VERIFICATION`, `PASSWORD_RESET_CODE` (the emailed six-digit code) `PASSWORD_RESET` (the long token a verified code is exchanged for), `TWO_FACTOR_ENABLE_CODE` or `TWO_FACTOR_DISABLE_CODE` (emailed six-digit codes; the hash includes the user and the action). `failedAttempts` counts wrong guesses at a code. It
   stores the address the link was sent to (`email`), so a verification only
@@ -787,13 +646,19 @@ tokens are stored as hashes, as with `AuthSession`.
   is deleted when exchanged (single use); expired rows are swept by
   `cleanupExpiredSessions`.
 
+- **`PendingSignup`**: `tokenHash` (the `pendingToken` the client holds), `email`,
+  `username`, `passwordHash` or the OAuth `provider` and `providerUserId`,
+  `codeHash`, `failedAttempts`, `resends` with `resendWindowAt`, and
+  `expiresAt` (10 minutes). Completing it creates the `User`; expired rows are swept
+  by `cleanupExpiredSessions`.
+
 Password reset creates a `PASSWORD_RESET` token; consuming it sets a new hash, deletes
 the user's `AuthSession` rows and login challenges, and marks the token used, in one
 transaction. Reset requests answer identically whether or not the email exists.
 Verification sets `emailVerifiedAt`; changing the email clears it. Expired tokens
 and challenges are removed by `cleanupExpiredSessions`.
 
-### 4.8 Friends
+### 4.6 Friends
 
 `Friendship`: `requesterId` → `addresseeId`, `status` `PENDING`/`ACCEPTED`,
 `createdAt`. Both users cascade. SQL rejects a friendship with
@@ -802,95 +667,80 @@ cancelling and unfriending delete the row.
 
 ---
 
-## 5. How timers and statistics work
+## 5. Study time and statistics
 
-**Running time.** While `RUNNING`:
+The backend has **no timer**. The shared timer and the rooms belong to the
+WebSocket layer; the backend only stores what a room produces, through two
+internal functions in `src/stats/stats.service.ts`. They are not HTTP endpoints,
+so a client can never credit itself.
 
-```text
-planned   = phase == FOCUS ? focusSeconds : breakSeconds
-elapsed   = min(planned,
-                elapsedSeconds + floor((serverNow - resumedAt) / 1000))
-remaining = planned - elapsed
-```
+- `addFocusedSeconds(ctx, userId, seconds)`: adds `seconds` (an integer 0 to 86400) to `UserStat.focusedSeconds`. The realtime layer calls it **once** when a
+  registered person leaves a room or closes the tab, with the focus seconds it
+  measured (a longer stay is split into calls of at most 86400). Guests are never
+  credited. If the account was deleted meanwhile, nothing is written.
+- `recordMatch(ctx, winnerId, loserId)`: adds one win and one loss in one
+  transaction; a `null` id (a guest) is skipped. The game server calls it when a
+  match finishes; draws do not exist.
+- `getUserStatistics(db, userId)`: `{ focusedSeconds, wins, losses }`, zeros for
+  a new account, `null` for an unknown user. Breaks never count toward focus and
+  guests never appear in statistics.
 
-`elapsedSeconds` stores accumulated active time at the last pause. Pausing
-commits it and clears `resumedAt`; resuming sets `resumedAt` again. There is no
-pause-event audit log.
+## 6. Rooms, chat, minigames and the WebSocket layer
 
-**Finalization.** A timer continues when clients disconnect. The worker (once a
-second, safe on every instance) and read routes finalize an expired phase,
-including after a backend restart: everyone is credited up to the scheduled
-deadline (not the later polling time, so delays can't inflate statistics), the
-timer goes back to `IDLE`, and the next phase is chosen: after a focus phase a
-break, after a break focus. Transactions and row locks
-(session first, always) prevent concurrent starts and double-crediting.
+Rooms, chat, minigames and the "online" state are not stored in the database and
+have no HTTP endpoints. A teammate is building the WebSocket server for them.
+This is the contract between it and the API:
 
-**Crediting focus.** Registered members earn focus seconds straight into
-`UserStat.focusedSeconds`. Credit is applied when the timer is **paused**, when a
-phase **ends**, and when a member **leaves or is kicked**, or the session is
-**deleted** or its timer **cancelled**, so no earned time is lost. Only a
-`RUNNING` focus phase counts: the seconds since the latest of `creditedAt`,
-`joinedAt` and `resumedAt`, after which `creditedAt` moves forward; pauses,
-absences and breaks add zero. Accounting is in whole seconds, so sub-second fragments round
-down at boundaries. Guests have no `UserStat`, so they keep nothing.
+- **Authentication.** The socket uses the same Bearer token as HTTP: hash it with
+  `tokenHash` (`auth.service.ts`) and look it up in `AuthSession` or
+  `GuestSession`, checking `expiresAt`, like `authenticate()`.
+- **Rooms** are created and destroyed by the socket server only, in memory, with
+  an 8-character case-sensitive code, the study and break durations, no owner,
+  and the shared timer. A joiner syncs to the current phase.
+- **Study time**: call `addFocusedSeconds` on leave or disconnect (section 5).
+- **Guests**: when a guest's socket closes, delete it after a short grace period
+  with `endIdentity(ctx, { userId: null, guestSessionId })`
+  (`src/api/lifecycle.ts`).
+- **Presence and ejection.** Set `ctx.realtime` when the socket server starts:
 
-Example: in a 1500-second focus phase the owner earns 1500 s and a friend who
-arrives 900 s late earns 600 s. Never multiply session duration by member count.
+  ```ts
+  ctx.realtime = {
+    presence: (userId) => ({ online: boolean, roomCode: string | null }),
+    eject: ({ userId, guestSessionId }) => {
+      /* leave the room, close the socket */
+    },
+  };
+  ```
 
-A WebSocket disconnect should call `leaveSession`, which credits the time earned
-so far and removes the member.
+  `presence` feeds `GET /api/friends`. `eject` is called by the admin delete
+  endpoints after the database row is gone. Both hooks are optional: without them
+  everybody is offline and nobody can be ejected live.
 
-**Statistics** (`stats/stats.service.ts`):
-
-- `focusedSeconds`: `UserStat.focusedSeconds` plus uncommitted focus time in a
-  timer running right now (computed on read).
-- `wins`, `losses`, `played` (`wins + losses`): minigame totals over all games.
-  The game server records a finished match with `recordMatch(ctx, winnerId,
-loserId)` in the same file, which adds one win and one loss in one
-  transaction; a `null` id (a guest) is skipped.
-- Breaks never count toward focus; guests never appear in statistics.
-- A new profile returns zero totals; an unknown user returns null.
-
----
-
-## 6. Chat, minigames and WebSocket
-
-Chat, minigames and the "online" state are not stored in the database and have no
-HTTP endpoints. A teammate is building a WebSocket server for them:
-
-- **Chat** is per session and in memory only: nobody who leaves or disconnects
-  gets earlier messages back. Muting is stored (`SessionMember.mutedUntil`) and
-  must be enforced when a message is sent.
+- **Chat** is per room and in memory only: nobody who leaves or disconnects gets
+  earlier messages back.
 - **Minigames** run on the server, which decides the winner and then calls
-  `recordMatch(ctx, winnerId, loserId)` (`src/stats/stats.service.ts`). Only
-  registered players keep a win or loss; draws do not exist.
+  `recordMatch` (section 5). Only registered players keep a win or loss.
 - **Online/presence** is the socket connection. There is no `Presence` table.
-- **Timer pushes** can reuse `timerAction` and `timerView` from
-  `src/timers/timers.service.ts`; the worker's `settle` is where a phase ends.
-- **Disconnects** should call `leaveSession` so focus time is credited.
 
 ---
 
 ## 7. Deletion and lifecycle
 
-| Parent action          | Database behavior                                                           | Implemented API behavior                                                             |
-| ---------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| Delete User            | Cascade logins, OAuth links and codes, memberships, friendships, `UserStat` | Account deletion hands owned sessions to another member; an empty session is deleted |
-| Delete GuestSession    | Cascade the guest's memberships                                             | Logout/cleanup then hands its sessions on or deletes them when empty                 |
-| Delete PomodoroSession | Cascade memberships; `UserStat` is untouched                                | Owner `DELETE /sessions/:id` credits the live timer first; close keeps the data      |
-| Close PomodoroSession  | SQL only stores a timestamp                                                 | Cancels the live timer, saves earned time, rejects new joins and timer actions       |
-| Leave / kick           | Deletes the `SessionMember` row                                             | Credits earned focus time first; the owner leaving passes ownership on               |
+| Parent action       | Database behavior                                                      | Implemented API behavior                                                          |
+| ------------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Delete User         | Cascade logins, avatar, OAuth links and codes, friendships, `UserStat` | Self-delete or admin delete; the realtime layer ejects them from their room       |
+| Delete GuestSession | The row is simply removed                                              | Logout, admin delete, socket disconnect, or the expiry sweep; admin delete ejects |
 
 Expiry is not an automatic SQL deletion. Authentication checks it on every
-request and `cleanupExpiredSessions()` removes expired identities periodically.
-The same cleanup finds sessions without an owner (their last owner was a guest
-that expired, for example) and gives them to the longest-standing member
-(registered users first) or deletes them when empty.
+request and `cleanupExpiredSessions()` (every minute) removes expired auth
+sessions, guests, email tokens, pending signups, login challenges and OAuth
+codes.
 
 ### Application rules the schema can't enforce
 
-Session ownership and closure, membership, expiry, allowed timer transitions and
-non-overlapping live timers (one per person) live in the services. Foreign keys alone do not enforce these
+Identity types (a request acts as a registered user **or** a guest, never both),
+expiry, the verified-email gate, the admin role and the "last administrator must
+remain" rule live in the services. Foreign keys alone do not enforce these
 permissions, so preserve the service checks when adding endpoints. Critical
 writes use serializable transactions with retries on Prisma `P2034`; multi-record
 operations are atomic.
@@ -923,12 +773,14 @@ in future migrations. `prisma db push` is not a substitute.
 | `20261013150000_avatar_roles`           | `Role` enum and `User.role`; `UserAvatar` with size and type CHECKs                                                                                                                                                                                                                                                          |
 | `20261015080914_email_2fa`              | `User.twoFactorEnabledAt`, `LoginChallenge.codeHash`; drops `TwoFactor`, `RecoveryCode`                                                                                                                                                                                                                                      |
 | `20261013160000_moderator_role`         | Adds `MODERATOR` to `Role`                                                                                                                                                                                                                                                                                                   |
+| `20261021085625_oauth`                  | `OAuthAccount`, `OAuthCode`, `OAuthProvider`                                                                                                                                                                                                                                                                                 |
+| `20261106120000_pending_signup`         | `PendingSignup`: a signup becomes a `User` only when its emailed code is entered                                                                                                                                                                                                                                             |
 | `20261116120000_session_model`          | `StudyRoom`+`PomodoroSession`+`RoomMember`+`SessionParticipant` become `PomodoroSession`+`SessionMember`; `UserStat` (filled from old attendance); drops `Message`, `Presence`, `MiniGame`, `GameResult`, `User.verifyBy`, `Friendship.respondedAt`, closed rooms and the long-break settings; phases become `FOCUS`/`BREAK` |
+| `20261124120000_ephemeral_rooms`        | Drops `SessionMember`, `PomodoroSession`, `TimerStatus` and `PomodoroPhase` (rooms are no longer stored); drops `GuestSession.createdAt` with its expiry CHECK, and `User.createdAt` and `User.updatedAt`                                                                                                                    |
+| `20261126120000_drop_moderator_role`    | Removes `MODERATOR` from `Role` (moderators become `USER`)                                                                                                                                                                                                                                                                   |
 
 The study-platform migration preserves existing profiles and never drops user
-data. The timer-accounting migration keeps original start times and gives
-existing attendance an initial `creditedAt` baseline instead of guessing old
-unrecorded focus time.
+data. `UserStat` keeps the study time that the removed room tables once held.
 
 ```bash
 npm run db:validate   # validate schema
@@ -941,7 +793,7 @@ Client generation runs automatically before dev, build and tests. Don't edit
 deployed migrations; add a new one.
 
 Future features should add models when concrete: direct messages (they need the
-WebSocket layer), event logs (full pause/attendance audit).
+WebSocket layer).
 
 ---
 
@@ -968,15 +820,16 @@ and clean their own fixtures.
 Coverage includes email-code two-factor (turning it on and off, sign-in
 codes, resend, attempt limits and expiry), OAuth sign-in against fake providers
 (state cookie and mismatch, first sign-in, replay and expiry of the one-time
-code, unverified provider emails, linking, replacing an unverified signup,
-username clashes, no password login for OAuth-only accounts), reserved 42
-logins (signup, guest, rename, fail open, cache, Google suffix), pending signups
-replaced by the email's owner, sessions for users and guests, the shared code and
-its rotation, leave and kick, owner handover, friends, the shared timer
-(pause/resume/cancel, phase cycle, long breaks), focus credited on leave, kick,
-close and delete, stats isolation, unique constraints, identity checks, timer
-CHECKs, deletion behavior, concurrent starts, legacy-user migration preservation
-and secret-field exclusion. CI runs the full suite against its own PostgreSQL
+code, unverified provider emails, linking, pending signups, username clashes, no
+password login for OAuth-only accounts), reserved 42 logins (signup, guest,
+rename, fail open, cache, Google suffix), pending signups replaced by the email's
+owner, guests (created, deleted on logout and by the expiry sweep), friends and
+their presence from the realtime hook, study time added with
+`addFocusedSeconds` (and never written for a deleted account), `recordMatch`,
+the admin lists and deletes of guests and accounts with the eject hook (plain
+users and guests get 403), the `USER`/`ADMIN` role enum, the absence of any room
+table, unique constraints, deletion cascades, legacy-user migration preservation and
+secret-field exclusion. CI runs the full suite against its own PostgreSQL
 service.
 
 ---
@@ -985,25 +838,23 @@ service.
 
 | File                                        | Role                                                               |
 | ------------------------------------------- | ------------------------------------------------------------------ |
-| `src/index.ts`                              | Startup, timer worker, graceful shutdown                           |
+| `src/index.ts`                              | Startup, cleanup worker, graceful shutdown                         |
 | `src/app.ts`                                | Injectable Express app, CORS, JSON parsing, consistent errors      |
 | `src/api/router.ts`                         | The endpoint contract above                                        |
-| `src/api/common.ts`                         | Validation, identity types, retryable serializable transactions    |
-| `src/api/lifecycle.ts`                      | Logout, account deletion, expired-session cleanup                  |
-| `src/auth/auth.service.ts`                  | Passwords, token issuance/authentication, profiles                 |
-| `src/rooms/rooms.service.ts`                | Sessions: create/join/leave, settings, owner and moderator actions |
+| `src/api/common.ts`                         | Validation, identity types, realtime hooks, serializable retries   |
+| `src/api/lifecycle.ts`                      | Logout, account deletion, expiry cleanup (guests included)         |
+| `src/auth/auth.service.ts`                  | Passwords, token issuance/authentication, guests, profiles         |
+| `src/auth/pending.service.ts`               | Pending signups: emailed code, resend, cancel, completion          |
 | `src/auth/twofactor.service.ts`             | Emailed codes: sign-in challenge, turning two-factor on/off        |
 | `src/auth/oauth.providers.ts`               | Google, GitHub and 42: token swap and profile fetch                |
 | `src/auth/oauth.service.ts`                 | OAuth state, link or create the user, one-time code exchange       |
 | `src/auth/reserved.service.ts`              | Reserved 42 logins: cached lookup, fail open, 409                  |
-| `src/friends/friends.service.ts`            | Friend requests, accept, list, remove                              |
+| `src/friends/friends.service.ts`            | Friend requests, accept, list (with realtime presence), remove     |
 | `src/friends/social.service.ts`             | `areFriends` helper                                                |
-| `src/dev.ts`                                | Dev-only test console at `/dev` (not mounted in production)        |
-| `src/timers/timers.service.ts`              | Shared timer: clock math, crediting, owner handover, finalization  |
-| `src/stats/stats.service.ts`                | Stored and live statistics, `recordMatch` for the game server      |
+| `src/stats/stats.service.ts`                | Statistics, `addFocusedSeconds` and `recordMatch` for the realtime |
 | `src/users/users.service.ts`                | Avatars and public profiles                                        |
 | `src/users/role.ts`                         | `users:role` CLI to grant or remove admin                          |
-| `src/admin/admin.service.ts`                | Admin guard and user management                                    |
+| `src/admin/admin.service.ts`                | Admin guard, user management, guest list and delete, eject         |
 | `prisma/schema.prisma`                      | Data model                                                         |
 | `compose.test.yml`                          | Disposable test database, separate from the app Compose file       |
 | `test/api.test.ts`, `test/database.test.ts` | HTTP and real-PostgreSQL integration cases                         |
@@ -1018,10 +869,10 @@ backend origin (for example `http://localhost:3000`), use
 `/api` proxy, use relative `/api/...` paths. The signup form must send a
 password and keep the returned token; every other request must send
 `Authorization: Bearer <token>` or it returns 401. The user directory exposes
-usernames, not other people's emails. Don't duplicate timer/auth logic in React
-or write to Prisma from the browser, and don't submit claimed study totals: read the
-session endpoint (or the WebSocket pushes) and show server-derived remaining time
-locally.
+usernames, not other people's emails. Don't duplicate auth logic in React
+or write to Prisma from the browser, and don't submit claimed study totals: the
+realtime layer measures study time and credits it itself. Rooms and their timer
+come from the WebSocket layer, not from HTTP.
 
 References:
 [Express 5 error handling](https://expressjs.com/en/5x/guide/error-handling/),

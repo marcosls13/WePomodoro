@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router";
+import { useNavigate } from "react-router";
 import { InputField } from "./InputField";
 import { FormHeader } from "./FormHeader";
 import { SubmitButton } from "./SubmitButton";
@@ -8,6 +8,8 @@ import FormWrapper from "./FormWrapper";
 import { GitHubIcon, GoogleIcon, FortyTwoIcon } from "./icons/Icons.tsx";
 import { post, errMsg } from "../api";
 import { useAuthStore, type AuthUser } from "../authStore.ts";
+import { PasswordField } from "./PasswordField";
+import ForgotPasswordForm from "./ForgotPasswordForm";
 
 type LoginOk = { token: string; user: AuthUser };
 type Challenge = { twoFactorRequired: true; challengeToken: string };
@@ -24,6 +26,7 @@ export default function SignInForm() {
   const [challengeToken, setChallengeToken] = useState<string | null>(null);
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
+  const [forgot, setForgot] = useState(false);
 
   async function handleSubmit(e: React.SubmitEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -42,6 +45,8 @@ export default function SignInForm() {
       setError(errMsg(err));
     }
   }
+
+  if (forgot) return <ForgotPasswordForm onBack={() => setForgot(false)} />;
 
   return (
     <FormWrapper>
@@ -68,10 +73,9 @@ export default function SignInForm() {
               value={username}
               onChange={(e) => setUsername(e.target.value)}
             />
-            <InputField
+            <PasswordField
               id="password"
               label="Password"
-              type="password"
               required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -83,7 +87,9 @@ export default function SignInForm() {
       </form>
 
       <div className="flex justify-end px-2 mt-3 text-sm text-gray-500">
-        <Link to="/auth/forgot-password" className="hover:text-black">Forgot password?</Link>
+        <button type="button" onClick={() => setForgot(true)} className="hover:text-black dark:hover:text-white cursor-pointer">
+          Forgot password?
+        </button>
       </div>
 
       <div className="flex items-center my-5">

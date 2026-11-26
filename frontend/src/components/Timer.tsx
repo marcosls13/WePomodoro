@@ -18,7 +18,7 @@ function getFormattedTime(milliseconds: number) {
 
 export default function Timer({
   duration,
-  onTimeUp,
+  onTimeUp
 }: {
   duration: number;
   onTimeUp: () => void;

@@ -19,8 +19,6 @@ enum EmailTokenPurpose {
 
 enum Role {
   USER
-  // Read-only access to the admin user list.
-  MODERATOR
   ADMIN
 }
 

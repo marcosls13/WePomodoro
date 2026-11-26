@@ -4,6 +4,9 @@ import { useProfileStore } from "../store/profileStore";
 import { useAuthStore } from "../authStore";
 import { api, post, errMsg } from "../api";
 import ActivityBoard from "../components/ActivityBoard";
+import SecurityPanel from "./SecurityPanel";
+import ConfirmEmailButton from "../components/ConfirmEmailButton";
+import AdminPanel from "../components/AdminPanel";
 
 export default function Profile() {
   const navigate = useNavigate();
@@ -146,7 +149,17 @@ export default function Profile() {
         {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
       </section>
 
+      <ConfirmEmailButton
+        email={user.email}
+        isVerified={Boolean(user.emailVerifiedAt)}
+        onVerified={() => void fetchUser()}
+      />
+
       <ActivityBoard />
+
+      <SecurityPanel />
+
+      {user.role === "ADMIN" && <AdminPanel />}
 
       <button
         onClick={() => void handleLogout()}

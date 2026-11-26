@@ -3,7 +3,7 @@ import SingleFieldForm from "./SingleFieldForm";
 import { post } from "../api";
 import { useAuthStore } from "../authStore";
 
-export default function GuestForm() {
+export default function Guest() {
   const navigate = useNavigate();
   const setSession = useAuthStore((s) => s.setSession);
 

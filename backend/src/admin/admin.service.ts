@@ -10,12 +10,8 @@ import { hashPassword } from "../auth/auth.service.js";
 import { sendVerificationCode } from "../auth/verify.service.js";
 import type { Role } from "../generated/prisma/client.js";
 
-/** Returns the caller's role; moderators only pass when `readOnly`. */
-export async function requireStaff(
-  ctx: Context,
-  actor: Actor,
-  readOnly: boolean,
-) {
+/** Only administrators may use the admin endpoints. */
+export async function requireAdmin(ctx: Context, actor: Actor) {
   const user =
     actor.userId === null
       ? null
@@ -23,9 +19,8 @@ export async function requireStaff(
           where: { id: actor.userId },
           select: { role: true },
         });
-  if (user?.role === "ADMIN" || (readOnly && user?.role === "MODERATOR"))
-    return user.role;
-  throw new ApiError(403, "Administrator access required");
+  if (user?.role !== "ADMIN")
+    throw new ApiError(403, "Administrator access required");
 }
 
 const adminSelect = {
@@ -37,30 +32,15 @@ const adminSelect = {
   twoFactorEnabledAt: true,
 } as const;
 
-function view<
-  T extends {
-    email: string;
-    emailVerifiedAt: Date | null;
-    twoFactorEnabledAt: Date | null;
-  },
->(user: T, full = true) {
-  const { twoFactorEnabledAt, email, emailVerifiedAt, ...rest } = user;
-  // Moderators see who is who, not private account details.
-  return full
-    ? {
-        ...rest,
-        email,
-        emailVerifiedAt,
-        twoFactorEnabled: Boolean(twoFactorEnabledAt),
-      }
-    : rest;
+function view<T extends { twoFactorEnabledAt: Date | null }>(user: T) {
+  const { twoFactorEnabledAt, ...rest } = user;
+  return { ...rest, twoFactorEnabled: Boolean(twoFactorEnabledAt) };
 }
 
 export async function listUsers(
   ctx: Context,
   page: { skip: number; take: number },
   q: string | undefined,
-  full: boolean,
 ) {
   const users = await ctx.db.user.findMany({
     where: q
@@ -75,16 +55,16 @@ export async function listUsers(
     select: adminSelect,
     orderBy: { id: "desc" },
   });
-  return users.map((user) => view(user, full));
+  return users.map((user) => view(user));
 }
 
-export async function getUser(ctx: Context, id: number, full: boolean) {
+export async function getUser(ctx: Context, id: number) {
   const user = await ctx.db.user.findUnique({
     where: { id },
     select: adminSelect,
   });
   if (!user) throw new ApiError(404, "User not found");
-  return view(user, full);
+  return view(user);
 }
 
 /** An admin creates an account directly; the email counts as verified. */

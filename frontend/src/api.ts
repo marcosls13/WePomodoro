@@ -1,13 +1,14 @@
 import { useAuthStore } from "./authStore";
+import { useNoticeStore } from "./store/noticeStore";
 
 // Messages the backend sends when the token itself is no longer valid: the
 // session expired, or an admin deleted the account or guest.
 const deadToken = /session expired or invalid|valid bearer token/i;
 
-/** Forget the identity and show the ejected page. Also for the realtime layer. */
+/** Forget the identity and show the "ejected" notice. Also for the realtime layer. */
 export function eject() {
   useAuthStore.getState().logout();
-  window.location.assign("/ejected");
+  useNoticeStore.getState().showEjected();
 }
 
 export async function api<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {

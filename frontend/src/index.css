@@ -31,3 +31,19 @@
     }
   }
 }
+
+/* Tomato mascot: a slow bob, off for people who ask for less motion. */
+.tomato-body {
+  transform-origin: 50% 90%;
+  animation: tomato-bob 3.2s ease-in-out infinite;
+}
+@keyframes tomato-bob {
+  50% {
+    transform: translateY(-5px) rotate(-2deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tomato-body {
+    animation: none;
+  }
+}

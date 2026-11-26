@@ -85,6 +85,7 @@ export default function Navbar() {
             )}
           </svg>
         </button>
+
         {/* Menú de navegación (Escritorio y Móvil desplegable) */}
         <ul
           className={`
@@ -98,9 +99,10 @@ export default function Navbar() {
         `}
         >
           <NavbarButton to="/" content="Home" onClick={closeMenu} />
+
           <div className="w-full h-px bg-gray-100 dark:bg-slate-800 md:hidden my-2"></div>
           <NavbarButton
-            to="/signup"
+            to="/"
             content="Own your time"
             isPrimary={true}
             onClick={closeMenu}

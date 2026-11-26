@@ -50,8 +50,8 @@ function sendCode(ctx: Context, address: string, action: string, code: string) {
     address,
     `Your WePomodoro ${action} code`,
     `Your ${action} code is ${code}. It expires in ${CODE_EXPIRES_AT / 60_000} minutes.\n` +
-      "If you didn't ask for this, someone may know your password: reset it at " +
-      `${process.env.FRONTEND_URL ?? "http://localhost:5173"}/auth/reset-password`,
+      "If you didn't ask for this, someone may know your password: reset it " +
+      `(Sign In, then Forgot password) at ${process.env.FRONTEND_URL ?? "http://localhost:5173"}`,
   );
 }
 

@@ -73,7 +73,7 @@ import {
   createUser,
   deleteGuest,
   listGuests,
-  requireStaff,
+  requireAdmin,
   resetTwoFactor,
   updateUser,
 } from "../admin/admin.service.js";
@@ -590,13 +590,8 @@ export function createRouter(
     );
   });
 
-  // Moderators may look (without private details); only admins change things.
-  router.use("/admin", async (req, res, next) => {
-    res.locals.staff = await requireStaff(
-      ctx,
-      actor(res),
-      req.method === "GET",
-    );
+  router.use("/admin", async (_req, res, next) => {
+    await requireAdmin(ctx, actor(res));
     next();
   });
 
@@ -610,20 +605,19 @@ export function createRouter(
         ctx,
         pagination(req),
         typeof q === "string" && q.trim() ? q.trim().slice(0, 100) : undefined,
-        res.locals.staff === "ADMIN",
       ),
     );
   });
 
   router.get("/admin/users/:id", async (req, res) => {
-    res.json(await getUser(ctx, userId(req), res.locals.staff === "ADMIN"));
+    res.json(await getUser(ctx, userId(req)));
   });
 
-  const roles = ["USER", "MODERATOR", "ADMIN"] as const;
+  const roles = ["USER", "ADMIN"] as const;
   const roleOf = (value: unknown) => {
     const role = roles.find((r) => r === value);
     if (value !== undefined && !role)
-      throw new ApiError(400, "role must be USER, MODERATOR or ADMIN");
+      throw new ApiError(400, "role must be USER or ADMIN");
     return role;
   };
 

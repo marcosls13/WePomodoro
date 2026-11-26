@@ -1,7 +1,8 @@
+
 export default function TimeInputControl({
   label,
   value,
-  onChange,
+  onChange
 }: {
   label: string;
   value: number;

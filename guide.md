@@ -66,7 +66,7 @@ ctx.realtime = {
 6. **Profile.** Change the username, upload an avatar, turn 2FA on and off in the Security card. To test "Confirm your email", change the email through the API (`PATCH /api/users/me` with `currentPassword`); the card appears, ask for the code and confirm it. Statistics show zeros; to see numbers: `INSERT INTO "UserStat" ("userId","focusedSeconds","wins","losses") VALUES (<id>, 7200, 3, 1) ON CONFLICT ("userId") DO UPDATE SET "focusedSeconds"=7200, "wins"=3, "losses"=1;`.
 7. **Friends.** Two accounts: add by username from one, accept in the other, remove. Both show offline (no realtime yet).
 8. **Admin.** `npm run users:role -- <your-username> admin` in the backend container, log out and in again. `/profile` now ends with the Administration card: connected guests and all users. Delete a guest or user that is logged in in another window: their next request shows the "You have been ejected" notification and its button takes them to `/`.
-9. **Room.** Create a room: durations, Create room, copy the code, Start studying: you reach `/room/<code>` with the timer UI and Leave. Joining that code from another browser fails with "Room not found" until the WebSocket layer exists.
+9. **Room.** On `/create` press Create Room, set the study and break minutes, Create Room again, copy the code, Start studying: you reach `/room/<code>` with the timer UI and Leave. Joining that code from another browser fails with "Room not found" until the WebSocket layer exists.
 
 10. **Change password.** In `/profile`, "Change password": a wrong current password shows "Current password is required"; mismatched or short (under 8) new passwords are rejected in the form; a valid change shows the success message. Then log out and log in with the new one. With the account open in a second browser, that other session gets "ejected" on its next request.
 
@@ -112,15 +112,23 @@ An API request always acts as exactly one of them (`Actor`: `userId` or `guestSe
                 +---------------+-----------------+
                                 |  all three end here
                                 v
-                        /create  (room creation)
-              +------------------+-------------------+
-              | study minutes    |  join with a code |
-              | break minutes    |                   |
-              | [Create room]    |                   |
-              +--------+---------+---------+---------+
-                       | code + Copy        |
-                       | [Start studying]   |
-                       +----------+---------+
+                        /create  (CreatePanel)
+              +----------------------------------+
+              |  "Join the session"              |
+              |  [Create Room]   [Join Room]     |
+              +----------+--------------+--------+
+                         |              |
+              Create Room|              |Join Room
+                         v              v
+              +------------------+  +------------------+
+              | study minutes    |  | room code        |
+              | break minutes    |  | [Join Room]      |
+              | [Create Room]    |  | [Cancel]         |
+              | [Cancel]         |  +--------+---------+
+              +--------+---------+           |
+                       | code + Copy         |
+                       | [Start studying]    |
+                       +----------+----------+
                                   v
                           /room/:code  (timer, chat, minigames)
                                   | Leave / close tab
@@ -142,7 +150,7 @@ An API request always acts as exactly one of them (`Actor`: `userId` or `guestSe
 |---|---|---|
 | `/` | everyone (logged-in people are sent to `/create`) | Guest / Log in / Register tabs |
 | `/auth/oauth` | everyone | OAuth return page: exchanges the one-time code for a token, or shows the 6-digit code form for a new account |
-| `/create` | guest, registered, admin | Create or join a room |
+| `/create` | guest, registered, admin | `CreatePanel`: two buttons, Create Room or Join Room |
 | `/room/:code` | guest, registered, admin | The room |
 | `/friends` | registered, admin (guests bounce to `/create`) | Friends list, requests, add by username, Join their room |
 | `/profile` | registered, admin | Username, avatar, confirm email, statistics, 2FA, delete account, and for admins the Administration card |
@@ -158,6 +166,180 @@ There are no other pages: the 6-digit code, password recovery and administration
 **Log in.** `POST /api/auth/login`. With 2FA on, the answer is a challenge: the form asks for the emailed code (`/api/auth/login/2fa`). OAuth goes `/api/auth/oauth/:provider` to the provider, back to the callback, then `/auth/oauth` in the frontend exchanges the code (`POST /api/auth/oauth/exchange`), or, for a new account whose email the provider doesn't vouch for, shows the same code form. **Forgot password** is inside the Sign In tab: "Forgot password?" turns the card into three steps (email, emailed code, new password) using `password-reset/request`, `verify` and `confirm`, then goes back to sign in.
 
 **Room.** Rooms are never stored. Creating one sets study and break minutes and produces a case-sensitive 8-character code to share. There is no owner. Anyone with the code joins and follows the same timer. All of this lives in the teammates' WebSocket layer (in memory). Until it exists, `roomClient.ts` is a tab-local stub, so only the creator can enter.
+
+**CreatePanel** (`frontend/src/components/CreatePanel.tsx`, replaces `CreateRoom`; `MainPage` renders it). One `FormWrapper` card titled "Join the session" with two buttons, Create Room and Join Room. It has a `mode` state: `idle | create | join`.
+
+- `idle`: just the two buttons.
+- Create Room pressed: the Join button collapses (same CSS transition as now) and the study and break minutes (`TimeInputControl`, 25 and 5 by default) slide in above the button. Pressing Create Room again calls `createRoom({ focusSeconds, breakSeconds })` and the card shows the code, Copy code and Start studying (goes to `/room/<code>`).
+- Join Room pressed: the Create button collapses and a room code input appears (case-sensitive, not uppercased). Pressing Join Room again calls `joinRoom(code.trim())` and goes to `/room/<code>`. An empty code does nothing; "Room not found" shows under the input.
+- Cancel (visible when `mode !== "idle"`) goes back to `idle`.
+
+The panel calls `roomClient` itself, so there is no `onSubmitRoom` prop and no room-name field: rooms are identified by their code only. Teammates change nothing here, they only replace the bodies in `roomClient.ts`.
+
+Final code:
+
+```tsx
+import { useState } from "react";
+import { useNavigate } from "react-router";
+import { FormHeader } from "./FormHeader";
+import FormWrapper from "./FormWrapper";
+import { SubmitButton } from "./SubmitButton";
+import TimeInputControl from "./TimeInputControl";
+import { createRoom, joinRoom, type RoomHandle } from "../roomClient";
+import { errMsg } from "../api";
+
+type PanelMode = "idle" | "create" | "join";
+
+export default function CreatePanel() {
+  const navigate = useNavigate();
+  const [mode, setMode] = useState<PanelMode>("idle");
+  const [focusMinutes, setFocusMinutes] = useState(25);
+  const [breakMinutes, setBreakMinutes] = useState(5);
+  const [created, setCreated] = useState<RoomHandle | null>(null);
+  const [code, setCode] = useState("");
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState("");
+
+  const cancel = () => {
+    setMode("idle");
+    setCode("");
+    setError("");
+  };
+
+  const handleAction = async (target: "create" | "join") => {
+    if (mode === "idle") {
+      setMode(target);
+      return;
+    }
+    if (mode !== target) return;
+    setError("");
+    try {
+      if (target === "create") {
+        setCreated(
+          await createRoom({
+            focusSeconds: focusMinutes * 60,
+            breakSeconds: breakMinutes * 60,
+          }),
+        );
+      } else {
+        const trimmed = code.trim();
+        if (!trimmed) return;
+        const room = await joinRoom(trimmed);
+        void navigate(`/room/${room.code}`);
+      }
+    } catch (err) {
+      setError(errMsg(err));
+    }
+  };
+
+  const copy = async () => {
+    if (!created) return;
+    await navigator.clipboard.writeText(created.code);
+    setCopied(true);
+  };
+
+  if (created)
+    return (
+      <div className="w-full max-w-md min-h-[450px] flex justify-center items-center">
+        <FormWrapper>
+          <FormHeader
+            title="Room ready"
+            subtitle="Share the code or start studying"
+          />
+          <p className="my-6 select-all text-center font-mono text-4xl tracking-widest text-gray-900 dark:text-white">
+            {created.code}
+          </p>
+          <div className="flex flex-col gap-3">
+            <SubmitButton onClick={() => void copy()}>
+              {copied ? "Copied" : "Copy code"}
+            </SubmitButton>
+            <SubmitButton
+              onClick={() => void navigate(`/room/${created.code}`)}
+            >
+              Start studying
+            </SubmitButton>
+          </div>
+        </FormWrapper>
+      </div>
+    );
+
+  return (
+    <div className="w-full max-w-md min-h-[450px] flex justify-center items-center">
+      <FormWrapper>
+        <FormHeader title="Join the session" subtitle="Come on bro" />
+        <div className="relative flex flex-col items-center justify-center w-full">
+          {/* Create: hidden while joining */}
+          <div
+            className={`flex flex-col items-center w-full transition-all duration-500 ease-out overflow-hidden
+            ${mode === "join" ? "max-h-0 opacity-0 pointer-events-none transform -translate-y-4" : "max-h-48 opacity-100 transform translate-y-0"}
+          `}
+          >
+            <div
+              className={`grid grid-cols-2 gap-4 transition-all duration-500 ease-out overflow-hidden w-full
+              ${mode === "create" ? "max-h-20 opacity-100 mb-4 transform scale-100" : "max-h-0 opacity-0 mb-0 transform scale-95"}
+            `}
+            >
+              <TimeInputControl
+                label="Study (min)"
+                value={focusMinutes}
+                onChange={setFocusMinutes}
+              />
+              <TimeInputControl
+                label="Break (min)"
+                value={breakMinutes}
+                onChange={setBreakMinutes}
+              />
+            </div>
+            <SubmitButton onClick={() => void handleAction("create")}>
+              Create Room
+            </SubmitButton>
+          </div>
+
+          {/* Join: hidden while creating */}
+          <div
+            className={`flex flex-col items-center w-full transition-all duration-500 ease-out overflow-hidden
+            ${mode === "create" ? "max-h-0 opacity-0 pointer-events-none transform translate-y-4" : "max-h-48 opacity-100 transform translate-y-0 mt-4"}
+            ${mode === "join" && "mt-0"}
+          `}
+          >
+            <div
+              className={`transition-all duration-500 ease-out overflow-hidden flex flex-col items-center w-full
+              ${mode === "join" ? "max-h-20 opacity-100 mb-4 transform scale-100" : "max-h-0 opacity-0 mb-0 transform scale-95"}
+            `}
+            >
+              <input
+                type="text"
+                value={code}
+                onChange={(e) => {
+                  setCode(e.target.value);
+                }}
+                placeholder="Room code"
+                className="px-4 py-3 border-2 border-black rounded-full font-mono focus:outline-none focus:border-red-600 uppercase placeholder:font-custom w-full dark:text-white"
+              />
+            </div>
+            <SubmitButton onClick={() => void handleAction("join")}>
+              Join Room
+            </SubmitButton>
+          </div>
+        </div>
+
+        {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
+
+        <div
+          className={`flex items-center justify-center transition-all duration-500 ease-out mt-6 ${mode !== "idle" ? "opacity-100 transform translate-y-0" : "opacity-0 pointer-events-none transform translate-y-2"}`}
+        >
+          <button
+            onClick={cancel}
+            className="text-sm font-bold text-gray-400 hover:text-black transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+      </FormWrapper>
+    </div>
+  );
+}
+```
 
 **Leaving a room.** The realtime layer measures the focus seconds and calls `addFocusedSeconds(ctx, userId, seconds)` for registered users only, then deletes a guest. This runs on Leave and on tab close. It is not an HTTP endpoint, so nobody can credit themselves.
 

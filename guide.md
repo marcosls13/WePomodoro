@@ -9,6 +9,7 @@ Updated on 2026-11-26: everything you already applied was removed from this guid
 | Database (new migration applied), backend source, backend docs, backend tests (55 passing), `MODERATOR` role removed | **Done** |
 | Frontend: all files of the no-extra-pages plan, `Tomato` on the home page and as the navbar logo | **Done** |
 | Frontend lint (0 problems), unused `TwoFactorAuthForm.tsx` deleted | **Done** |
+| Change password card in Profile | **Done** (section 3) |
 | Check it by hand in a browser | **To do** (2.2) |
 
 ---
@@ -67,13 +68,17 @@ ctx.realtime = {
 8. **Admin.** `npm run users:role -- <your-username> admin` in the backend container, log out and in again. `/profile` now ends with the Administration card: connected guests and all users. Delete a guest or user that is logged in in another window: their next request shows the "You have been ejected" notification and its button takes them to `/`.
 9. **Room.** Create a room: durations, Create room, copy the code, Start studying: you reach `/room/<code>` with the timer UI and Leave. Joining that code from another browser fails with "Room not found" until the WebSocket layer exists.
 
+10. **Change password.** In `/profile`, "Change password": a wrong current password shows "Current password is required"; mismatched or short (under 8) new passwords are rejected in the form; a valid change shows the success message. Then log out and log in with the new one. With the account open in a second browser, that other session gets "ejected" on its next request.
+
 **Waiting for teammates, do not expect it to work yet:** a second person joining a room, timer sync, friends going online or showing a room, study time being saved, the live eject of someone inside a room, guests deleted on tab close by disconnect, minigames.
 
 ---
 
-## 3. Optional
+## 3. Change password card (applied)
 
-- Changing the password while logged in has no UI yet. The backend supports it (`PATCH /api/users/me` with `currentPassword` and `password`); it would be one more card in `Profile`.
+`frontend/src/components/ChangePassword.tsx`, rendered in `Profile` before `SecurityPanel`. It calls `PATCH /api/users/me` with `{ currentPassword, password }`; the backend checks the current password, validates the new one (8–128 characters) and logs out every other device. Check it by hand with step 10 of 2.2.
+
+**Known limit.** An account created only through OAuth (Google, GitHub, 42) has no password, so the backend answers "Current password is required" and the card cannot set one. Choosing a first password would need a backend change (allow `password` without `currentPassword` when `passwordHash` is null). Not needed for the subject.
 
 ---
 
@@ -158,7 +163,7 @@ There are no other pages: the 6-digit code, password recovery and administration
 
 **Friends** (registered only). Add by username (`POST /api/friends`). If the other person already asked you, it is accepted instead. They accept (`POST /api/friends/:id/accept`) or either side removes (`DELETE /api/friends/:id`). `GET /api/friends` returns `friends`, `incoming`, `outgoing`; each accepted friend carries `presence { online, roomCode }`, which comes from `ctx.realtime.presence(userId)` (offline until the teammates plug it in). A friend in a room shows a Join button that goes to `/room/<roomCode>`.
 
-**Profile** (registered only, a single page). Change username, upload or remove an avatar (png, jpeg, webp, 512 KB max), turn 2FA on or off (each with an emailed code), delete the account, see statistics: **studied time, minigame wins, minigame losses** and nothing else. If the email is unverified (after changing it) a "Confirm your email" card asks for a code (`/auth/verify-email/resend`, then `/auth/verify-email`). Admins also get the Administration card.
+**Profile** (registered only, a single page). Change username, upload or remove an avatar (png, jpeg, webp, 512 KB max), change the password (current + new, other devices are logged out), turn 2FA on or off (each with an emailed code), delete the account, see statistics: **studied time, minigame wins, minigame losses** and nothing else. If the email is unverified (after changing it) a "Confirm your email" card asks for a code (`/auth/verify-email/resend`, then `/auth/verify-email`). Admins also get the Administration card.
 
 **Admin.** The Administration card in `/profile` (admins only) lists connected guests (`GET /api/admin/guests`) and all users (`GET /api/admin/users`). Delete a guest (`DELETE /api/admin/guests/:id`) or a user (`DELETE /api/admin/users/:id`). The row is deleted first, so every token dies at once; then `ctx.realtime.eject(identity)` removes the person from their room live. Everyone else gets 403 on these routes.
 

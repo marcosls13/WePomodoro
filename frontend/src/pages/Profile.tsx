@@ -7,6 +7,7 @@ import ActivityBoard from "../components/ActivityBoard";
 import SecurityPanel from "./SecurityPanel";
 import ConfirmEmailButton from "../components/ConfirmEmailButton";
 import AdminPanel from "../components/AdminPanel";
+import ChangePassword from "../components/ChangePassword";
 
 export default function Profile() {
   const navigate = useNavigate();
@@ -160,6 +161,8 @@ export default function Profile() {
       />
 
       <ActivityBoard />
+
+      <ChangePassword />
 
       <SecurityPanel />
 

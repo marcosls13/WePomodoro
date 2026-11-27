@@ -58,7 +58,7 @@ export default function Room({
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.95 }}
             transition={smoothTransition}
-            className="flex flex-col w-full h-screen p-6 gap-4 md:flex-row items-center justify-center border"
+            className="flex flex-col w-full h-dvh p-6 gap-4 md:flex-row items-center justify-center border"
           >
             <Games />
             <Chat />

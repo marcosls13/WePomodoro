@@ -13,7 +13,7 @@ export const ProtectedLayout = () => {
 
   return (
     <>
-      <main className="flex min-h-screen font-custom dark:bg-slate-900">
+      <main className="flex min-h-dvh font-custom dark:bg-slate-900">
         <Outlet />
       </main>
       {isRandomUser ? <Profilebar /> : <></>}

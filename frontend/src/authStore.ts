@@ -51,3 +51,7 @@ export const useAuthStore = create<AuthState>()(
     { name: "transcendence-auth", storage },
   ),
 );
+
+window.addEventListener("pageshow", (e) => {
+  if (e.persisted) void useAuthStore.persist.rehydrate();
+});

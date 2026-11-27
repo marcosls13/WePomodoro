@@ -32,7 +32,10 @@ export default function OAuthCallback() {
     return (
       <div className="flex w-full flex-grow items-center justify-center p-6">
         <div className="w-full max-w-md">
-          <VerifyCodeForm pendingToken={pending} onCancel={() => void navigate("/")} />
+          <VerifyCodeForm
+            pendingToken={pending}
+            onCancel={() => void navigate("/")}
+          />
         </div>
       </div>
     );

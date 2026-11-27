@@ -58,16 +58,22 @@ export default function ConfirmEmailButton({
         Confirm your email
       </h2>
       <p className="text-sm text-gray-600 dark:text-gray-300">
-        {email} is not verified yet. Until you confirm it, most of the app is locked.
+        {email} is not verified yet. Until you confirm it, most of the app is
+        locked.
       </p>
       {sent ? (
-        <form onSubmit={(e) => void confirm(e)} className="flex flex-col gap-4 max-w-sm">
+        <form
+          onSubmit={(e) => void confirm(e)}
+          className="flex flex-col gap-4 max-w-sm"
+        >
           <InputField
             id="email-code"
             label="Code from your email"
             required
             value={code}
-            onChange={(e) => { setCode(e.target.value); }}
+            onChange={(e) => {
+              setCode(e.target.value);
+            }}
             placeholder="123456"
           />
           <SubmitButton>Verify</SubmitButton>

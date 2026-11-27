@@ -11,14 +11,20 @@ export function eject() {
   useNoticeStore.getState().showEjected();
 }
 
-export async function api<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
+export async function api<T = unknown>(
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
   const token = useAuthStore.getState().token;
   const headers = new Headers(init.headers);
-  if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  if (!headers.has("Content-Type"))
+    headers.set("Content-Type", "application/json");
   if (token) headers.set("Authorization", `Bearer ${token}`);
   const res = await fetch(`/api${path}`, { ...init, headers });
   if (!res.ok) {
-    const data = (await res.json().catch(() => null)) as { error?: string } | null;
+    const data = (await res.json().catch(() => null)) as {
+      error?: string;
+    } | null;
     const message = data?.error ?? `HTTP ${String(res.status)}`;
     if (res.status === 401 && token && deadToken.test(message)) eject();
     throw new Error(message);
@@ -26,7 +32,7 @@ export async function api<T = unknown>(path: string, init: RequestInit = {}): Pr
   return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
 }
 
-export const post = <T,>(path: string, body: unknown = {}) =>
+export const post = <T>(path: string, body: unknown = {}) =>
   api<T>(path, { method: "POST", body: JSON.stringify(body) });
 
 export const errMsg = (e: unknown) =>

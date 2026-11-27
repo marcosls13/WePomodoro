@@ -43,14 +43,19 @@ export default function SingleFieldForm({
     <div className="flex-grow flex items-center justify-center p-6">
       <FormWrapper>
         <FormHeader title={title} subtitle={subtitle} />
-        <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-5">
+        <form
+          onSubmit={(e) => void handleSubmit(e)}
+          className="flex flex-col gap-5"
+        >
           <InputField
             id="field"
             label={label}
             type={type}
             required
             value={value}
-            onChange={(e) => { setValue(e.target.value); }}
+            onChange={(e) => {
+              setValue(e.target.value);
+            }}
             placeholder={placeholder}
           />
           {error && <p className="text-sm text-red-600">{error}</p>}

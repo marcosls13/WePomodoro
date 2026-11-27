@@ -43,8 +43,12 @@ function NavbarButton({
 
 export default function Navbar() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const toggleMenu = () => { setIsMenuOpen(!isMenuOpen); };
-  const closeMenu = () => { setIsMenuOpen(false); };
+  const toggleMenu = () => {
+    setIsMenuOpen(!isMenuOpen);
+  };
+  const closeMenu = () => {
+    setIsMenuOpen(false);
+  };
 
   return (
     <header className="px-6 py-4 w-full">

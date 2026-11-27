@@ -10,13 +10,19 @@ interface RoomConfig {
   restDuration: number;
 }
 
-export default function Room({ initialConfig }: {initialConfig?: RoomConfig}) {
-  const [roomConfig, setRoomConfig] = useState<RoomConfig | null>(initialConfig ?? null);
+export default function Room({
+  initialConfig,
+}: {
+  initialConfig?: RoomConfig;
+}) {
+  const [roomConfig, setRoomConfig] = useState<RoomConfig | null>(
+    initialConfig ?? null,
+  );
   const [isRestTime, setIsRestTime] = useState(false);
 
-  const handleStartRoom = ({ 
+  const handleStartRoom = ({
     workDuration,
-    restDuration
+    restDuration,
   }: {
     workDuration: number;
     restDuration: number;

@@ -44,7 +44,9 @@ export default function RoomPage() {
     );
 
   if (!room)
-    return <div className="animate-pulse text-gray-500 p-8">Joining room...</div>;
+    return (
+      <div className="animate-pulse text-gray-500 p-8">Joining room...</div>
+    );
 
   return (
     <>
@@ -55,7 +57,9 @@ export default function RoomPage() {
         }}
       />
       <div className="fixed bottom-4 left-4 z-50 flex items-center gap-3 rounded-full bg-white px-4 py-2 shadow-md dark:bg-slate-900">
-        <span className="font-mono text-sm text-gray-900 dark:text-white">{room.code}</span>
+        <span className="font-mono text-sm text-gray-900 dark:text-white">
+          {room.code}
+        </span>
         <button onClick={leave} className="text-sm font-semibold text-red-600">
           Leave
         </button>

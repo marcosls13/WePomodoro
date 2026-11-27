@@ -50,7 +50,10 @@ export default function CreateRoom() {
   if (created)
     return (
       <FormWrapper>
-        <FormHeader title="Room ready" subtitle="Share the code or start studying" />
+        <FormHeader
+          title="Room ready"
+          subtitle="Share the code or start studying"
+        />
         <p className="my-6 select-all text-center font-mono text-4xl tracking-widest text-gray-900 dark:text-white">
           {created.code}
         </p>
@@ -70,8 +73,16 @@ export default function CreateRoom() {
       <FormHeader title="Study together" subtitle="Create a room or join one" />
       <div className="flex flex-col gap-4">
         <div className="grid grid-cols-2 gap-4">
-          <TimeInputControl label="Study (min)" value={focusMinutes} onChange={setFocusMinutes} />
-          <TimeInputControl label="Break (min)" value={breakMinutes} onChange={setBreakMinutes} />
+          <TimeInputControl
+            label="Study (min)"
+            value={focusMinutes}
+            onChange={setFocusMinutes}
+          />
+          <TimeInputControl
+            label="Break (min)"
+            value={breakMinutes}
+            onChange={setBreakMinutes}
+          />
         </div>
         <SubmitButton onClick={() => void create()}>Create room</SubmitButton>
 
@@ -84,7 +95,9 @@ export default function CreateRoom() {
         <input
           type="text"
           value={code}
-          onChange={(e) => { setCode(e.target.value); }}
+          onChange={(e) => {
+            setCode(e.target.value);
+          }}
           placeholder="Room code"
           className="w-full px-4 py-3 border-2 border-black rounded-full font-mono focus:outline-none focus:border-red-600 placeholder:font-custom dark:text-white"
         />

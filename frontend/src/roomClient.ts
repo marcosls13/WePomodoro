@@ -15,7 +15,8 @@ export interface RoomHandle {
   settings: RoomSettings;
 }
 
-const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+const alphabet =
+  "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 const rooms = new Map<string, RoomHandle>();
 
 /** Creates a room and returns its shareable code. */
@@ -32,7 +33,9 @@ export function createRoom(settings: RoomSettings): Promise<RoomHandle> {
 /** Joins an existing room by code (also used to join a friend's room). */
 export function joinRoom(code: string): Promise<RoomHandle> {
   const room = rooms.get(code);
-  return room ? Promise.resolve(room) : Promise.reject(new Error("Room not found"));
+  return room
+    ? Promise.resolve(room)
+    : Promise.reject(new Error("Room not found"));
 }
 
 /** Leaves the room. The realtime layer saves the study time on its side. */

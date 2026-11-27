@@ -43,5 +43,7 @@ export const useProfileStore = create<ProfileState>((set) => ({
   },
 
   // Forces the <img> to reload after an upload or removal.
-  bumpAvatar: () => { set((s) => ({ avatarVersion: s.avatarVersion + 1 })); },
+  bumpAvatar: () => {
+    set((s) => ({ avatarVersion: s.avatarVersion + 1 }));
+  },
 }));

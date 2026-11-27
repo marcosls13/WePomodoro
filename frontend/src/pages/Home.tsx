@@ -19,7 +19,7 @@ export default function Home() {
   const [panelMode, setPanelMode] = useState<AuthPanelMode>("guest");
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   if (isAuthenticated) return <Navigate to="/create" replace />;
-  
+
   return (
     <div className="flex-grow flex flex-col lg:flex-row items-center justify-center gap-12 px-6 lg:px-24 py-12 overflow-hidden">
       <div className="flex flex-col items-center text-center lg:text-left lg:items-start max-w-2xl space-y-6">
@@ -35,7 +35,9 @@ export default function Home() {
         <div className="pt-4">
           <button
             type="button"
-            onClick={() => { setPanelMode("signup"); }}
+            onClick={() => {
+              setPanelMode("signup");
+            }}
             className="inline-flex items-center justify-center rounded-full bg-gray-900 px-8 py-3.5 text-base font-semibold text-white shadow-sm hover:bg-gray-700 hover:-translate-y-0.5 transition-all duration-200 dark:bg-slate-800"
           >
             Sync your focus
@@ -57,7 +59,9 @@ export default function Home() {
                 type="button"
                 role="tab"
                 aria-selected={active}
-                onClick={() => { setPanelMode(option.id); }}
+                onClick={() => {
+                  setPanelMode(option.id);
+                }}
                 className={`relative rounded-full py-2 text-xs font-semibold transition-colors ${
                   active
                     ? "text-white"

@@ -15,7 +15,9 @@ export default function Guest() {
       placeholder="Anon"
       button="Enter"
       onSubmit={async (displayName) => {
-        const res = await post<{ token: string }>("/auth/guest", { displayName });
+        const res = await post<{ token: string }>("/auth/guest", {
+          displayName,
+        });
         setSession(res.token, null);
         void navigate("/create");
       }}

@@ -45,7 +45,12 @@ export default function AdminPanel() {
   }, [reload]);
 
   const remove = async (path: string, name: string) => {
-    if (!window.confirm(`Delete ${name}? They are removed from their room right away.`)) return;
+    if (
+      !window.confirm(
+        `Delete ${name}? They are removed from their room right away.`,
+      )
+    )
+      return;
     setError("");
     try {
       await api(path, { method: "DELETE" });
@@ -58,10 +63,14 @@ export default function AdminPanel() {
   return (
     <section className="bg-white dark:bg-slate-800 p-8 rounded-3xl border border-gray-100 dark:border-slate-800 shadow-sm transition-colors space-y-6">
       <div className="flex items-center justify-between pb-3 border-b border-gray-100 dark:border-slate-800">
-        <h2 className="text-lg font-bold text-gray-900 dark:text-white">Administration</h2>
+        <h2 className="text-lg font-bold text-gray-900 dark:text-white">
+          Administration
+        </h2>
         <button
           className="text-sm text-gray-600 hover:text-black dark:text-gray-300 dark:hover:text-white cursor-pointer"
-          onClick={() => { setReload((n) => n + 1); }}
+          onClick={() => {
+            setReload((n) => n + 1);
+          }}
         >
           Refresh
         </button>
@@ -69,7 +78,9 @@ export default function AdminPanel() {
       {error && <p className="text-sm text-red-600">{error}</p>}
 
       <div className="space-y-2">
-        <h3 className="font-semibold text-gray-900 dark:text-white">Connected guests ({guests.length})</h3>
+        <h3 className="font-semibold text-gray-900 dark:text-white">
+          Connected guests ({guests.length})
+        </h3>
         <ul className="space-y-2">
           {guests.map((g) => (
             <li
@@ -79,7 +90,9 @@ export default function AdminPanel() {
               <span>{g.displayName}</span>
               <button
                 className="text-sm text-red-600 cursor-pointer"
-                onClick={() => void remove(`/admin/guests/${g.id}`, g.displayName)}
+                onClick={() =>
+                  void remove(`/admin/guests/${g.id}`, g.displayName)
+                }
               >
                 Delete
               </button>
@@ -89,7 +102,9 @@ export default function AdminPanel() {
       </div>
 
       <div className="space-y-2 overflow-x-auto">
-        <h3 className="font-semibold text-gray-900 dark:text-white">Registered users ({users.length})</h3>
+        <h3 className="font-semibold text-gray-900 dark:text-white">
+          Registered users ({users.length})
+        </h3>
         <table className="w-full text-left text-sm dark:text-gray-200">
           <thead>
             <tr className="border-b border-gray-200 dark:border-slate-700">
@@ -102,7 +117,10 @@ export default function AdminPanel() {
           </thead>
           <tbody>
             {users.map((u) => (
-              <tr key={u.id} className="border-b border-gray-100 dark:border-slate-700">
+              <tr
+                key={u.id}
+                className="border-b border-gray-100 dark:border-slate-700"
+              >
                 <td className="py-2">{u.id}</td>
                 <td>{u.username}</td>
                 <td>{u.email}</td>
@@ -111,7 +129,9 @@ export default function AdminPanel() {
                   {u.id !== me?.id && (
                     <button
                       className="text-red-600 cursor-pointer"
-                      onClick={() => void remove(`/admin/users/${String(u.id)}`, u.username)}
+                      onClick={() =>
+                        void remove(`/admin/users/${String(u.id)}`, u.username)
+                      }
                     >
                       Delete
                     </button>

@@ -112,7 +112,9 @@ export default function Profile() {
               <input
                 type="text"
                 value={draftName}
-                onChange={(e) => { setDraftName(e.target.value); }}
+                onChange={(e) => {
+                  setDraftName(e.target.value);
+                }}
                 className="px-3 py-1 border border-gray-300 rounded-full outline-none focus:border-red-600 dark:bg-slate-900 dark:text-white dark:border-slate-700"
                 autoFocus
               />
@@ -123,7 +125,9 @@ export default function Profile() {
                 Guardar
               </button>
               <button
-                onClick={() => { setIsEditing(false); }}
+                onClick={() => {
+                  setIsEditing(false);
+                }}
                 className="px-4 py-1 bg-gray-200 text-gray-800 font-medium rounded-full hover:bg-gray-300 transition-colors cursor-pointer"
               >
                 Cancelar

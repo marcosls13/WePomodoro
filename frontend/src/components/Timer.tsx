@@ -18,7 +18,7 @@ function getFormattedTime(milliseconds: number) {
 
 export default function Timer({
   duration,
-  onTimeUp
+  onTimeUp,
 }: {
   duration: number;
   onTimeUp: () => void;
@@ -35,7 +35,9 @@ export default function Timer({
       setTime((prevTime: number) => Math.max(prevTime - 1000, 0));
     }, 1000);
 
-    return () => { clearInterval(intervalId); };
+    return () => {
+      clearInterval(intervalId);
+    };
   }, [time, onTimeUp]);
 
   return (

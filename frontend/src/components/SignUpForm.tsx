@@ -31,19 +31,29 @@ export default function SignUpForm() {
 
   if (pendingToken)
     return (
-      <VerifyCodeForm pendingToken={pendingToken} onCancel={() => { setPendingToken(null); }} />
+      <VerifyCodeForm
+        pendingToken={pendingToken}
+        onCancel={() => {
+          setPendingToken(null);
+        }}
+      />
     );
 
   return (
     <FormWrapper>
       <FormHeader title="Sign Up" subtitle="Take Advantage" />
-      <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-5">
+      <form
+        onSubmit={(e) => void handleSubmit(e)}
+        className="flex flex-col gap-5"
+      >
         <InputField
           id="username"
           label="Username"
           required
           value={username}
-          onChange={(e) => { setUsername(e.target.value); }}
+          onChange={(e) => {
+            setUsername(e.target.value);
+          }}
           placeholder="Username"
         />
         <InputField
@@ -52,7 +62,9 @@ export default function SignUpForm() {
           type="email"
           required
           value={email}
-          onChange={(e) => { setEmail(e.target.value); }}
+          onChange={(e) => {
+            setEmail(e.target.value);
+          }}
           placeholder="you@student.42madrid.com"
         />
         <PasswordField
@@ -60,7 +72,9 @@ export default function SignUpForm() {
           label="Password"
           required
           value={password}
-          onChange={(e) => { setPassword(e.target.value); }}
+          onChange={(e) => {
+            setPassword(e.target.value);
+          }}
         />
         {error && <p className="text-sm text-red-600">{error}</p>}
         <SubmitButton>Sign Up</SubmitButton>

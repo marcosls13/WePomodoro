@@ -1,9 +1,9 @@
 import { useState, type SubmitEvent } from "react";
 
 export default function TimeConfig({
-  onStartRoom
+  onStartRoom,
 }: {
-  onStartRoom: (c: {workDuration: number; restDuration: number }) => void
+  onStartRoom: (c: { workDuration: number; restDuration: number }) => void;
 }) {
   const [workMinutes, setWorkMinutes] = useState(25);
   const [restMinutes, setRestMinutes] = useState(5);
@@ -37,7 +37,9 @@ export default function TimeConfig({
         <div className="flex items-center border border-gray-200 rounded-full bg-gray-50 overflow-hidden">
           <button
             type="button"
-            onClick={() => { setWorkMinutes((prev) => Math.max(prev - 1, 1)); }}
+            onClick={() => {
+              setWorkMinutes((prev) => Math.max(prev - 1, 1));
+            }}
             className="px-5 py-3 text-gray-600 hover:bg-gray-200 font-bold transition-colors cursor-pointer"
           >
             -
@@ -45,13 +47,16 @@ export default function TimeConfig({
           <input
             type="number"
             value={workMinutes}
-            onChange={(e) => { setWorkMinutes(Math.max(Number(e.target.value), 1)); }
-            }
+            onChange={(e) => {
+              setWorkMinutes(Math.max(Number(e.target.value), 1));
+            }}
             className="w-full text-center bg-transparent focus:outline-none text-base font-semibold text-gray-800 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [-moz-appearance:textfield]"
           />
           <button
             type="button"
-            onClick={() => { setWorkMinutes((prev) => prev + 1); }}
+            onClick={() => {
+              setWorkMinutes((prev) => prev + 1);
+            }}
             className="px-5 py-3 text-gray-600 hover:bg-gray-200 font-bold transition-colors cursor-pointer"
           >
             +
@@ -67,7 +72,9 @@ export default function TimeConfig({
         <div className="flex items-center border border-gray-200 rounded-full bg-gray-50 overflow-hidden">
           <button
             type="button"
-            onClick={() => { setRestMinutes((prev) => Math.max(prev - 1, 1)); }}
+            onClick={() => {
+              setRestMinutes((prev) => Math.max(prev - 1, 1));
+            }}
             className="px-5 py-3 text-gray-600 hover:bg-gray-200 font-bold transition-colors cursor-pointer"
           >
             -
@@ -75,13 +82,16 @@ export default function TimeConfig({
           <input
             type="number"
             value={restMinutes}
-            onChange={(e) => { setRestMinutes(Math.max(Number(e.target.value), 1)); }
-            }
+            onChange={(e) => {
+              setRestMinutes(Math.max(Number(e.target.value), 1));
+            }}
             className="w-full text-center bg-transparent focus:outline-none text-base font-semibold text-gray-800 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [-moz-appearance:textfield]"
           />
           <button
             type="button"
-            onClick={() => { setRestMinutes((prev) => prev + 1); }}
+            onClick={() => {
+              setRestMinutes((prev) => prev + 1);
+            }}
             className="px-5 py-3 text-gray-600 hover:bg-gray-200 font-bold transition-colors cursor-pointer"
           >
             +

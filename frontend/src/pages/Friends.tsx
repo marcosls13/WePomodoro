@@ -19,7 +19,11 @@ interface FriendList {
 
 export default function Friends() {
   const navigate = useNavigate();
-  const [list, setList] = useState<FriendList>({ friends: [], incoming: [], outgoing: [] });
+  const [list, setList] = useState<FriendList>({
+    friends: [],
+    incoming: [],
+    outgoing: [],
+  });
   const [username, setUsername] = useState("");
   const [error, setError] = useState("");
 
@@ -43,8 +47,12 @@ export default function Friends() {
 
   // Refreshes presence every 10 s; the WebSocket layer can push it later.
   useEffect(() => {
-    const timer = setInterval(() => { setReload((n) => n + 1); }, 10000);
-    return () => { clearInterval(timer); };
+    const timer = setInterval(() => {
+      setReload((n) => n + 1);
+    }, 10000);
+    return () => {
+      clearInterval(timer);
+    };
   }, []);
 
   const run = async (fn: () => Promise<unknown>) => {
@@ -69,22 +77,33 @@ export default function Friends() {
             aria-label={e.presence.online ? "online" : "offline"}
           />
         )}
-        <span className="font-semibold text-gray-900 dark:text-white">{e.user.username}</span>
-        {e.presence?.roomCode && <span className="text-xs text-gray-500">in a room</span>}
+        <span className="font-semibold text-gray-900 dark:text-white">
+          {e.user.username}
+        </span>
+        {e.presence?.roomCode && (
+          <span className="text-xs text-gray-500">in a room</span>
+        )}
       </span>
       <span className="flex gap-3 text-sm">{actions}</span>
     </li>
   );
 
   const remove = (e: Entry, label: string) => (
-    <button className="text-red-600" onClick={() => void run(() => api(`/friends/${e.id}`, { method: "DELETE" }))}>
+    <button
+      className="text-red-600"
+      onClick={() =>
+        void run(() => api(`/friends/${e.id}`, { method: "DELETE" }))
+      }
+    >
       {label}
     </button>
   );
 
   return (
     <div className="flex-grow p-6 space-y-6 dark:text-white">
-      <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Friends</h1>
+      <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
+        Friends
+      </h1>
 
       <form
         onSubmit={(e) => {
@@ -96,11 +115,15 @@ export default function Friends() {
       >
         <input
           value={username}
-          onChange={(e) => { setUsername(e.target.value); }}
+          onChange={(e) => {
+            setUsername(e.target.value);
+          }}
           placeholder="Add by username"
           className="rounded-full border border-gray-300 bg-gray-50 px-4 py-2 text-sm dark:bg-slate-900 dark:border-slate-700"
         />
-        <button className="rounded-full bg-red-600 px-4 py-2 text-sm font-semibold text-white">Add</button>
+        <button className="rounded-full bg-red-600 px-4 py-2 text-sm font-semibold text-white">
+          Add
+        </button>
       </form>
       {error && <p className="text-sm text-red-600">{error}</p>}
 
@@ -111,7 +134,12 @@ export default function Friends() {
             row(
               e,
               <>
-                <button className="text-green-700" onClick={() => void run(() => post(`/friends/${e.id}/accept`))}>
+                <button
+                  className="text-green-700"
+                  onClick={() =>
+                    void run(() => post(`/friends/${e.id}/accept`))
+                  }
+                >
                   Accept
                 </button>
                 {remove(e, "Decline")}
@@ -123,7 +151,9 @@ export default function Friends() {
 
       <section>
         <h2 className="font-semibold mb-2">Sent</h2>
-        <ul className="space-y-2">{list.outgoing.map((e) => row(e, remove(e, "Cancel")))}</ul>
+        <ul className="space-y-2">
+          {list.outgoing.map((e) => row(e, remove(e, "Cancel")))}
+        </ul>
       </section>
 
       <section>
@@ -136,7 +166,9 @@ export default function Friends() {
                 {e.presence?.roomCode && (
                   <button
                     className="font-semibold text-red-600"
-                    onClick={() => void navigate(`/room/${e.presence?.roomCode ?? ""}`)}
+                    onClick={() =>
+                      void navigate(`/room/${e.presence?.roomCode ?? ""}`)
+                    }
                   >
                     Join
                   </button>

@@ -1,10 +1,6 @@
 import { motion } from "motion/react";
 
-export default function GameView({
-  gameType
-}: {
-  gameType: string;
-}) {
+export default function GameView({ gameType }: { gameType: string }) {
   const gameTitles: Record<string, string> = {
     cookie: "🍪 Cookie Clicker",
     tictactoe: "❌ Tres en Raya",

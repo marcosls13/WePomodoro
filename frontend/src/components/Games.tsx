@@ -18,7 +18,9 @@ export default function Games() {
 
         {selectedGame && (
           <button
-            onClick={() => { setSelectedGame(null); }}
+            onClick={() => {
+              setSelectedGame(null);
+            }}
             className="text-xs font-semibold px-3.5 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-full transition-colors cursor-pointer"
           >
             ← Back to menu
